@@ -19,7 +19,7 @@
 
 import {
   ConstituentTable,
-  findRecord,
+  findStationHarmonics,
   HarmonicsData,
   HarmonicStation,
   IdxStation,
@@ -27,6 +27,10 @@ import {
 
 export const KNOTS_TO_MS = 0.514444;
 const DEG2RAD = Math.PI / 180;
+
+// Warn at most once per out-of-range year so a busy timeline/publish loop
+// doesn't spam the log.
+const warnedOutOfRangeYears = new Set<number>();
 
 export interface CurrentSample {
   time: string;        // ISO
@@ -47,8 +51,16 @@ export function predictReference(
   const local = new Date(timeMs + station.meridianSeconds * 1000);
   const year = local.getUTCFullYear();
   let yearIdx = year - tbl.firstYear;
-  if (yearIdx < 0) yearIdx = 0;
-  if (yearIdx >= tbl.numYears) yearIdx = tbl.numYears - 1;
+  if (yearIdx < 0 || yearIdx >= tbl.numYears) {
+    if (!warnedOutOfRangeYears.has(year)) {
+      warnedOutOfRangeYears.add(year);
+      console.warn(
+        `[signalk-tidal-currents] ${year} is outside the harmonics data range ` +
+          `(${tbl.firstYear}-${tbl.firstYear + tbl.numYears - 1}); predictions will use the nearest available year's constants.`,
+      );
+    }
+    yearIdx = yearIdx < 0 ? 0 : tbl.numYears - 1;
+  }
 
   const yearStartMs = Date.UTC(year, 0, 1);
   const hours = (local.getTime() - yearStartMs) / 3600_000;
@@ -74,13 +86,13 @@ export function currentSpeedAt(
   timeMs: number,
 ): number | null {
   if (!station.isSubordinate) {
-    const rec = findRecord(data.records, station.name);
+    const rec = findStationHarmonics(data.records, station.name);
     if (!rec) return null;
     return predictReference(rec, data.constituents, timeMs);
   }
   const off = station.offsets;
   if (!off) return null;
-  const rec = findRecord(data.records, off.referenceName);
+  const rec = findStationHarmonics(data.records, off.referenceName);
   if (!rec) return null;
 
   // Classic subordinate-current approximation: evaluate the reference at the
@@ -146,7 +158,7 @@ export function distanceKm(lat1: number, lon1: number, lat2: number, lon2: numbe
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(lat1 * DEG2RAD) * Math.cos(lat2 * DEG2RAD) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
+  return 2 * R * Math.asin(Math.sqrt(Math.min(1, a)));
 }
 
 /**

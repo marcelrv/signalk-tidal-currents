@@ -18,6 +18,7 @@
 import * as path from 'path';
 
 import { registerRoutes, ApiState, RouterLike } from './api.js';
+import { ensureStandardData } from './download.js';
 import { HarmonicsData, loadHarmonicsDir } from './harmonics.js';
 import { currentSampleAt, nearestCurrentStations } from './predict.js';
 
@@ -29,6 +30,7 @@ interface Config {
   publishDelta: boolean;
   updateSeconds: number;
   maxStationDistanceKm: number;
+  autoDownloadStandardData: boolean;
 }
 
 const DEFAULTS: Config = {
@@ -36,6 +38,7 @@ const DEFAULTS: Config = {
   publishDelta: true,
   updateSeconds: 60,
   maxStationDistanceKm: 15,
+  autoDownloadStandardData: true,
 };
 
 // Deliberately loose server typing: the plugin only touches a small,
@@ -45,6 +48,7 @@ function pluginConstructor(app: any) {
   let timer: ReturnType<typeof setInterval> | null = null;
   const state: ApiState = { data: null, error: 'not started' };
   let mountedV2 = false;
+  let deltaPublished = false;
 
   const plugin: any = {
     id: PLUGIN_ID,
@@ -85,6 +89,15 @@ function pluginConstructor(app: any) {
             default: DEFAULTS.maxStationDistanceKm,
             minimum: 1,
           },
+          autoDownloadStandardData: {
+            type: 'boolean',
+            title: 'Auto-download OpenCPN standard data',
+            description:
+              "Download OpenCPN's HARMONICS_NO_US (+ .IDX) current-station data into the Harmonics " +
+              'Data Directory if missing, and re-check for updates at most weekly. Never overwrites ' +
+              'a file literally named HARMONIC/HARMONIC.IDX, so a custom pair you provide always wins.',
+            default: DEFAULTS.autoDownloadStandardData,
+          },
         },
       };
     },
@@ -96,24 +109,30 @@ function pluginConstructor(app: any) {
           ? config.dataDir
           : path.join(app.getDataDirPath ? path.dirname(app.getDataDirPath()) : '.', 'tcdata');
 
-      try {
-        const data: HarmonicsData = loadHarmonicsDir(dir);
-        state.data = data;
-        state.error = null;
-        const currents = data.stations.filter((s) => s.isCurrent).length;
-        app.setPluginStatus(
-          `Loaded ${data.stations.length} stations (${currents} current) from ${dir}`,
-        );
-      } catch (e) {
-        state.data = null;
-        state.error = e instanceof Error ? e.message : String(e);
-        app.setPluginError(`Failed to load harmonics: ${state.error}`);
-        return; // routes stay mounted and report 503 with the reason
-      }
+      const attemptLoad = (): boolean => {
+        try {
+          const data: HarmonicsData = loadHarmonicsDir(dir);
+          state.data = data;
+          state.error = null;
+          const currents = data.stations.filter((s) => s.isCurrent).length;
+          app.setPluginStatus(
+            `Loaded ${data.stations.length} stations (${currents} current) from ${dir}`,
+          );
+          return true;
+        } catch (e) {
+          state.data = null;
+          state.error = e instanceof Error ? e.message : String(e);
+          app.setPluginError(`Failed to load harmonics: ${state.error}`);
+          return false;
+        }
+      };
+
+      attemptLoad(); // routes stay mounted below and report 503 if this failed
 
       // Mount the v2-style domain API (same routes as the v1 plugin path)
       // directly on the underlying express app via a prefix shim — avoids a
-      // runtime dependency on express itself.
+      // runtime dependency on express itself. Mounted regardless of whether
+      // the initial load succeeded, same as the v1 path (registerWithRouter).
       if (!mountedV2 && typeof app.get === 'function') {
         try {
           const V2_BASE = '/signalk/v2/api/currents';
@@ -127,6 +146,19 @@ function pluginConstructor(app: any) {
         }
       }
 
+      if (config.autoDownloadStandardData) {
+        // Fire-and-forget: doesn't block start(). If it downloads
+        // new/updated files, reload so the already-mounted routes (and the
+        // publish loop below) pick them up without a restart.
+        ensureStandardData(dir)
+          .then((changed) => {
+            if (changed) attemptLoad();
+          })
+          .catch((e) => {
+            console.warn(`[${PLUGIN_ID}] OpenCPN standard data check failed: ${e}`);
+          });
+      }
+
       if (config.publishDelta) {
         const publish = () => {
           try {
@@ -138,6 +170,7 @@ function pluginConstructor(app: any) {
             if (near.length === 0) return;
             const sample = currentSampleAt(state.data!, near[0].station, Date.now());
             if (!sample || sample.direction === null) return;
+            deltaPublished = true;
             app.handleMessage(PLUGIN_ID, {
               updates: [
                 {
@@ -174,6 +207,21 @@ function pluginConstructor(app: any) {
       if (timer) {
         clearInterval(timer);
         timer = null;
+      }
+      if (deltaPublished) {
+        app.handleMessage(PLUGIN_ID, {
+          updates: [
+            {
+              values: [
+                {
+                  path: 'environment.current',
+                  value: { setTrue: null, drift: null },
+                },
+              ],
+            },
+          ],
+        });
+        deltaPublished = false;
       }
       state.data = null;
       state.error = 'stopped';

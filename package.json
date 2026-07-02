@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "tsc && rm -rf dist-test && tsc test/*.test.ts --outDir dist-test --moduleResolution node --module es2022 --target es2022 --esModuleInterop --strict --skipLibCheck && cp -r test/fixtures dist-test/fixtures && node --test 'dist-test/*.test.js'",
+    "test": "tsc && rm -rf dist-test && tsc -p tsconfig.test.json && cp -r test/fixtures dist-test/fixtures && node --test 'dist-test/*.test.js'",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -37,6 +37,10 @@
     "type": "git",
     "url": "https://github.com/marcelrv/signalk-tidal-currents"
   },
+  "bugs": {
+    "url": "https://github.com/marcelrv/signalk-tidal-currents/issues"
+  },
+  "homepage": "https://github.com/marcelrv/signalk-tidal-currents#readme",
   "engines": {
     "node": ">=18"
   },

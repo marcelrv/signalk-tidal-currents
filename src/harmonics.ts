@@ -100,11 +100,6 @@ export function slugify(name: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function isComment(line: string): boolean {
-  const t = line.trim();
-  return t === '' || t.startsWith('#');
-}
-
 /** "±HH:MM" → seconds east of UTC. Accepts "+1:00", "01:00", "-3:30". */
 export function meridianToSeconds(spec: string): number {
   const m = spec.match(/^([+-]?)(\d+):(\d+)/);
@@ -113,26 +108,59 @@ export function meridianToSeconds(spec: string): number {
   return sign * (parseInt(m[2], 10) * 3600 + parseInt(m[3], 10) * 60);
 }
 
+// Lazily scans the source text for lines rather than splitting the whole
+// file into an array upfront — large community harmonic files can be
+// 10-20MB, and a full split() retains hundreds of thousands of string
+// objects for the life of the parse.
 class LineReader {
-  private lines: string[];
+  private text: string;
   private pos = 0;
   constructor(text: string) {
-    this.lines = text.split(/\r?\n/);
+    this.text = text;
+  }
+  private readLineAt(pos: number): { line: string; next: number } | null {
+    if (pos >= this.text.length) return null;
+    let nl = this.text.indexOf('\n', pos);
+    if (nl === -1) nl = this.text.length;
+    let line = this.text.slice(pos, nl);
+    if (line.endsWith('\r')) line = line.slice(0, -1);
+    return { line, next: nl + 1 };
   }
   /** Next non-comment, non-blank line, or null at EOF. */
   next(): string | null {
-    while (this.pos < this.lines.length) {
-      const line = this.lines[this.pos++];
-      if (!isComment(line)) return line.trim();
+    let cursor = this.pos;
+    for (;;) {
+      const r = this.readLineAt(cursor);
+      if (r === null) {
+        this.pos = cursor;
+        return null;
+      }
+      cursor = r.next;
+      const trimmed = r.line.trim();
+      if (trimmed !== '' && !trimmed.startsWith('#')) {
+        this.pos = cursor;
+        return trimmed;
+      }
     }
-    return null;
   }
-  /** Peek variant of next(). */
+  /** Peek variant of next(): the next non-comment line, without consuming it. */
   peek(): string | null {
-    const save = this.pos;
-    const line = this.next();
-    this.pos = save;
-    return line;
+    return this.peekAt(0);
+  }
+  /** Look ahead `n` non-comment lines (0 = same as peek()) without consuming. */
+  peekAt(n: number): string | null {
+    let cursor = this.pos;
+    let count = 0;
+    for (;;) {
+      const r = this.readLineAt(cursor);
+      if (r === null) return null;
+      cursor = r.next;
+      const trimmed = r.line.trim();
+      if (trimmed !== '' && !trimmed.startsWith('#')) {
+        if (count === n) return trimmed;
+        count++;
+      }
+    }
   }
   eof(): boolean {
     return this.peek() === null;
@@ -213,33 +241,44 @@ export function parseHarmonicFile(text: string): {
   const MERIDIAN_RE = /^[+-]?\d+:\d+(\s|$)/;
   const DATUM_RE = /^(-?[\d.]+)\s+(\S+)\s*$/;
 
-  const rest: string[] = [];
-  for (let l = r.next(); l !== null; l = r.next()) rest.push(l);
-
-  const isRecordStart = (i: number): boolean =>
-    i + 2 < rest.length && MERIDIAN_RE.test(rest[i + 1]) && DATUM_RE.test(rest[i + 2]);
+  // Detected via a small 3-line lookahead window rather than buffering every
+  // remaining line of the file — community files can run 10-20MB and the
+  // record body is otherwise the only thing that needs lookahead.
+  const isRecordStart = (): boolean => {
+    const meridianLine = r.peekAt(1);
+    const datumLine = r.peekAt(2);
+    return meridianLine !== null && datumLine !== null &&
+      MERIDIAN_RE.test(meridianLine) && DATUM_RE.test(datumLine);
+  };
 
   const records = new Map<string, HarmonicStation>();
-  let i = 0;
-  while (i < rest.length) {
-    if (!isRecordStart(i)) {
-      i++; // stray/extra line between records — skip
+  const warnedUnrecognizedNames = new Set<string>();
+  while (!r.eof()) {
+    if (!isRecordStart()) {
+      r.next(); // stray/extra line between records — skip
       continue;
     }
-    const name = rest[i];
-    const meridianLine = rest[i + 1];
-    const dm = rest[i + 2].match(DATUM_RE)!;
+    const name = r.next()!;
+    const meridianLine = r.next()!;
+    const dm = r.next()!.match(DATUM_RE)!;
     const tzMatch = meridianLine.match(/:(\S+)\s*$/);
-    i += 3;
 
     const amplitude: number[] = new Array(numCsts).fill(0);
     const epoch: number[] = new Array(numCsts).fill(0);
     let cursor = 0;
-    while (i < rest.length && !isRecordStart(i)) {
-      const m = rest[i].match(CST_LINE_RE);
-      if (!m) break; // stray line ends the record body
-      i++;
+    while (!r.eof() && !isRecordStart()) {
+      const line = r.peek()!;
+      const m = line.match(CST_LINE_RE);
+      if (!m) {
+        console.warn(`[signalk-tidal-currents] malformed constituent line for station "${name}", skipping rest of record: ${line}`);
+        break; // stray line ends the record body
+      }
+      r.next();
       const byName = cstIndex.get(m[1]);
+      if (byName === undefined && m[1].toLowerCase() !== 'x' && !warnedUnrecognizedNames.has(m[1])) {
+        warnedUnrecognizedNames.add(m[1]);
+        console.debug(`[signalk-tidal-currents] unrecognized constituent "${m[1]}" (station "${name}"), mapping positionally`);
+      }
       const idx = byName !== undefined ? byName : cursor;
       if (idx < numCsts) {
         amplitude[idx] = parseFloat(m[2]) || 0;
@@ -351,7 +390,8 @@ export function parseIdxFile(text: string): IdxStation[] {
       name,
       latitude: lat,
       longitude: lon,
-      timeZoneMinutes: parseInt(m[5], 10) * 60 + parseInt(m[6], 10),
+      timeZoneMinutes:
+        (m[5].startsWith('-') ? -1 : 1) * (Math.abs(parseInt(m[5], 10)) * 60 + parseInt(m[6], 10)),
       isCurrent: type === 'C' || type === 'c',
       isSubordinate: isSub,
       offsets,
@@ -360,21 +400,45 @@ export function parseIdxFile(text: string): IdxStation[] {
   return stations;
 }
 
+function normalizeStationName(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// Cached per records Map instance: normalized name -> station, built once on
+// first lookup and reused for the life of the loaded HarmonicsData. Avoids
+// re-normalizing every key on every fallback lookup.
+const normalizedIndexCache = new WeakMap<Map<string, HarmonicStation>, Map<string, HarmonicStation>>();
+
+function getNormalizedIndex(records: Map<string, HarmonicStation>): Map<string, HarmonicStation> {
+  let idx = normalizedIndexCache.get(records);
+  if (!idx) {
+    idx = new Map();
+    for (const [key, rec] of records) {
+      const norm = normalizeStationName(key);
+      if (!idx.has(norm)) idx.set(norm, rec);
+    }
+    normalizedIndexCache.set(records, idx);
+  }
+  return idx;
+}
+
 /**
  * Relaxed record lookup: IDX reference names may differ from HARMONIC record
  * names in case, spacing, or by being a prefix (OpenCPN's "slackcmp").
  */
-export function findRecord(
+export function findStationHarmonics(
   records: Map<string, HarmonicStation>,
   name: string,
 ): HarmonicStation | undefined {
   const exact = records.get(name);
   if (exact) return exact;
-  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
-  const want = norm(name);
+  const want = normalizeStationName(name);
+  const normExact = getNormalizedIndex(records).get(want);
+  if (normExact) return normExact;
+  // Rare fallback: prefix match, e.g. IDX truncates or extends the name.
   for (const [key, rec] of records) {
-    const have = norm(key);
-    if (have === want || have.startsWith(want) || want.startsWith(have)) return rec;
+    const have = normalizeStationName(key);
+    if (have.startsWith(want) || want.startsWith(have)) return rec;
   }
   return undefined;
 }

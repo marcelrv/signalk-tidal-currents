@@ -19,6 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { OPENCPN_BASE_URL, OPENCPN_FILES } from '../dist/download.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { currentSampleAt, currentSpeedAt, nearestCurrentStations, predictReference } from '../dist/predict.js';
 
@@ -26,16 +27,14 @@ const DATA_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..', 'test', 'data-opencpn',
 );
-const BASE_URL = 'https://raw.githubusercontent.com/OpenCPN/OpenCPN/master/data/tcdata';
-const FILES = ['HARMONICS_NO_US', 'HARMONICS_NO_US.IDX'];
 
 async function ensureData(): Promise<boolean> {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  for (const name of FILES) {
+  for (const name of OPENCPN_FILES) {
     const dest = path.join(DATA_DIR, name);
     if (fs.existsSync(dest) && fs.statSync(dest).size > 10_000) continue;
     try {
-      const resp = await fetch(`${BASE_URL}/${name}`);
+      const resp = await fetch(`${OPENCPN_BASE_URL}/${name}`);
       if (!resp.ok) return false;
       fs.writeFileSync(dest, Buffer.from(await resp.arrayBuffer()));
     } catch {

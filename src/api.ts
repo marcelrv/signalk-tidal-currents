@@ -91,6 +91,10 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       res.status(400).json({ error: 'latitude and longitude query parameters are required' });
       return;
     }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      res.status(400).json({ error: 'latitude must be between -90 and 90, longitude between -180 and 180' });
+      return;
+    }
     const limit = Math.min(50, parseInt(String(req.query.limit), 10) || 10);
     const result = nearestCurrentStations(state.data!, lat, lon, limit).map((n) =>
       stationInfo(n.station, { distanceKm: n.distanceKm, vectorCapable: n.vectorCapable }),
@@ -123,7 +127,7 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       return;
     }
     const stepMin = Math.max(5, Math.min(120, parseInt(String(req.query.step), 10) || 10));
-    if ((end - start) / (stepMin * 60_000) > 20000) {
+    if ((end - start) / (stepMin * 60_000) > 2000) {
       res.status(400).json({ error: 'window too large for the requested step' });
       return;
     }
@@ -142,6 +146,10 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     const lon = parseFloat(String(req.query.longitude));
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
       res.status(400).json({ error: 'latitude and longitude query parameters are required' });
+      return;
+    }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      res.status(400).json({ error: 'latitude must be between -90 and 90, longitude between -180 and 180' });
       return;
     }
     const time = req.query.time ? Date.parse(String(req.query.time)) : Date.now();

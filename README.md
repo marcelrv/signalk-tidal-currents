@@ -52,15 +52,41 @@ Point the plugin at a directory containing a `HARMONIC` + `HARMONIC.IDX`
 pair (plugin config → *Harmonics Data Directory*; defaults to
 `<server config dir>/tcdata`).
 
-Where to get data:
+**Auto-download (default: on)**: with *Auto-download OpenCPN standard data*
+enabled (plugin config), the plugin fetches OpenCPN's `HARMONICS_NO_US` (+
+`.IDX`) pair — current stations for the Americas — straight from the
+[OpenCPN GitHub repository](https://github.com/OpenCPN/OpenCPN/tree/master/data/tcdata)
+into the Harmonics Data Directory if it's missing, so the plugin works out
+of the box with no manual setup. It re-checks for updates at most once a
+week (a conditional HTTP request; no download if unchanged) — quiet on
+every other server restart. It never overwrites a file you name exactly
+`HARMONIC`/`HARMONIC.IDX`: if you drop a custom pair (e.g. a community
+bundle) into the same directory, that pair always takes priority. Turn the
+option off if you don't want the plugin making outbound network requests.
+
+Where to get data manually:
 
 - **OpenCPN installations** ship a `tcdata` folder. Note: the files bundled
   with current OpenCPN releases contain current stations **for the Americas
   only** (from NOAA/XTide) — the bundled European data (TICON) is
-  heights-only.
+  heights-only. Typical locations if OpenCPN is already installed:
+  - **Linux:** `/usr/share/opencpn/tcdata/` (or
+    `/usr/local/share/opencpn/tcdata/` for from-source installs)
+  - **macOS:** `/Applications/OpenCPN.app/Contents/SharedSupport/tcdata/`
+  - **Windows:** `C:\Program Files (x86)\OpenCPN\tcdata\`
+
+  (Exact paths vary by OpenCPN version/packaging — check the install
+  directory if not found.) Without installing OpenCPN, the same
+  `HARMONICS_NO_US` + `.IDX` pair can be fetched directly from the
+  [OpenCPN GitHub repository](https://github.com/OpenCPN/OpenCPN/tree/master/data/tcdata),
+  or grab the full app from [opencpn.org](https://opencpn.org/) (its
+  installer bundles `tcdata`).
 - **Community harmonic bundles** (e.g. the French "HARMONICS V10" set
   circulating among cruisers) add ~150 current stations in W-Europe,
   including dense coverage of the Dutch Waddenzee and the Channel coast.
+  These circulate informally on cruising/OpenCPN forums rather than a
+  single canonical URL — search for "HARMONICS V10" or ask in the OpenCPN
+  community.
 
 > ⚠️ **Disclaimer**: community harmonic data is not official hydrographic
 > data (the V10 bundle explicitly notes it is *not* from SHOM). Subordinate
@@ -79,6 +105,73 @@ Base: `/signalk/v2/api/currents` (same routes at
 | `GET /stations/{id}` | Station metadata incl. flood/ebb directions and offsets |
 | `GET /stations/{id}/timeline?start=&end=&step=` | Set/drift series (default 24 h, 10-min step) |
 | `GET /vector?latitude=&longitude=&time=` | Set/drift vector from the nearest vector-capable station |
+
+**"Vector-capable" stations**: reference current stations in the XTide ASCII
+format only carry a signed speed (harmonic constituents in knots) — they're
+typically sited in a narrow channel where flow is bidirectional along an
+axis that the file format never records. Subordinate current stations, by
+contrast, carry explicit flood/ebb direction headings (degrees true) in
+their `^` offset line, which is what lets the plugin resolve them into a
+true set/drift vector (`direction`, `u`, `v`). Reference stations are
+therefore skipped by `/vector` and by `environment.current` publishing
+(`vectorCapable: false` in `/stations`), even though their raw signed speed
+is still available via `/stations/{id}/timeline`.
+
+`GET /stations?latitude=52.0&longitude=4.7&limit=2`:
+
+```json
+[
+  {
+    "id": "texel-noorderhaaks",
+    "name": "Texel, Noorderhaaks",
+    "latitude": 53.0092,
+    "longitude": 4.6967,
+    "type": "subordinate",
+    "referenceName": "Texel Reference",
+    "floodDir": 112,
+    "ebbDir": 292,
+    "distanceKm": 122.4,
+    "vectorCapable": true
+  },
+  {
+    "id": "texel-reference",
+    "name": "Texel Reference",
+    "latitude": 53.0,
+    "longitude": 4.75,
+    "type": "reference",
+    "referenceName": null,
+    "floodDir": null,
+    "ebbDir": null,
+    "distanceKm": 123.1,
+    "vectorCapable": false
+  }
+]
+```
+
+`GET /vector?latitude=52.0&longitude=4.7`:
+
+```json
+{
+  "station": {
+    "id": "texel-noorderhaaks",
+    "name": "Texel, Noorderhaaks",
+    "latitude": 53.0092,
+    "longitude": 4.6967,
+    "type": "subordinate",
+    "referenceName": "Texel Reference",
+    "floodDir": 112,
+    "ebbDir": 292,
+    "distanceKm": 122.4
+  },
+  "sample": {
+    "time": "2026-07-02T12:30:00.000Z",
+    "speedKn": 3.03,
+    "direction": 345,
+    "u": -0.404,
+    "v": 1.506
+  }
+}
+```
 
 Timeline sample entry:
 
@@ -100,6 +193,7 @@ Timeline sample entry:
 | Publish environment.current | `true` | Emit deltas at the vessel position |
 | Delta Update Period | `60 s` | How often to re-predict |
 | Max Station Distance | `15 km` | Don't publish when no station is nearby |
+| Auto-download OpenCPN standard data | `true` | Fetch/refresh OpenCPN's `HARMONICS_NO_US` pair into the data directory (see [Data files](#data-files)) |
 
 ## Roadmap
 
