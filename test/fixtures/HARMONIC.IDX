@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Marcel Verpaalen
+# SPDX-License-Identifier: Apache-2.0
+# Synthetic fixture index
+XREF
+REGION NAA N. America, Atlantic
+COUNTRY Neth Netherlands
+TEur:Neth:: 5.000000 53.000000 00:00 Test Height, Fixture
+CEur:Neth: 5.1000 53.1000 00:00 Test Ref, Courants
+CEur:Neth: 5.3000 53.3000 01:00 Test Meridian, Courants
+cEur:Neth: 5.2000 53.2000 00:00 Test Sub, Courants
+^60 2.0 0  30  1.5 0 0001 90 270 1 Test Ref, Courants
+tEur:Neth: 5.4000 53.4000 00:00 Test Sub Height, Fixture
+&15 1.1 0.1 20 0.9 -0.1 0002 1 Test Height, Fixture

@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-test/
+
+# Harmonic data — never commit (provenance/licensing varies)
+tcdata/
+/HARMONIC
+/HARMONIC.IDX
+*.tcd
+# integration-test data cache (downloaded from the OpenCPN repo on demand)
+test/data-opencpn/
+
+# OS / editor
+.DS_Store
+*.swp
+.vscode/
+.idea/

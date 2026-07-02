@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 Marcel Verpaalen
+# SPDX-License-Identifier: Apache-2.0
+# Synthetic test fixture — same layout as the legacy XTide/OpenCPN
+# ASCII harmonics format. Two constituents, two years (2025-2026).
+2
+#
+M2                           28.9841042
+S2                           30.0000000
+#
+# start year
+2025
+#
+2
+M2
+  0.00 0.00
+S2
+ 90.00 0.00
+*END*
+#
+# node factors
+2
+M2
+1.0000 1.0000
+S2
+1.0000 1.0000
+*END*
+#
+# ---- station records ----
+#
+Test Height, Fixture
+00:00 :UTC
+2.00 meters
+M2 1.500 0.0
+S2 0.500 90.0
+#
+Test Ref, Courants
+00:00 :UTC
+0.00 knots
+M2 1.000 0.0
+x 0 0
+#
+Test Meridian, Courants
+01:00 :Europe/Amsterdam
+0.00 knots
+M2 1.000 0.0
+x 0 0

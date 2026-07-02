@@ -1,0 +1,53 @@
+{
+  "name": "signalk-tidal-currents",
+  "version": "0.1.0",
+  "description": "Tidal current predictions from OpenCPN/XTide harmonic files (HARMONIC/HARMONIC.IDX) — publishes environment.current and a station/timeline REST API",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && rm -rf dist-test && tsc test/*.test.ts --outDir dist-test --moduleResolution node --module es2022 --target es2022 --esModuleInterop --strict --skipLibCheck && cp -r test/fixtures dist-test/fixtures && node --test 'dist-test/*.test.js'",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-weather",
+    "signalk-category-utility",
+    "signalk",
+    "tides",
+    "tidal-currents",
+    "xtide",
+    "opencpn",
+    "harmonics"
+  ],
+  "signalk": {
+    "displayName": "Tidal Currents",
+    "appIcon": "./img/icon.svg"
+  },
+  "signalk-plugin-enabled-by-default": false,
+  "author": "Marcel Verpaalen",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/marcelrv/signalk-tidal-currents"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "img",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
