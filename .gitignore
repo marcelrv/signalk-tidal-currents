@@ -4,14 +4,20 @@ node_modules/
 # Build output
 dist/
 dist-test/
+*.tgz
 
-# Harmonic data — never commit (provenance/licensing varies)
+# Private tooling / data — never commit
+data/
 tcdata/
 /HARMONIC
 /HARMONIC.IDX
 *.tcd
 # integration-test data cache (downloaded from the OpenCPN repo on demand)
 test/data-opencpn/
+
+# Local project notes
+AGENTS.local.md
+.claude/settings.local.json
 
 # OS / editor
 .DS_Store

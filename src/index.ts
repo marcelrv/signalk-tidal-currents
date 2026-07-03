@@ -4,29 +4,38 @@
 /**
  * signalk-tidal-currents — Signal K server plugin.
  *
- * Predicts tidal currents from OpenCPN/XTide legacy ASCII harmonic files
- * (HARMONIC + HARMONIC.IDX) and makes them available two ways:
+ * Predicts tidal currents from two kinds of sources and makes them
+ * available two ways:
  *
+ *  Sources:
+ *  - OpenCPN/XTide legacy ASCII harmonic files (HARMONIC + HARMONIC.IDX):
+ *    station-based harmonic prediction.
+ *  - GRIB2 files with gridded current fields (u/v, discipline 10 category
+ *    1): positional bilinear + time interpolation, no stations involved.
+ *
+ *  Outputs:
  *  - Signal K v1 data model: publishes `environment.current` deltas
- *    (setTrue in radians, drift in m/s) predicted at the vessel position
- *    from the nearest vector-capable current station.
+ *    (setTrue in radians, drift in m/s) predicted at the vessel position.
  *  - v2-style REST API at /signalk/v2/api/currents (also mirrored at the
  *    v1 plugin path /plugins/signalk-tidal-currents): station search,
- *    per-station set/drift timelines, and a point vector lookup.
+ *    station and position timelines, and a point vector lookup.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 
-import { registerRoutes, ApiState, RouterLike } from './api.js';
+import { registerRoutes, resolveVector, ApiState, RouterLike } from './api.js';
 import { ensureStandardData } from './download.js';
+import { createGribSource } from './gribcurrents.js';
 import { HarmonicsData, loadHarmonicsDir } from './harmonics.js';
-import { currentSampleAt, nearestCurrentStations } from './predict.js';
 
 const PLUGIN_ID = 'signalk-tidal-currents';
 const DEG2RAD = Math.PI / 180;
 
 interface Config {
   dataDir: string;
+  gribDir: string;
+  preferGrib: boolean;
   publishDelta: boolean;
   updateSeconds: number;
   maxStationDistanceKm: number;
@@ -35,6 +44,8 @@ interface Config {
 
 const DEFAULTS: Config = {
   dataDir: '',
+  gribDir: '',
+  preferGrib: true,
   publishDelta: true,
   updateSeconds: 60,
   maxStationDistanceKm: 15,
@@ -43,7 +54,20 @@ const DEFAULTS: Config = {
 
 // Deliberately loose server typing: the plugin only touches a small,
 // long-stable subset of the ServerAPI surface.
+// Plugin's own storage root (Signal K's standard per-plugin data dir).
+// Harmonics and GRIB2 each get their own subdir under it by default —
+// independently, so overriding one setting doesn't drag the other's
+// default along with it (e.g. pointing dataDir at an external OpenCPN
+// folder must not relocate the GRIB2 default into that folder too).
 /* eslint-disable @typescript-eslint/no-explicit-any */
+function defaultDirs(app: any): { dataDir: string; gribDir: string } {
+  const pluginRoot = app.getDataDirPath ? app.getDataDirPath() : '.';
+  return {
+    dataDir: path.join(pluginRoot, 'tcdata'),
+    gribDir: path.join(pluginRoot, 'grib'),
+  };
+}
+
 function pluginConstructor(app: any) {
   let timer: ReturnType<typeof setInterval> | null = null;
   const state: ApiState = { data: null, error: 'not started' };
@@ -54,9 +78,13 @@ function pluginConstructor(app: any) {
     id: PLUGIN_ID,
     name: 'Tidal Currents',
     description:
-      'Tidal current predictions from OpenCPN/XTide harmonic files (HARMONIC/HARMONIC.IDX)',
+      'Tidal current predictions from OpenCPN/XTide harmonic files and GRIB2 current fields',
 
     schema() {
+      // Prefilled with the actual resolved default path (not an empty
+      // sentinel) so the admin UI form shows it and a user can just click
+      // Save without having to know or type a path.
+      const defaults = defaultDirs(app);
       return {
         type: 'object',
         properties: {
@@ -64,9 +92,26 @@ function pluginConstructor(app: any) {
             type: 'string',
             title: 'Harmonics Data Directory',
             description:
-              'Directory containing a HARMONIC + HARMONIC.IDX pair (e.g. an OpenCPN tcdata folder). ' +
-              'Default: <server config dir>/tcdata',
-            default: DEFAULTS.dataDir,
+              'Directory containing a HARMONIC + HARMONIC.IDX pair (e.g. an OpenCPN tcdata folder).',
+            default: defaults.dataDir,
+          },
+          gribDir: {
+            type: 'string',
+            title: 'GRIB2 Data Directory',
+            description:
+              'Directory scanned for GRIB2 files (*.grb2, *.grib2, *.grb, *.grib) with gridded ' +
+              'current fields (u/v components, oceanographic discipline). New/updated files are ' +
+              'picked up automatically within a minute (independent of the Harmonics Data ' +
+              'Directory setting).',
+            default: defaults.gribDir,
+          },
+          preferGrib: {
+            type: 'boolean',
+            title: 'Prefer GRIB over stations',
+            description:
+              'When both a GRIB grid and a harmonic station cover the position, use the GRIB ' +
+              'forecast; stations remain the fallback outside GRIB coverage or beyond its time range',
+            default: DEFAULTS.preferGrib,
           },
           publishDelta: {
             type: 'boolean',
@@ -85,7 +130,8 @@ function pluginConstructor(app: any) {
             type: 'number',
             title: 'Max Station Distance (km)',
             description:
-              'Only publish environment.current when a vector-capable station is within this range',
+              'Only use a station for environment.current when a vector-capable one is within ' +
+              'this range (GRIB coverage is not distance-limited)',
             default: DEFAULTS.maxStationDistanceKm,
             minimum: 1,
           },
@@ -104,25 +150,68 @@ function pluginConstructor(app: any) {
 
     start(options: Partial<Config>) {
       const config: Config = { ...DEFAULTS, ...options };
-      const dir =
-        config.dataDir && config.dataDir.trim() !== ''
-          ? config.dataDir
-          : path.join(app.getDataDirPath ? path.dirname(app.getDataDirPath()) : '.', 'tcdata');
+      const defaults = defaultDirs(app);
+      const dir = config.dataDir && config.dataDir.trim() !== '' ? config.dataDir : defaults.dataDir;
+      const gribDir =
+        config.gribDir && config.gribDir.trim() !== '' ? config.gribDir : defaults.gribDir;
+
+      // Create both directories (default or user-specified) if missing, so
+      // saving the config is enough — no manual mkdir before dropping in a
+      // HARMONIC pair or GRIB2 files. Mode 0o777 (not 0o666): a directory
+      // needs its execute/search bit for others to traverse into it or open
+      // files inside by path, not just the read/write bits — omitting x
+      // would make the directory unusable to any other account despite
+      // "permissions" nominally being set. Runs on every start(), not just
+      // first creation, so a directory that ended up owned/restricted by a
+      // different account (e.g. a server run as root vs. a non-root Docker
+      // user) self-heals instead of failing with EACCES on next use.
+      // mkdirSync's mode is subject to the process umask, so chmod
+      // afterwards to force it exactly. On Windows, POSIX mode bits mostly
+      // don't apply (chmod there only toggles the read-only attribute) —
+      // harmless no-op, not an error, so wrapped the same as any other
+      // filesystem access here.
+      for (const d of [dir, gribDir]) {
+        try {
+          fs.mkdirSync(d, { recursive: true, mode: 0o777 });
+          fs.chmodSync(d, 0o777);
+        } catch (e) {
+          console.warn(`[${PLUGIN_ID}] could not create/chmod directory ${d}: ${e}`);
+        }
+      }
+
+      state.grib = createGribSource(gribDir);
+      state.preferGrib = config.preferGrib;
+
+      const updateStatus = () => {
+        const parts: string[] = [];
+        if (state.data) {
+          const currents = state.data.stations.filter((s) => s.isCurrent).length;
+          parts.push(`${state.data.stations.length} stations (${currents} current)`);
+        }
+        const g = state.grib?.get();
+        if (g && g.slots.length > 0) {
+          parts.push(`${g.files.length} GRIB file(s), ${g.slots.length} forecast times`);
+        }
+        if (parts.length > 0) {
+          app.setPluginStatus(`Loaded ${parts.join(' + ')}`);
+        } else {
+          app.setPluginError(
+            `No current data: ${state.error ?? 'no harmonics pair'} and no GRIB2 files in ${gribDir}`,
+          );
+        }
+      };
 
       const attemptLoad = (): boolean => {
         try {
           const data: HarmonicsData = loadHarmonicsDir(dir);
           state.data = data;
           state.error = null;
-          const currents = data.stations.filter((s) => s.isCurrent).length;
-          app.setPluginStatus(
-            `Loaded ${data.stations.length} stations (${currents} current) from ${dir}`,
-          );
+          updateStatus();
           return true;
         } catch (e) {
           state.data = null;
           state.error = e instanceof Error ? e.message : String(e);
-          app.setPluginError(`Failed to load harmonics: ${state.error}`);
+          updateStatus();
           return false;
         }
       };
@@ -165,11 +254,18 @@ function pluginConstructor(app: any) {
             const pos = app.getSelfPath('navigation.position');
             const p = pos?.value ?? pos;
             if (typeof p?.latitude !== 'number' || typeof p?.longitude !== 'number') return;
-            const near = nearestCurrentStations(state.data!, p.latitude, p.longitude, 10)
-              .filter((n) => n.vectorCapable && n.distanceKm <= config.maxStationDistanceKm);
-            if (near.length === 0) return;
-            const sample = currentSampleAt(state.data!, near[0].station, Date.now());
-            if (!sample || sample.direction === null) return;
+            const resolved = resolveVector(
+              state,
+              p.latitude,
+              p.longitude,
+              Date.now(),
+              config.maxStationDistanceKm,
+            );
+            if (!resolved || resolved.sample.direction === null) return;
+            const origin =
+              resolved.source === 'grib'
+                ? 'GRIB2 forecast grid'
+                : `station: ${resolved.station!.name}, ${resolved.distanceKm} km`;
             deltaPublished = true;
             app.handleMessage(PLUGIN_ID, {
               updates: [
@@ -178,8 +274,8 @@ function pluginConstructor(app: any) {
                     {
                       path: 'environment.current',
                       value: {
-                        setTrue: sample.direction * DEG2RAD,
-                        drift: Math.abs(sample.speedKn) * 0.514444,
+                        setTrue: resolved.sample.direction * DEG2RAD,
+                        drift: Math.abs(resolved.sample.speedKn) * 0.514444,
                       },
                     },
                   ],
@@ -187,7 +283,7 @@ function pluginConstructor(app: any) {
                     {
                       path: 'environment.current',
                       value: {
-                        description: `Predicted tidal current (station: ${near[0].station.name}, ${near[0].distanceKm} km)`,
+                        description: `Predicted tidal current (${origin})`,
                       },
                     },
                   ],
@@ -224,6 +320,7 @@ function pluginConstructor(app: any) {
         deltaPublished = false;
       }
       state.data = null;
+      state.grib = null;
       state.error = 'stopped';
       app.setPluginStatus('Stopped');
     },
@@ -243,16 +340,17 @@ const openApiSpec = {
   openapi: '3.0.0',
   info: {
     title: 'Tidal Currents API',
-    version: '0.1.0',
+    version: '0.2.0',
     description:
-      'Tidal current predictions from OpenCPN/XTide harmonic files. ' +
-      'Signed speed is along the flood/ebb axis (+ = flood).',
+      'Tidal current predictions from OpenCPN/XTide harmonic files (station-based) and GRIB2 ' +
+      'current fields (gridded, positional). Station samples: signed speed along the flood/ebb ' +
+      'axis (+ = flood). GRIB samples: speed is a magnitude.',
   },
   paths: {
-    '/': { get: { summary: 'Dataset summary', responses: { '200': { description: 'OK' } } } },
+    '/': { get: { summary: 'Dataset summary (harmonics + GRIB sources)', responses: { '200': { description: 'OK' } } } },
     '/stations': {
       get: {
-        summary: 'Nearest current stations',
+        summary: 'Nearest current stations (harmonic source only)',
         parameters: [
           { name: 'latitude', in: 'query', required: true, schema: { type: 'number' } },
           { name: 'longitude', in: 'query', required: true, schema: { type: 'number' } },
@@ -280,15 +378,32 @@ const openApiSpec = {
         responses: { '200': { description: 'OK' } },
       },
     },
+    '/timeline': {
+      get: {
+        summary:
+          'Set/drift timeline at a position — per-sample source selection between the GRIB grids ' +
+          'and the nearest vector-capable station',
+        parameters: [
+          { name: 'latitude', in: 'query', required: true, schema: { type: 'number' } },
+          { name: 'longitude', in: 'query', required: true, schema: { type: 'number' } },
+          { name: 'start', in: 'query', schema: { type: 'string', format: 'date-time' } },
+          { name: 'end', in: 'query', schema: { type: 'string', format: 'date-time' } },
+          { name: 'step', in: 'query', schema: { type: 'integer', default: 10, description: 'minutes' } },
+        ],
+        responses: { '200': { description: 'OK' }, '404': { description: 'No source covers the position/window' } },
+      },
+    },
     '/vector': {
       get: {
-        summary: 'Set/drift vector at a position from the nearest usable station',
+        summary:
+          'Set/drift vector at a position (GRIB grid preferred, nearest usable station as fallback; ' +
+          'response `source` says which)',
         parameters: [
           { name: 'latitude', in: 'query', required: true, schema: { type: 'number' } },
           { name: 'longitude', in: 'query', required: true, schema: { type: 'number' } },
           { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
         ],
-        responses: { '200': { description: 'OK' }, '404': { description: 'No station in range' } },
+        responses: { '200': { description: 'OK' }, '404': { description: 'No coverage / no station in range' } },
       },
     },
   },

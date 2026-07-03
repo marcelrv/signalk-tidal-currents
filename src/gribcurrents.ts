@@ -1,0 +1,333 @@
+// SPDX-FileCopyrightText: 2026 Marcel Verpaalen
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Gridded tidal/ocean current source from GRIB2 files.
+ *
+ * Unlike the harmonic-station source, GRIB2 currents are FIELDS: u/v
+ * velocity components on a lat/lon grid, one grid per forecast time. There
+ * is no station concept — lookups are purely positional, with bilinear
+ * interpolation in space and linear interpolation in time between the two
+ * bracketing forecast fields.
+ *
+ * Accepted fields (GRIB2 discipline 10 "oceanographic", category 1
+ * "currents"):
+ *   param 2/3 — u/v components (m/s), the common encoding
+ *   param 0/1 — direction (°, direction TOWARD) / speed (m/s), converted
+ *               to u/v at load time
+ * When a file carries several depth levels, the shallowest is used.
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { Grib2Field, Grib2Grid, parseGrib2, sampleGrid } from './grib2.js';
+import { CurrentSample, KNOTS_TO_MS } from './predict.js';
+
+const DEG2RAD = Math.PI / 180;
+const RAD2DEG = 180 / Math.PI;
+
+/** How far outside the covered time range a lookup may clamp to the edge field. */
+export const GRIB_TIME_SLACK_MS = 3 * 3_600_000;
+
+/** One forecast time with matched u and v grids. */
+interface TimeSlot {
+  time: number; // ms epoch
+  grid: Grib2Grid;
+  u: Float64Array; // m/s east
+  v: Float64Array; // m/s north
+  depth: number; // m below surface (0 = surface), for reporting
+  file: string;
+}
+
+export interface GribCurrentsData {
+  dir: string;
+  files: string[];
+  slots: TimeSlot[]; // sorted by time
+  /** Reasons for anything skipped during parsing (surfaced in the summary). */
+  warnings: string[];
+}
+
+const GRIB_EXT_RE = /\.(grb2?|grib2?)$/i;
+
+function isCurrentField(f: Grib2Field): boolean {
+  return f.discipline === 10 && f.paramCategory === 1 && f.paramNumber >= 0 && f.paramNumber <= 3;
+}
+
+/** Surface types acceptable as "the surface current": water surface or a depth below it. */
+function fieldDepth(f: Grib2Field): number | null {
+  if (f.surfaceType === null || f.surfaceType === 1) return 0;
+  if (f.surfaceType === 160) return f.surfaceValue ?? 0; // depth below sea level, m
+  return null;
+}
+
+function sameGrid(a: Grib2Grid, b: Grib2Grid): boolean {
+  return (
+    a.ni === b.ni &&
+    a.nj === b.nj &&
+    Math.abs(a.lat0 - b.lat0) < 1e-9 &&
+    Math.abs(a.lon0 - b.lon0) < 1e-9 &&
+    Math.abs(a.di - b.di) < 1e-9 &&
+    Math.abs(a.dj - b.dj) < 1e-9
+  );
+}
+
+/** Pair u/v (or dir/speed) fields into time slots. */
+function buildSlots(fields: Grib2Field[], file: string, warnings: string[]): TimeSlot[] {
+  interface Bucket {
+    time: number;
+    depth: number;
+    grid: Grib2Grid;
+    byParam: Map<number, Grib2Field>;
+  }
+  const buckets: Bucket[] = [];
+  for (const f of fields) {
+    if (!isCurrentField(f)) continue;
+    const depth = fieldDepth(f);
+    if (depth === null) continue;
+    let b = buckets.find(
+      (x) => x.time === f.validTime && Math.abs(x.depth - depth) < 1e-6 && sameGrid(x.grid, f.grid),
+    );
+    if (!b) {
+      b = { time: f.validTime, depth, grid: f.grid, byParam: new Map() };
+      buckets.push(b);
+    }
+    b.byParam.set(f.paramNumber, f);
+  }
+
+  const slots: TimeSlot[] = [];
+  const byTime = new Map<number, Bucket[]>();
+  for (const b of buckets) {
+    const list = byTime.get(b.time) ?? [];
+    list.push(b);
+    byTime.set(b.time, list);
+  }
+  for (const [time, list] of byTime) {
+    // Prefer the shallowest level that yields a complete vector.
+    list.sort((a, b) => a.depth - b.depth);
+    let made = false;
+    for (const b of list) {
+      const u = b.byParam.get(2);
+      const v = b.byParam.get(3);
+      if (u && v) {
+        slots.push({ time, grid: b.grid, u: u.values, v: v.values, depth: b.depth, file });
+        made = true;
+        break;
+      }
+      const dir = b.byParam.get(0);
+      const spd = b.byParam.get(1);
+      if (dir && spd) {
+        const n = spd.values.length;
+        const uu = new Float64Array(n);
+        const vv = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+          const s = spd.values[i];
+          const d = dir.values[i] * DEG2RAD; // direction TOWARD (oceanographic)
+          uu[i] = s * Math.sin(d);
+          vv[i] = s * Math.cos(d);
+        }
+        slots.push({ time, grid: b.grid, u: uu, v: vv, depth: b.depth, file });
+        made = true;
+        break;
+      }
+    }
+    if (!made) {
+      warnings.push(
+        `${path.basename(file)}: current field(s) at ${new Date(time).toISOString()} lack a matching u/v or dir/speed pair`,
+      );
+    }
+  }
+  return slots;
+}
+
+/** Parse every GRIB2 file in a directory into a time-sorted current dataset. */
+export function loadGribDir(dir: string): GribCurrentsData | null {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir).filter((f) => GRIB_EXT_RE.test(f));
+  } catch {
+    return null; // directory absent — GRIB source simply not configured
+  }
+  if (entries.length === 0) return null;
+
+  const warnings: string[] = [];
+  const slots: TimeSlot[] = [];
+  const files: string[] = [];
+  for (const name of entries.sort()) {
+    const full = path.join(dir, name);
+    try {
+      const { fields, skipped } = parseGrib2(fs.readFileSync(full));
+      for (const s of skipped) warnings.push(`${name}: ${s}`);
+      const fileSlots = buildSlots(fields, name, warnings);
+      if (fileSlots.length > 0) {
+        slots.push(...fileSlots);
+        files.push(name);
+      } else if (fields.length > 0) {
+        warnings.push(`${name}: no ocean-current fields (discipline 10, category 1) found`);
+      }
+    } catch (e) {
+      warnings.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (slots.length === 0) {
+    return { dir, files, slots: [], warnings };
+  }
+  slots.sort((a, b) => a.time - b.time);
+  // Duplicate valid times across files: keep the one from the later file
+  // (sorted scan above), assuming newer downloads supersede older ones.
+  const dedup: TimeSlot[] = [];
+  for (const s of slots) {
+    const last = dedup[dedup.length - 1];
+    if (last && last.time === s.time && Math.abs(last.depth - s.depth) < 1e-6) dedup[dedup.length - 1] = s;
+    else dedup.push(s);
+  }
+  return { dir, files, slots: dedup, warnings };
+}
+
+function sampleSlot(slot: TimeSlot, lat: number, lon: number): { u: number; v: number } | null {
+  const u = sampleGrid(slot.grid, slot.u, lat, lon);
+  const v = sampleGrid(slot.grid, slot.v, lat, lon);
+  if (u === null || v === null) return null;
+  return { u, v };
+}
+
+/**
+ * Interpolated current vector at a position/time, or null when the position
+ * is outside every grid (or on land) or the time is outside the covered
+ * range by more than GRIB_TIME_SLACK_MS.
+ *
+ * Unlike station samples, `speedKn` is a magnitude (there is no flood/ebb
+ * axis in gridded data — the sign convention does not apply).
+ */
+export function gribVectorAt(
+  data: GribCurrentsData,
+  lat: number,
+  lon: number,
+  timeMs: number,
+): CurrentSample | null {
+  const slots = data.slots;
+  if (slots.length === 0) return null;
+  if (timeMs < slots[0].time - GRIB_TIME_SLACK_MS) return null;
+  if (timeMs > slots[slots.length - 1].time + GRIB_TIME_SLACK_MS) return null;
+
+  // Bracketing slots (binary search).
+  let lo = 0;
+  let hi = slots.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (slots[mid].time <= timeMs) lo = mid;
+    else hi = mid - 1;
+  }
+  const s0 = slots[lo];
+  const s1 = slots[Math.min(lo + 1, slots.length - 1)];
+
+  const a = sampleSlot(s0, lat, lon);
+  const b = s1 === s0 ? a : sampleSlot(s1, lat, lon);
+  let u: number;
+  let v: number;
+  if (a && b && s1.time > s0.time && timeMs >= s0.time) {
+    const w = Math.min(1, (timeMs - s0.time) / (s1.time - s0.time));
+    u = a.u * (1 - w) + b.u * w;
+    v = a.v * (1 - w) + b.v * w;
+  } else if (a ?? b) {
+    ({ u, v } = (a ?? b)!);
+  } else {
+    return null;
+  }
+
+  const speedMs = Math.hypot(u, v);
+  const direction = speedMs > 1e-6 ? ((Math.atan2(u, v) * RAD2DEG) % 360 + 360) % 360 : 0;
+  return {
+    time: new Date(timeMs).toISOString(),
+    speedKn: Math.round((speedMs / KNOTS_TO_MS) * 100) / 100,
+    direction: Math.round(direction * 10) / 10,
+    u: Math.round(u * 1000) / 1000,
+    v: Math.round(v * 1000) / 1000,
+  };
+}
+
+/** Coverage summary for the dataset endpoint / plugin status. */
+export function gribSummary(data: GribCurrentsData): Record<string, unknown> {
+  if (data.slots.length === 0) {
+    return { dir: data.dir, files: data.files, fields: 0, warnings: data.warnings };
+  }
+  const g = data.slots[0].grid;
+  const lonWest = ((g.lon0 + 180) % 360 + 360) % 360 - 180;
+  const lonEastRaw = g.lon0 + (g.ni - 1) * g.di;
+  const lonEast = ((lonEastRaw + 180) % 360 + 360) % 360 - 180;
+  return {
+    dir: data.dir,
+    files: data.files,
+    fields: data.slots.length,
+    timeRange: {
+      start: new Date(data.slots[0].time).toISOString(),
+      end: new Date(data.slots[data.slots.length - 1].time).toISOString(),
+    },
+    boundingBox: {
+      latMin: Math.round(Math.min(g.lat0, g.lat0 + (g.nj - 1) * g.dj) * 1e4) / 1e4,
+      latMax: Math.round(Math.max(g.lat0, g.lat0 + (g.nj - 1) * g.dj) * 1e4) / 1e4,
+      lonWest: Math.round(lonWest * 1e4) / 1e4,
+      lonEast: Math.round(lonEast * 1e4) / 1e4,
+    },
+    resolutionDeg: Math.round(g.di * 1e4) / 1e4,
+    warnings: data.warnings,
+  };
+}
+
+/**
+ * Lazily(re)loading GRIB source: re-stats the directory at most every
+ * `checkIntervalMs` and reloads when the file set (name/size/mtime) changed,
+ * so dropping a fresh forecast file in requires no plugin restart.
+ */
+export interface GribSource {
+  get(): GribCurrentsData | null;
+  /** Set when the last load attempt failed outright. */
+  readonly error: string | null;
+}
+
+export function createGribSource(dir: string, checkIntervalMs = 60_000): GribSource {
+  let data: GribCurrentsData | null = null;
+  let signature = '';
+  let lastCheck = -Infinity;
+  let error: string | null = null;
+
+  const currentSignature = (): string => {
+    try {
+      return fs
+        .readdirSync(dir)
+        .filter((f) => GRIB_EXT_RE.test(f))
+        .sort()
+        .map((f) => {
+          const st = fs.statSync(path.join(dir, f));
+          return `${f}:${st.size}:${st.mtimeMs}`;
+        })
+        .join('|');
+    } catch {
+      return '';
+    }
+  };
+
+  return {
+    get(): GribCurrentsData | null {
+      const now = Date.now();
+      if (now - lastCheck >= checkIntervalMs) {
+        lastCheck = now;
+        const sig = currentSignature();
+        if (sig !== signature) {
+          signature = sig;
+          try {
+            data = loadGribDir(dir);
+            error = null;
+          } catch (e) {
+            data = null;
+            error = e instanceof Error ? e.message : String(e);
+          }
+        }
+      }
+      return data;
+    },
+    get error(): string | null {
+      return error;
+    },
+  };
+}

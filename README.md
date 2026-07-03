@@ -1,13 +1,16 @@
-<p align="center">
-  <img src="img/icon.svg" width="96" alt="signalk-tidal-currents icon" />
-</p>
+![signalk-tidal-currents icon](img/icon.svg)
 
 # signalk-tidal-currents
 
 A [Signal K](https://signalk.org) server plugin that predicts **tidal currents**
-(set & drift) from OpenCPN/XTide legacy ASCII harmonic files — the
-`HARMONIC` + `HARMONIC.IDX` pair used by OpenCPN and the classic DOS tide
-programs.
+(set & drift) from two kinds of sources:
+
+- OpenCPN/XTide legacy ASCII harmonic files — the `HARMONIC` +
+  `HARMONIC.IDX` pair used by OpenCPN and the classic DOS tide programs
+  (station-based harmonic prediction), and
+- **GRIB2 files** with gridded current fields (u/v velocity components from
+  ocean/tidal models) — positional lookups with bilinear interpolation in
+  space and linear interpolation in time; no stations involved.
 
 Unlike tide-height plugins (e.g. the excellent
 [signalk-tides](https://github.com/bkeepers/signalk-tides)), this plugin is
@@ -25,13 +28,22 @@ showing predicted set/drift on instruments.
   offsets, multipliers and **flood/ebb directions**).
 - Robust against real-world community files (ragged records, `x`
   placeholders, backtick minus signs, ISO-8859-1 accents).
+- Parses **GRIB2 current fields** with a built-in dependency-free decoder
+  (regular lat/lon grids; simple and complex packing incl. spatial
+  differencing; bitmaps for land masking). Accepts u/v component fields
+  (the common encoding) and direction/speed fields. New files dropped into
+  the GRIB directory are picked up automatically — no restart needed.
+- **Source selection**: when both a GRIB grid and a harmonic station cover
+  a position, the GRIB forecast wins (configurable); stations are the
+  fallback outside GRIB coverage or beyond the GRIB time range. The
+  harmonics-only limitation that reference stations carry **no direction**
+  does not apply to GRIB data — grids are always vector-capable.
 - **Signal K v1 data model**: publishes `environment.current`
-  (`setTrue` rad / `drift` m/s) predicted at the vessel position from the
-  nearest vector-capable station.
+  (`setTrue` rad / `drift` m/s) predicted at the vessel position.
 - **v2-style REST API** at `/signalk/v2/api/currents` (also mirrored at the
   v1 plugin path `/plugins/signalk-tidal-currents`): station search by
-  position, per-station set/drift timelines, point vector lookup. OpenAPI
-  spec included (Admin UI → Documentation → OpenAPI).
+  position, station and **position timelines**, point vector lookup.
+  OpenAPI spec included (Admin UI → Documentation → OpenAPI).
 
 ## Which Signal K API — v1 or v2?
 
@@ -49,8 +61,10 @@ Both, deliberately:
 ## Data files
 
 Point the plugin at a directory containing a `HARMONIC` + `HARMONIC.IDX`
-pair (plugin config → *Harmonics Data Directory*; defaults to
-`<server config dir>/tcdata`).
+pair (plugin config → *Harmonics Data Directory*; defaults to a `tcdata`
+subdirectory of this plugin's own data directory,
+`<server config dir>/plugin-config-data/signalk-tidal-currents/tcdata`
+— Signal K's standard per-plugin storage location).
 
 **Auto-download (default: on)**: with *Auto-download OpenCPN standard data*
 enabled (plugin config), the plugin fetches OpenCPN's `HARMONICS_NO_US` (+
@@ -88,9 +102,37 @@ Where to get data manually:
   single canonical URL — search for "HARMONICS V10" or ask in the OpenCPN
   community.
 
+### GRIB2 current files
+
+Drop GRIB2 files (`*.grb2`, `*.grib2`, `*.grb`, `*.grib`) containing
+current fields into the GRIB directory (plugin config → *GRIB2 Data
+Directory*; defaults to a `grib` subdirectory of this plugin's own data
+directory — independent of the Harmonics Data Directory setting, so
+pointing the latter at an external OpenCPN folder doesn't relocate the
+GRIB2 default there too). The directory is re-scanned about once a
+minute, so downloading a fresh forecast file into it takes effect without
+a restart.
+
+What the plugin looks for inside the files:
+
+- **Ocean-current fields**: GRIB2 discipline 10 (oceanographic products),
+  category 1 (currents) — either u/v components (parameters 2/3, the usual
+  encoding) or direction/speed (parameters 0/1).
+- **Surface level** (or depth-below-sea-level; the shallowest level wins).
+- Regular latitude/longitude grids, simple or complex packing (with or
+  without spatial differencing) — what the common sources produce.
+  JPEG2000-packed files (some NOAA products) are not supported; most GRIB
+  delivery services (Saildocs, XyGrib, qtVlm, Expedition) provide
+  currents in the supported packings.
+
+Typical sources of current GRIBs: Saildocs (`RTOFS` requests), XyGrib/
+openSkiron, qtVlm's download service, national met/hydrographic services,
+or commercial weather routing providers.
+
 > ⚠️ **Disclaimer**: community harmonic data is not official hydrographic
-> data (the V10 bundle explicitly notes it is *not* from SHOM). Subordinate
-> station predictions use the classic offset/multiplier approximation.
+> data. Subordinate
+> station predictions use the classic offset/multiplier approximation, and
+> GRIB currents are model forecasts with their own errors.
 > Treat all output as estimates — never as your sole source for navigation.
 
 ## REST API
@@ -100,11 +142,19 @@ Base: `/signalk/v2/api/currents` (same routes at
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /` | Dataset summary (station counts, year range, source) |
-| `GET /stations?latitude=&longitude=&limit=` | Nearest current stations, closest first |
+| `GET /` | Dataset summary for both sources (stations, GRIB coverage/time range) |
+| `GET /stations?latitude=&longitude=&limit=` | Nearest current stations, closest first (harmonics only) |
 | `GET /stations/{id}` | Station metadata incl. flood/ebb directions and offsets |
-| `GET /stations/{id}/timeline?start=&end=&step=` | Set/drift series (default 24 h, 10-min step) |
-| `GET /vector?latitude=&longitude=&time=` | Set/drift vector from the nearest vector-capable station |
+| `GET /stations/{id}/timeline?start=&end=&step=` | Set/drift series for one station (default 24 h, 10-min step) |
+| `GET /timeline?latitude=&longitude=&start=&end=&step=` | Set/drift series at a **position** — per-sample source selection (GRIB / station) |
+| `GET /vector?latitude=&longitude=&time=` | Set/drift vector at a position (GRIB preferred, station fallback) |
+
+**Stations vs positions**: station endpoints only make sense for the
+harmonic source — GRIB data has no stations, so GRIB-backed lookups are
+purely positional (`/vector`, `/timeline`). `/vector` and `/timeline`
+report which source produced each answer (`source` field; per-sample in
+`/timeline`, so a window extending past the GRIB forecast horizon degrades
+to station data sample-by-sample rather than failing).
 
 **"Vector-capable" stations**: reference current stations in the XTide ASCII
 format only carry a signed speed (harmonic constituents in knots) — they're
@@ -148,10 +198,12 @@ is still available via `/stations/{id}/timeline`.
 ]
 ```
 
-`GET /vector?latitude=52.0&longitude=4.7`:
+`GET /vector?latitude=52.0&longitude=4.7` (station fallback; with GRIB
+coverage `source` is `"grib"` and `station` is `null`):
 
 ```json
 {
+  "source": "station",
   "station": {
     "id": "texel-noorderhaaks",
     "name": "Texel, Noorderhaaks",
@@ -185,15 +237,25 @@ Timeline sample entry:
 }
 ```
 
+Note on `speedKn`: for **station** samples it is signed along the
+flood/ebb axis (+ = flood); for **GRIB** samples there is no flood/ebb
+axis, so it is simply the current's magnitude (`direction`/`u`/`v` carry
+the vector either way).
+
 ## Plugin configuration
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Harmonics Data Directory | `<config>/tcdata` | Folder with `HARMONIC` + `HARMONIC.IDX` |
+| Harmonics Data Directory | `<plugin data dir>/tcdata` | Folder with `HARMONIC` + `HARMONIC.IDX` |
+| GRIB2 Data Directory | `<plugin data dir>/grib` | Folder scanned for GRIB2 current files, independent of Harmonics Data Directory (see [GRIB2 current files](#grib2-current-files)) |
+| Prefer GRIB over stations | `true` | Use the GRIB forecast when both sources cover a position |
 | Publish environment.current | `true` | Emit deltas at the vessel position |
 | Delta Update Period | `60 s` | How often to re-predict |
-| Max Station Distance | `15 km` | Don't publish when no station is nearby |
+| Max Station Distance | `15 km` | Don't publish from a station when none is nearby (GRIB coverage is not distance-limited) |
 | Auto-download OpenCPN standard data | `true` | Fetch/refresh OpenCPN's `HARMONICS_NO_US` pair into the data directory (see [Data files](#data-files)) |
+
+`<plugin data dir>` is Signal K's standard per-plugin storage location:
+`<server config dir>/plugin-config-data/signalk-tidal-currents`.
 
 ## Roadmap
 
@@ -201,15 +263,20 @@ Timeline sample entry:
   the NOAA/US data. The format is public domain with a written spec, but no
   maintained JS decoder exists yet; this needs a port of libtcd's
   bit-unpacking.
+- GRIB2 JPEG2000 (template 5.40) packing — needs a JS JPEG2000 codec.
 - Interpolation between stations; harmonic subordinate handling refinements.
 
 ## Development
 
-No local Node.js required — everything runs via Docker (see `AGENTS.md`):
-
 ```bash
-docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$(pwd):/work" -w /work node:22 sh -c "npm install && npm test"
+npm install
+npm test   # builds and runs the node:test suite (no extra tooling needed)
 ```
+
+CI runs the shared
+[SignalK plugin-ci workflow](https://github.com/SignalK/signalk-server/blob/master/.github/workflows/plugin-ci.yml)
+across Linux (x64/arm64), macOS and Windows; the results appear on the
+plugin's App Store *Indicators* tab.
 
 ## Acknowledgements & licensing
 
@@ -217,6 +284,10 @@ docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$(pwd):/work" -w /work n
   [XTide](https://flaterco.com/xtide/) ASCII harmonics format and OpenCPN's
   documentation of it. The parser here is an independent reimplementation
   (OpenCPN's own parser is GPLv2 and was used as a *format reference only*).
+- The GRIB2 decoder is likewise an independent implementation from the WMO
+  FM 92 specification and NCEP's public template documentation (no code
+  from wgrib2/g2c/eccodes); it was validated against eccodes output on
+  real NCEP files.
 - This plugin is licensed under the **Apache License 2.0**. Source files
   carry SPDX headers.
 - Harmonic data files are **not** included — their licenses/provenance vary;

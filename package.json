@@ -1,7 +1,7 @@
 {
   "name": "signalk-tidal-currents",
-  "version": "0.1.0",
-  "description": "Tidal current predictions from OpenCPN/XTide harmonic files (HARMONIC/HARMONIC.IDX) — publishes environment.current and a station/timeline REST API",
+  "version": "0.2.0",
+  "description": "Tidal current predictions from OpenCPN/XTide harmonic files (HARMONIC/HARMONIC.IDX) and GRIB2 current fields — publishes environment.current and a station/position/timeline REST API",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "tsc && rm -rf dist-test && tsc -p tsconfig.test.json && cp -r test/fixtures dist-test/fixtures && node --test 'dist-test/*.test.js'",
+    "test": "tsc && node -e \"require('fs').rmSync('dist-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node -e \"require('fs').cpSync('test/fixtures','dist-test/fixtures',{recursive:true})\" && node --test \"dist-test/*.test.js\"",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -24,7 +24,9 @@
     "tidal-currents",
     "xtide",
     "opencpn",
-    "harmonics"
+    "harmonics",
+    "grib",
+    "grib2"
   ],
   "signalk": {
     "displayName": "Tidal Currents",
@@ -35,7 +37,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/marcelrv/signalk-tidal-currents"
+    "url": "git+https://github.com/marcelrv/signalk-tidal-currents.git"
   },
   "bugs": {
     "url": "https://github.com/marcelrv/signalk-tidal-currents/issues"
@@ -48,6 +50,7 @@
     "dist",
     "img",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "devDependencies": {
