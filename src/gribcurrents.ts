@@ -246,6 +246,86 @@ export function gribVectorAt(
   };
 }
 
+export interface GridSample {
+  latitude: number;
+  longitude: number;
+  speedKn: number;
+  direction: number;
+  u: number;
+  v: number;
+}
+
+/**
+ * Current vectors within a bounding box, for a map's flow-field overlay
+ * (there is no station concept in gridded data, so this is the only way to
+ * show GRIB coverage beyond a single point).
+ *
+ * Samples are chosen from the source grid's own fixed (i, j) lattice —
+ * never at bbox-relative offsets — specifically so a given physical point
+ * always lands at the same lat/lon. Otherwise, since the bbox is the map
+ * viewport, every pan/zoom would shift the sampling phase and the arrows
+ * would appear to jump to unrelated positions instead of the same current
+ * field just being panned/zoomed with the map. `stride` (spacing between
+ * sampled grid indices) is chosen to target roughly `maxPoints` samples
+ * over the box and is snapped to multiples of itself, so panning at a
+ * fixed stride reveals/hides points from one stable lattice, and only
+ * zooming across a stride change re-grids (coarser/finer), like a tile
+ * pyramid. Points with no coverage (land, outside the grid, outside the
+ * time slack) are omitted, so the result can be smaller than `maxPoints`.
+ */
+export function gribGridSamples(
+  data: GribCurrentsData,
+  bbox: { west: number; south: number; east: number; north: number },
+  timeMs: number,
+  maxPoints = 400,
+): GridSample[] {
+  if (data.slots.length === 0) return [];
+  const grid = data.slots[0].grid;
+
+  const lonIndex = (lon: number): number => {
+    const fx = (((lon - grid.lon0) % 360) + 360) % 360;
+    return fx / grid.di;
+  };
+  let iMinF = lonIndex(bbox.west);
+  let iMaxF = lonIndex(bbox.east);
+  if (iMaxF < iMinF) iMaxF += 360 / grid.di; // bbox straddles the grid's lon0 wrap point
+  const iMin = Math.max(0, Math.floor(iMinF));
+  const iMax = Math.min(grid.ni - 1, Math.ceil(iMaxF));
+  const jMin = Math.max(0, Math.floor((bbox.south - grid.lat0) / grid.dj));
+  const jMax = Math.min(grid.nj - 1, Math.ceil((bbox.north - grid.lat0) / grid.dj));
+  if (iMax < iMin || jMax < jMin) return [];
+
+  const iCount = iMax - iMin + 1;
+  const jCount = jMax - jMin + 1;
+  const stride = Math.max(1, Math.ceil(Math.sqrt((iCount * jCount) / maxPoints)));
+  // Snap the start to a multiple of stride so the chosen indices are the
+  // same regardless of where iMin/jMin happen to fall for this viewport.
+  const iStart = Math.ceil(iMin / stride) * stride;
+  const jStart = Math.ceil(jMin / stride) * stride;
+
+  const points: GridSample[] = [];
+  for (let j = jStart; j <= jMax; j += stride) {
+    const lat = grid.lat0 + j * grid.dj;
+    for (let i = iStart; i <= iMax; i += stride) {
+      const lonRaw = grid.lon0 + i * grid.di;
+      const lon = ((lonRaw + 180) % 360 + 360) % 360 - 180;
+      const sample = gribVectorAt(data, lat, lon, timeMs);
+      if (sample && sample.u !== null && sample.v !== null) {
+        points.push({
+          latitude: Math.round(lat * 1e4) / 1e4,
+          longitude: Math.round(lon * 1e4) / 1e4,
+          speedKn: sample.speedKn,
+          direction: sample.direction ?? 0,
+          u: sample.u,
+          v: sample.v,
+        });
+        if (points.length >= maxPoints) return points;
+      }
+    }
+  }
+  return points;
+}
+
 /** Coverage summary for the dataset endpoint / plugin status. */
 export function gribSummary(data: GribCurrentsData): Record<string, unknown> {
   if (data.slots.length === 0) {

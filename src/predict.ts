@@ -182,3 +182,31 @@ export function nearestCurrentStations(
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, limit);
 }
+
+/**
+ * All current stations inside a lat/lon bounding box (no distance sort or
+ * nearest-N cutoff — the point is to cover every station a map viewport can
+ * see, not just the closest handful to one reference point). `limit` is
+ * still applied as a safety cap on the response size.
+ */
+export function stationsInBbox(
+  data: HarmonicsData,
+  west: number,
+  south: number,
+  east: number,
+  north: number,
+  limit: number = 500,
+): Array<{ station: IdxStation; vectorCapable: boolean }> {
+  const result: Array<{ station: IdxStation; vectorCapable: boolean }> = [];
+  for (const s of data.stations) {
+    if (!s.isCurrent) continue;
+    if (s.latitude < south || s.latitude > north || s.longitude < west || s.longitude > east) continue;
+    if (currentSpeedAt(data, s, Date.now()) === null) continue;
+    result.push({
+      station: s,
+      vectorCapable: !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null),
+    });
+    if (result.length >= limit) break;
+  }
+  return result;
+}

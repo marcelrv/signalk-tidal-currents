@@ -64,7 +64,18 @@ sources: OpenCPN/XTide legacy ASCII harmonic files (`HARMONIC` +
   `/timeline` (positional) selects the source **per sample** so windows
   past the GRIB horizon degrade to stations. Station endpoints stay
   harmonics-only. `speedKn` is signed for station samples, a magnitude
-  for GRIB samples.
+  for GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
+  `?latitude=&longitude=` form) returns **every** current station inside
+  a viewport, capped at `limit` (default/max 500) — no distance sort,
+  since there's no single reference point. `/grid?bbox=…` is the gridded
+  equivalent for GRIB coverage (`gribGridSamples()` in `gribcurrents.ts`):
+  samples are chosen from the source grid's own fixed (i, j) index
+  lattice at a stride targeting `maxPoints` (never finer than native
+  resolution) — **not** at bbox-relative offsets, so a given physical
+  point always lands at the same lat/lon and panning/zooming a map
+  doesn't reshuffle the arrows' positions. Both `/stations?bbox=` and
+  `/grid?bbox=` exist so a map can show full-viewport current coverage
+  instead of a fixed nearest-N station list.
 - `src/index.ts` — plugin entry. Publishes `environment.current` deltas
   (v1 data model) via `resolveVector` (GRIB not distance-limited;
   stations within `maxStationDistanceKm`). Both **named and default

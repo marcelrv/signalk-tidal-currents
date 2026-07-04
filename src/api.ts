@@ -14,19 +14,22 @@
  *
  * Endpoints:
  *   GET /                       — dataset summary (both sources)
- *   GET /stations?latitude=&longitude=[&limit=]   — nearest current stations (harmonics only)
+ *   GET /stations?latitude=&longitude=[&limit=]    — nearest current stations (harmonics only)
+ *   GET /stations?bbox=w,s,e,n[&limit=]             — every current station inside a viewport (harmonics only)
  *   GET /stations/:id           — station metadata
  *   GET /stations/:id/timeline?start=&end=[&step=] — signed speed + set/drift
  *   GET /timeline?latitude=&longitude=[&start=&end=&step=] — position timeline (GRIB and/or station)
  *   GET /vector?latitude=&longitude=[&time=]       — vector at a position (GRIB preferred, station fallback)
+ *   GET /grid?bbox=w,s,e,n[&time=&maxPoints=]      — sampled GRIB vector field over a viewport (GRIB only)
  */
 
-import { GribSource, gribSummary, gribVectorAt } from './gribcurrents.js';
+import { GribSource, gribGridSamples, gribSummary, gribVectorAt } from './gribcurrents.js';
 import { HarmonicsData, IdxStation } from './harmonics.js';
 import {
   CurrentSample,
   currentSampleAt,
   nearestCurrentStations,
+  stationsInBbox,
   timeline,
 } from './predict.js';
 
@@ -123,6 +126,23 @@ function parsePosition(req: Req, res: Res): { lat: number; lon: number } | null 
   return { lat, lon };
 }
 
+function parseBbox(
+  req: Req,
+  res: Res,
+): { west: number; south: number; east: number; north: number } | null {
+  const parts = String(req.query.bbox ?? '').split(',').map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+    res.status(400).json({ error: 'bbox query parameter must be "west,south,east,north"' });
+    return null;
+  }
+  const [west, south, east, north] = parts;
+  if (south >= north || west >= east) {
+    res.status(400).json({ error: 'bbox must have south < north and west < east' });
+    return null;
+  }
+  return { west, south, east, north };
+}
+
 function parseWindow(
   req: Req,
   res: Res,
@@ -189,6 +209,20 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
 
   router.get('/stations', (req, res) => {
     if (stationsNotReady(res)) return;
+
+    // bbox mode: every station in a map viewport, not just the nearest few
+    // to a single reference point.
+    if (req.query.bbox !== undefined) {
+      const bbox = parseBbox(req, res);
+      if (!bbox) return;
+      const limit = Math.min(500, parseInt(String(req.query.limit), 10) || 500);
+      const result = stationsInBbox(state.data!, bbox.west, bbox.south, bbox.east, bbox.north, limit).map(
+        (n) => stationInfo(n.station, { vectorCapable: n.vectorCapable }),
+      );
+      res.json(result);
+      return;
+    }
+
     const pos = parsePosition(req, res);
     if (!pos) return;
     const limit = Math.min(50, parseInt(String(req.query.limit), 10) || 10);
@@ -301,5 +335,26 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
         : null,
       sample: resolved.sample,
     });
+  });
+
+  // Sampled GRIB vector field over a viewport — the gridded-data equivalent
+  // of /stations?bbox=…, for maps that want current arrows even away from
+  // harmonic station locations.
+  router.get('/grid', (req, res) => {
+    const g = gribData();
+    if (!g) {
+      res.status(503).json({ error: 'no GRIB current field loaded' });
+      return;
+    }
+    const bbox = parseBbox(req, res);
+    if (!bbox) return;
+    const time = req.query.time ? Date.parse(String(req.query.time)) : Date.now();
+    if (!Number.isFinite(time)) {
+      res.status(400).json({ error: 'invalid time — expected ISO 8601' });
+      return;
+    }
+    const maxPoints = Math.min(2000, Math.max(1, parseInt(String(req.query.maxPoints), 10) || 400));
+    const points = gribGridSamples(g, bbox, time, maxPoints);
+    res.json({ time: new Date(time).toISOString(), units: { speedKn: 'knots (magnitude)', u: 'm/s east', v: 'm/s north' }, points });
   });
 }

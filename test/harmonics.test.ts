@@ -12,6 +12,7 @@ import {
   currentSpeedAt,
   nearestCurrentStations,
   predictReference,
+  stationsInBbox,
 } from '../dist/predict.js';
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -101,6 +102,30 @@ test('nearest station search filters and sorts', () => {
   assert.equal(near[0].vectorCapable, true);
   const ref = near.find((n) => n.station.name === 'Test Ref, Courants')!;
   assert.equal(ref.vectorCapable, false); // reference has no flood/ebb axis
+});
+
+test('bbox search returns every current station in view, unsorted by distance', () => {
+  // Box covers all three current stations (5.1-5.3, 53.1-53.3) but excludes
+  // the two height stations (5.0/53.0 and 5.4/53.4).
+  const inBox = stationsInBbox(data, 5.05, 53.05, 5.35, 53.35, 500);
+  assert.equal(inBox.length, 3);
+  assert.deepEqual(
+    inBox.map((n) => n.station.name).sort(),
+    ['Test Meridian, Courants', 'Test Ref, Courants', 'Test Sub, Courants'],
+  );
+  const sub = inBox.find((n) => n.station.name === 'Test Sub, Courants')!;
+  assert.equal(sub.vectorCapable, true);
+
+  // A tight box around just the subordinate station.
+  const narrow = stationsInBbox(data, 5.15, 53.15, 5.25, 53.25, 500);
+  assert.equal(narrow.length, 1);
+  assert.equal(narrow[0].station.name, 'Test Sub, Courants');
+
+  // limit caps the result even when more stations are in view.
+  assert.equal(stationsInBbox(data, 5.05, 53.05, 5.35, 53.35, 1).length, 1);
+
+  // Empty box far away.
+  assert.equal(stationsInBbox(data, 0, 0, 1, 1, 500).length, 0);
 });
 
 test('utility functions', () => {

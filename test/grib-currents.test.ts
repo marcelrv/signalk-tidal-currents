@@ -232,6 +232,69 @@ test('GET /timeline works GRIB-only (no harmonics loaded)', () => {
   assert.equal(call('/stations', { latitude: 53, longitude: 5 }).code, 503);
 });
 
+test('GET /stations?bbox= returns every station in the viewport', () => {
+  const call = makeApi(apiState());
+  // Covers all three fixture current stations (5.1-5.3E, 53.1-53.3N).
+  const r = call('/stations', { bbox: '5.05,53.05,5.35,53.35' });
+  assert.equal(r.code, 200);
+  assert.equal(r.body.length, 3);
+  const sub = r.body.find((s: { name: string }) => s.name === 'Test Sub, Courants');
+  assert.equal(sub.vectorCapable, true);
+  assert.equal(sub.distanceKm, undefined); // no reference point in bbox mode
+
+  // A narrower box only sees the subordinate station.
+  const narrow = call('/stations', { bbox: '5.15,53.15,5.25,53.25' });
+  assert.equal(narrow.body.length, 1);
+  assert.equal(narrow.body[0].name, 'Test Sub, Courants');
+
+  // Malformed bbox → 400.
+  assert.equal(call('/stations', { bbox: '5,53,not-a-number,54' }).code, 400);
+  assert.equal(call('/stations', { bbox: '10,53,5,54' }).code, 400); // west >= east
+});
+
+test('GET /grid samples the GRIB vector field over a bbox', () => {
+  const call = makeApi(apiState());
+  const r = call('/grid', {
+    bbox: '5.0,53.0,5.4,53.4',
+    time: new Date(T0).toISOString(),
+    maxPoints: '25',
+  });
+  assert.equal(r.code, 200);
+  assert.ok(r.body.points.length > 0);
+  assert.ok(r.body.points.length <= 25);
+  for (const p of r.body.points) {
+    assert.ok(p.latitude >= 53.0 && p.latitude <= 53.4);
+    assert.ok(p.longitude >= 5.0 && p.longitude <= 5.4);
+    assert.ok(Math.abs(p.u - 1.0) < 1e-6); // uniform field at T0
+  }
+
+  // Missing bbox → 400.
+  assert.equal(call('/grid', { time: new Date(T0).toISOString() }).code, 400);
+
+  // No GRIB loaded → 503.
+  const noGrib = makeApi({ data: harmonics, error: null, grib: null, preferGrib: true });
+  assert.equal(noGrib('/grid', { bbox: '5.0,53.0,5.4,53.4' }).code, 503);
+});
+
+test('GET /grid anchors samples to a fixed lattice — panning does not shift them', () => {
+  // Two overlapping viewports at the same zoom (same maxPoints/area ratio),
+  // as if the user panned the map slightly. A point present in both
+  // viewports must land at the *exact* same lat/lon in both responses —
+  // otherwise every pan would re-phase the sampling grid and the arrows
+  // would appear to jump around instead of staying put.
+  const call = makeApi(apiState());
+  const time = new Date(T0).toISOString();
+  const a = call('/grid', { bbox: '4.9,52.9,5.3,53.3', time, maxPoints: '16' });
+  const b = call('/grid', { bbox: '5.0,53.0,5.4,53.4', time, maxPoints: '16' });
+  assert.ok(a.body.points.length > 0 && b.body.points.length > 0);
+
+  const key = (p: { latitude: number; longitude: number }) => `${p.latitude},${p.longitude}`;
+  const aPoints = new Set(a.body.points.map(key));
+  const bPoints = new Set(b.body.points.map(key));
+  const shared = [...aPoints].filter((k) => bPoints.has(k));
+  assert.ok(shared.length > 0, 'overlapping viewports should share at least one identical sample point');
+});
+
 test('GET /timeline 404s when nothing covers the window', () => {
   const state: ApiState = { data: null, error: 'nope', grib: createGribSource(uvDir, 0), preferGrib: true };
   const call = makeApi(state);
