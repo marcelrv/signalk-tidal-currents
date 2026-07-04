@@ -1,9 +1,10 @@
 # AGENTS.md — signalk-tidal-currents
 
-Signal K server plugin predicting tidal currents (set/drift) from two
+Signal K server plugin predicting tidal currents (set/drift) from three
 sources: OpenCPN/XTide legacy ASCII harmonic files (`HARMONIC` +
-`HARMONIC.IDX`, station-based) and GRIB2 gridded current fields
-(positional — no station concept).
+`HARMONIC.IDX`, station-based), GRIB2 gridded current fields (positional —
+no station concept), and UTCEF datasets (`*.utcef[.gz]`, station-based 2D
+harmonic currents — see `specs/utcef-specification.md` in `router-data`).
 
 ## Toolchain rules (repo-wide, not machine-specific)
 
@@ -57,14 +58,34 @@ sources: OpenCPN/XTide legacy ASCII harmonic files (`HARMONIC` +
   coastlines) and linear in time (±3 h clamp slack at the range edges).
   `createGribSource(dir)` re-stats the dir at most 1×/min and reloads on
   file-set change.
+- `src/astro.ts` — dependency-free astronomical engine for UTCEF. UTCEF
+  carries only amplitude + Greenwich phase; this derives ω (catalog
+  speeds), V₀ (Greenwich equilibrium arg from the mean-longitude
+  polynomials), and the Schureman/Foreman nodal `f`/`u` cosine series. The
+  legacy HARMONIC path does **not** use this — it reads ω/V₀/f from the
+  file's own year tables. Correctness is anchored in tests by the identity
+  *dV₀/dt == catalog speed* for every constituent.
+- `src/utcef.ts` — UTCEF source. Parses `*.utcef` / `*.utcef.gz` (gzip via
+  built-in `zlib`); implements `harmonic_constituents_currents` (full 2D
+  u/v vectors → always direction-capable, unlike legacy reference
+  stations). `harmonic_constituents_heights` is parsed+counted but **not
+  published** (this is a currents plugin); `relative_time_offset` is
+  counted as unsupported (needs reference-port HW/range-ratio — deferred).
+  Canonical id is the top-level `Feature.id`; `station_id` is only an
+  alias. Rejects unknown schema **major** versions. `utcefVectorAt` prefers
+  a station whose `representative_area` polygon contains the point, else
+  nearest within `maxKm`. `createUtcefSource(dir)` mirrors the GRIB source's
+  1×/min reload.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).
-  `resolveVector()` picks GRIB vs station (preferGrib, station fallback);
+  `resolveVector()` picks a source in preference order GRIB → UTCEF →
+  legacy station (or UTCEF → station → GRIB when `preferGrib` is false);
   `/timeline` (positional) selects the source **per sample** so windows
-  past the GRIB horizon degrade to stations. Station endpoints stay
-  harmonics-only. `speedKn` is signed for station samples, a magnitude
-  for GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
+  past the GRIB horizon degrade to the other sources. Station endpoints
+  (`/stations`, `/stations/:id[/timeline]`) serve **both** harmonics and
+  UTCEF stations. `speedKn` is signed for legacy station samples, a
+  magnitude for UTCEF and GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
   `?latitude=&longitude=` form) returns **every** current station inside
   a viewport, capped at `limit` (default/max 500) — no distance sort,
   since there's no single reference point. `/grid?bbox=…` is the gridded

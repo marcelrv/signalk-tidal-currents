@@ -32,6 +32,14 @@ import {
   stationsInBbox,
   timeline,
 } from './predict.js';
+import {
+  UtcefCurrentStation,
+  UtcefSource,
+  nearestUtcefStations,
+  utcefSampleAt,
+  utcefSummary,
+  utcefVectorAt,
+} from './utcef.js';
 
 // Minimal express-compatible typings (the router instance is supplied by the
 // Signal K server; this plugin has no runtime dependency on express).
@@ -52,23 +60,35 @@ export interface ApiState {
   error: string | null;
   /** Gridded GRIB2 current source; null/undefined when not configured. */
   grib?: GribSource | null;
-  /** When both sources cover a position/time, use GRIB (default true). */
+  /** UTCEF current source; null/undefined when not configured. */
+  utcef?: UtcefSource | null;
+  /** When several sources cover a position/time, use GRIB first (default true). */
   preferGrib?: boolean;
 }
 
 export interface ResolvedVector {
-  source: 'grib' | 'station';
+  source: 'grib' | 'utcef' | 'station';
   sample: CurrentSample;
-  /** Station path only: */
+  /** Legacy-station path only: */
   station?: IdxStation;
+  /** UTCEF-station path only: */
+  utcefStation?: UtcefCurrentStation;
   distanceKm?: number;
 }
 
+/** Human-readable name of whichever station backed a resolved vector. */
+export function resolvedStationName(r: ResolvedVector): string | null {
+  if (r.source === 'station') return r.station?.name ?? null;
+  if (r.source === 'utcef') return r.utcefStation?.name ?? null;
+  return null;
+}
+
 /**
- * Vector at a position/time from the best available source. GRIB wins when
- * it covers the position/time (unless preferGrib is false), stations are
- * the fallback; `maxStationKm` bounds the station search (Infinity for the
- * REST API, the configured limit for delta publishing).
+ * Vector at a position/time from the best available source. GRIB (a forecast
+ * grid) wins when it covers the position/time unless preferGrib is false;
+ * among station-type sources the modern UTCEF vector data is tried before the
+ * legacy OpenCPN harmonics. `maxStationKm` bounds the station searches
+ * (Infinity for the REST API, the configured limit for delta publishing).
  */
 export function resolveVector(
   state: ApiState,
@@ -83,6 +103,14 @@ export function resolveVector(
     const sample = gribVectorAt(g, lat, lon, timeMs);
     return sample ? { source: 'grib', sample } : null;
   };
+  const fromUtcef = (): ResolvedVector | null => {
+    const u = state.utcef?.get();
+    if (!u) return null;
+    const hit = utcefVectorAt(u, lat, lon, timeMs, maxStationKm);
+    return hit
+      ? { source: 'utcef', sample: hit.sample, utcefStation: hit.station, distanceKm: hit.distanceKm }
+      : null;
+  };
   const fromStation = (): ResolvedVector | null => {
     if (!state.data) return null;
     const near = nearestCurrentStations(state.data, lat, lon, 10).filter(
@@ -93,9 +121,16 @@ export function resolveVector(
     if (!sample) return null;
     return { source: 'station', sample, station: near[0].station, distanceKm: near[0].distanceKm };
   };
-  return state.preferGrib === false
-    ? fromStation() ?? fromGrib()
-    : fromGrib() ?? fromStation();
+  // GRIB is the "forecast grid"; the two station-type sources (UTCEF, then
+  // legacy harmonics) follow, with UTCEF preferred for its 2D vectors.
+  const order = state.preferGrib === false
+    ? [fromUtcef, fromStation, fromGrib]
+    : [fromGrib, fromUtcef, fromStation];
+  for (const src of order) {
+    const r = src();
+    if (r) return r;
+  }
+  return null;
 }
 
 function stationInfo(s: IdxStation, extra: Record<string, unknown> = {}) {
@@ -108,6 +143,21 @@ function stationInfo(s: IdxStation, extra: Record<string, unknown> = {}) {
     referenceName: s.offsets?.referenceName,
     floodDir: s.offsets?.floodDir ?? null,
     ebbDir: s.offsets?.ebbDir ?? null,
+    ...extra,
+  };
+}
+
+/** stationInfo-compatible view of a UTCEF current station (always vector-capable). */
+function utcefStationInfo(s: UtcefCurrentStation, extra: Record<string, unknown> = {}) {
+  return {
+    id: s.id,
+    name: s.name,
+    latitude: s.latitude,
+    longitude: s.longitude,
+    type: 'harmonic',
+    source: 'utcef' as const,
+    constituents: s.constituents.length,
+    vectorCapable: true,
     ...extra,
   };
 }
@@ -163,20 +213,15 @@ function parseWindow(
 
 export function registerRoutes(router: RouterLike, state: ApiState): void {
   const gribData = () => state.grib?.get() ?? null;
+  const utcefData = () => state.utcef?.get() ?? null;
 
-  /** 503 unless at least one source (harmonics or GRIB) is loaded. */
+  /** 503 unless at least one source (harmonics, UTCEF or GRIB) is loaded. */
   const notReady = (res: Res): boolean => {
-    if (!state.data && !gribData()) {
-      res.status(503).json({ error: state.error ?? 'no current data loaded (harmonics or GRIB2)' });
-      return true;
-    }
-    return false;
-  };
-
-  /** 503 unless harmonic station data is loaded (station endpoints). */
-  const stationsNotReady = (res: Res): boolean => {
-    if (!state.data) {
-      res.status(503).json({ error: state.error ?? 'harmonics data not loaded' });
+    const u = utcefData();
+    if (!state.data && !gribData() && !(u && u.currentStations.length > 0)) {
+      res.status(503).json({
+        error: state.error ?? 'no current data loaded (harmonics, UTCEF or GRIB2)',
+      });
       return true;
     }
     return false;
@@ -201,14 +246,24 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
           }
         : null,
       grib: g ? gribSummary(g) : null,
+      utcef: (() => {
+        const u = utcefData();
+        return u ? utcefSummary(u) : null;
+      })(),
       preferredSource: state.preferGrib === false ? 'station' : 'grib',
       disclaimer:
-        'Predictions from community harmonic data and/or forecast model GRIBs — not official, do not use as sole source for navigation.',
+        'Predictions from community harmonic data, UTCEF datasets and/or forecast model GRIBs — not official, do not use as sole source for navigation.',
     });
   });
 
   router.get('/stations', (req, res) => {
-    if (stationsNotReady(res)) return;
+    const u = utcefData();
+    const haveUtcef = !!(u && u.currentStations.length > 0);
+    // Station endpoints need a station-type source; either harmonics or UTCEF.
+    if (!state.data && !haveUtcef) {
+      res.status(503).json({ error: state.error ?? 'no station data loaded (harmonics or UTCEF)' });
+      return;
+    }
 
     // bbox mode: every station in a map viewport, not just the nearest few
     // to a single reference point.
@@ -216,9 +271,22 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       const bbox = parseBbox(req, res);
       if (!bbox) return;
       const limit = Math.min(500, parseInt(String(req.query.limit), 10) || 500);
-      const result = stationsInBbox(state.data!, bbox.west, bbox.south, bbox.east, bbox.north, limit).map(
-        (n) => stationInfo(n.station, { vectorCapable: n.vectorCapable }),
-      );
+      const result: unknown[] = state.data
+        ? stationsInBbox(state.data, bbox.west, bbox.south, bbox.east, bbox.north, limit).map((n) =>
+            stationInfo(n.station, { vectorCapable: n.vectorCapable }),
+          )
+        : [];
+      if (u) {
+        for (const s of u.currentStations) {
+          if (
+            s.latitude >= bbox.south && s.latitude <= bbox.north &&
+            s.longitude >= bbox.west && s.longitude <= bbox.east
+          ) {
+            result.push(utcefStationInfo(s));
+            if (result.length >= limit) break;
+          }
+        }
+      }
       res.json(result);
       return;
     }
@@ -226,38 +294,69 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     const pos = parsePosition(req, res);
     if (!pos) return;
     const limit = Math.min(50, parseInt(String(req.query.limit), 10) || 10);
-    const result = nearestCurrentStations(state.data!, pos.lat, pos.lon, limit).map((n) =>
-      stationInfo(n.station, { distanceKm: n.distanceKm, vectorCapable: n.vectorCapable }),
-    );
+    const legacy = state.data
+      ? nearestCurrentStations(state.data, pos.lat, pos.lon, limit).map((n) => ({
+          distanceKm: n.distanceKm,
+          info: stationInfo(n.station, { distanceKm: n.distanceKm, vectorCapable: n.vectorCapable }),
+        }))
+      : [];
+    const utcefNear = u
+      ? nearestUtcefStations(u, pos.lat, pos.lon, limit).map((n) => ({
+          distanceKm: n.distanceKm,
+          info: utcefStationInfo(n.station, { distanceKm: n.distanceKm }),
+        }))
+      : [];
+    const result = [...legacy, ...utcefNear]
+      .sort((a, b) => a.distanceKm - b.distanceKm)
+      .slice(0, limit)
+      .map((n) => n.info);
     res.json(result);
   });
 
   router.get('/stations/:id', (req, res) => {
-    if (stationsNotReady(res)) return;
-    const s = state.data!.stations.find((st) => st.id === req.params.id);
-    if (!s) {
-      res.status(404).json({ error: `unknown station: ${req.params.id}` });
+    const s = state.data?.stations.find((st) => st.id === req.params.id);
+    if (s) {
+      res.json(stationInfo(s, { offsets: s.offsets }));
       return;
     }
-    res.json(stationInfo(s, { offsets: s.offsets }));
+    const us = utcefData()?.currentStations.find((st) => st.id === req.params.id);
+    if (us) {
+      res.json(utcefStationInfo(us));
+      return;
+    }
+    res.status(404).json({ error: `unknown station: ${req.params.id}` });
   });
 
   router.get('/stations/:id/timeline', (req, res) => {
-    if (stationsNotReady(res)) return;
-    const s = state.data!.stations.find((st) => st.id === req.params.id);
-    if (!s) {
-      res.status(404).json({ error: `unknown station: ${req.params.id}` });
-      return;
-    }
     const win = parseWindow(req, res);
     if (!win) return;
-    const samples = timeline(state.data!, s, win.start, win.end, win.stepMs);
-    res.json({
-      station: stationInfo(s),
-      units: { speedKn: 'knots (signed, + = flood)', u: 'm/s east', v: 'm/s north' },
-      estimated: s.isSubordinate,
-      timeline: samples,
-    });
+
+    const s = state.data?.stations.find((st) => st.id === req.params.id);
+    if (s) {
+      const samples = timeline(state.data!, s, win.start, win.end, win.stepMs);
+      res.json({
+        station: stationInfo(s),
+        units: { speedKn: 'knots (signed, + = flood)', u: 'm/s east', v: 'm/s north' },
+        estimated: s.isSubordinate,
+        timeline: samples,
+      });
+      return;
+    }
+
+    const us = utcefData()?.currentStations.find((st) => st.id === req.params.id);
+    if (us) {
+      const samples: CurrentSample[] = [];
+      for (let t = win.start; t <= win.end; t += win.stepMs) samples.push(utcefSampleAt(us, t));
+      res.json({
+        station: utcefStationInfo(us),
+        units: { speedKn: 'knots (magnitude)', u: 'm/s east', v: 'm/s north' },
+        estimated: false,
+        timeline: samples,
+      });
+      return;
+    }
+
+    res.status(404).json({ error: `unknown station: ${req.params.id}` });
   });
 
   // Position-based timeline — the natural access pattern for gridded GRIB
@@ -272,29 +371,38 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     const win = parseWindow(req, res);
     if (!win) return;
 
-    // Resolve the fallback station once, not per sample.
+    // Resolve the fallback stations once, not per sample.
     const near = state.data
       ? nearestCurrentStations(state.data, pos.lat, pos.lon, 10).filter((n) => n.vectorCapable)
       : [];
     const station = near.length > 0 ? near[0] : null;
+    const u = utcefData();
+    const utcefNear = u ? nearestUtcefStations(u, pos.lat, pos.lon, 1)[0] ?? null : null;
     const g = gribData();
-    const gribFirst = state.preferGrib !== false;
 
-    const samples: Array<CurrentSample & { source: 'grib' | 'station' }> = [];
+    // Per-sample source candidates in preference order (same policy as
+    // resolveVector): GRIB grid first by default, then UTCEF vectors, then
+    // the legacy harmonic station.
+    const fromGrib = (t: number) => (g ? gribVectorAt(g, pos.lat, pos.lon, t) : null);
+    const fromUtcef = (t: number) => (utcefNear ? utcefSampleAt(utcefNear.station, t) : null);
+    const fromStation = (t: number) =>
+      station && state.data ? currentSampleAt(state.data, station.station, t) : null;
+    const candidates: Array<{ source: 'grib' | 'utcef' | 'station'; fn: (t: number) => CurrentSample | null }> =
+      state.preferGrib === false
+        ? [{ source: 'utcef', fn: fromUtcef }, { source: 'station', fn: fromStation }, { source: 'grib', fn: fromGrib }]
+        : [{ source: 'grib', fn: fromGrib }, { source: 'utcef', fn: fromUtcef }, { source: 'station', fn: fromStation }];
+
+    const samples: Array<CurrentSample & { source: 'grib' | 'utcef' | 'station' }> = [];
     const usedSources = new Set<string>();
     for (let t = win.start; t <= win.end; t += win.stepMs) {
-      const fromGrib = () => (g ? gribVectorAt(g, pos.lat, pos.lon, t) : null);
-      const fromStation = () =>
-        station && state.data ? currentSampleAt(state.data, station.station, t) : null;
-      let source: 'grib' | 'station' = gribFirst ? 'grib' : 'station';
-      let s = gribFirst ? fromGrib() : fromStation();
-      if (!s) {
-        source = gribFirst ? 'station' : 'grib';
-        s = gribFirst ? fromStation() : fromGrib();
+      for (const cand of candidates) {
+        const s = cand.fn(t);
+        if (s) {
+          usedSources.add(cand.source);
+          samples.push({ ...s, source: cand.source });
+          break;
+        }
       }
-      if (!s) continue;
-      usedSources.add(source);
-      samples.push({ ...s, source });
     }
     if (samples.length === 0) {
       res.status(404).json({ error: 'no current data source covers this position/window' });
@@ -305,8 +413,12 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       station: usedSources.has('station') && station
         ? stationInfo(station.station, { distanceKm: station.distanceKm })
         : null,
+      utcefStation: usedSources.has('utcef') && utcefNear
+        ? utcefStationInfo(utcefNear.station, { distanceKm: utcefNear.distanceKm })
+        : null,
       units: {
-        speedKn: 'knots (station samples: signed along flood/ebb axis; grib samples: magnitude)',
+        speedKn:
+          'knots (legacy-station samples: signed along flood/ebb axis; UTCEF/GRIB samples: magnitude)',
         u: 'm/s east',
         v: 'm/s north',
       },
@@ -332,7 +444,9 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       source: resolved.source,
       station: resolved.station
         ? stationInfo(resolved.station, { distanceKm: resolved.distanceKm })
-        : null,
+        : resolved.utcefStation
+          ? utcefStationInfo(resolved.utcefStation, { distanceKm: resolved.distanceKm })
+          : null,
       sample: resolved.sample,
     });
   });

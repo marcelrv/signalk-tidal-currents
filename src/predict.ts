@@ -161,6 +161,22 @@ export function distanceKm(lat1: number, lon1: number, lat2: number, lon2: numbe
   return 2 * R * Math.asin(Math.sqrt(Math.min(1, a)));
 }
 
+// Resolvability memo: whether a station's (or its reference's) harmonic
+// record exists is a pure function of the loaded dataset, so cache it per
+// station object instead of re-running a FULL harmonic prediction per station
+// per request (the old test cost S×C cos() evaluations on every /stations,
+// /timeline and delta tick — the dominant API cost).
+const resolvableCache = new WeakMap<IdxStation, boolean>();
+
+export function isStationResolvable(data: HarmonicsData, station: IdxStation): boolean {
+  const hit = resolvableCache.get(station);
+  if (hit !== undefined) return hit;
+  const name = station.isSubordinate ? station.offsets?.referenceName : station.name;
+  const ok = name !== undefined && findStationHarmonics(data.records, name) !== undefined;
+  resolvableCache.set(station, ok);
+  return ok;
+}
+
 /**
  * Nearest current stations to a position, closest first. Only stations that
  * resolve to harmonic data are returned; `vectorCapable` marks those with
@@ -173,7 +189,7 @@ export function nearestCurrentStations(
   limit: number = 10,
 ): Array<{ station: IdxStation; distanceKm: number; vectorCapable: boolean }> {
   return data.stations
-    .filter((s) => s.isCurrent && currentSpeedAt(data, s, Date.now()) !== null)
+    .filter((s) => s.isCurrent && isStationResolvable(data, s))
     .map((s) => ({
       station: s,
       distanceKm: Math.round(distanceKm(lat, lon, s.latitude, s.longitude) * 100) / 100,
@@ -201,7 +217,7 @@ export function stationsInBbox(
   for (const s of data.stations) {
     if (!s.isCurrent) continue;
     if (s.latitude < south || s.latitude > north || s.longitude < west || s.longitude > east) continue;
-    if (currentSpeedAt(data, s, Date.now()) === null) continue;
+    if (!isStationResolvable(data, s)) continue;
     result.push({
       station: s,
       vectorCapable: !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null),

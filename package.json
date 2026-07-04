@@ -30,7 +30,10 @@
   ],
   "signalk": {
     "displayName": "Tidal Currents",
-    "appIcon": "./img/icon.svg"
+    "appIcon": "./img/icon.svg",
+    "screenshots": [
+      "./img/screenshot-config.jpg"
+    ]
   },
   "signalk-plugin-enabled-by-default": false,
   "author": "Marcel Verpaalen",

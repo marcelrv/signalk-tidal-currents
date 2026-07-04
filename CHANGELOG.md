@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **UTCEF support**: a third current source alongside the legacy harmonic
+  stations and GRIB grids. Reads `*.utcef` / `*.utcef.gz` (gzip)
+  datasets and implements the `harmonic_constituents_currents` method —
+  full 2D (u/v) harmonic currents, so **every UTCEF current station gives
+  a real set/drift direction** (legacy reference stations carry no axis).
+  `harmonic_constituents_heights` features are parsed but not published
+  (this is a currents plugin); `relative_time_offset` is not yet
+  implemented.
+- New **dependency-free astronomical engine** (`src/astro.ts`): derives
+  the constituent speeds, Greenwich equilibrium arguments and
+  Schureman/Foreman nodal corrections that UTCEF harmonic methods require
+  (UTCEF, unlike the legacy files, does not ship precomputed year tables).
+- New **UTCEF Data Directory** setting (default: a `utcef` subdirectory of
+  the plugin's data directory, independent of the other directories);
+  new/updated files are picked up automatically within a minute.
+- Source-resolution order is now GRIB → UTCEF → legacy station (reversed
+  to UTCEF → station → GRIB when *Prefer GRIB over stations* is off). The
+  `/stations`, `/stations/:id`, `/stations/:id/timeline`, `/vector` and
+  `/timeline` endpoints all serve UTCEF stations; `/` reports a `utcef`
+  coverage summary.
+
 ## 0.2.0 — 2026-07-03
 
 ### Added

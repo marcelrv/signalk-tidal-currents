@@ -24,10 +24,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { registerRoutes, resolveVector, ApiState, RouterLike } from './api.js';
+import { registerRoutes, resolveVector, resolvedStationName, ApiState, RouterLike } from './api.js';
 import { ensureStandardData } from './download.js';
 import { createGribSource } from './gribcurrents.js';
 import { HarmonicsData, loadHarmonicsDir } from './harmonics.js';
+import { createUtcefSource } from './utcef.js';
 
 const PLUGIN_ID = 'signalk-tidal-currents';
 const DEG2RAD = Math.PI / 180;
@@ -35,6 +36,7 @@ const DEG2RAD = Math.PI / 180;
 interface Config {
   dataDir: string;
   gribDir: string;
+  utcefDir: string;
   preferGrib: boolean;
   publishDelta: boolean;
   updateSeconds: number;
@@ -45,6 +47,7 @@ interface Config {
 const DEFAULTS: Config = {
   dataDir: '',
   gribDir: '',
+  utcefDir: '',
   preferGrib: true,
   publishDelta: true,
   updateSeconds: 60,
@@ -60,11 +63,12 @@ const DEFAULTS: Config = {
 // default along with it (e.g. pointing dataDir at an external OpenCPN
 // folder must not relocate the GRIB2 default into that folder too).
 /* eslint-disable @typescript-eslint/no-explicit-any */
-function defaultDirs(app: any): { dataDir: string; gribDir: string } {
+function defaultDirs(app: any): { dataDir: string; gribDir: string; utcefDir: string } {
   const pluginRoot = app.getDataDirPath ? app.getDataDirPath() : '.';
   return {
     dataDir: path.join(pluginRoot, 'tcdata'),
     gribDir: path.join(pluginRoot, 'grib'),
+    utcefDir: path.join(pluginRoot, 'utcef'),
   };
 }
 
@@ -104,6 +108,16 @@ function pluginConstructor(app: any) {
               'picked up automatically within a minute (independent of the Harmonics Data ' +
               'Directory setting).',
             default: defaults.gribDir,
+          },
+          utcefDir: {
+            type: 'string',
+            title: 'UTCEF Data Directory',
+            description:
+              'Directory scanned for UTCEF files (*.utcef, *.utcef.gz) with harmonic current ' +
+              'stations (harmonic_constituents_currents). These are full 2D vectors, so every ' +
+              'UTCEF current station gives a real set/drift direction. New/updated files are ' +
+              'picked up automatically within a minute (independent of the other directories).',
+            default: defaults.utcefDir,
           },
           preferGrib: {
             type: 'boolean',
@@ -154,6 +168,8 @@ function pluginConstructor(app: any) {
       const dir = config.dataDir && config.dataDir.trim() !== '' ? config.dataDir : defaults.dataDir;
       const gribDir =
         config.gribDir && config.gribDir.trim() !== '' ? config.gribDir : defaults.gribDir;
+      const utcefDir =
+        config.utcefDir && config.utcefDir.trim() !== '' ? config.utcefDir : defaults.utcefDir;
 
       // Create both directories (default or user-specified) if missing, so
       // saving the config is enough — no manual mkdir before dropping in a
@@ -170,7 +186,7 @@ function pluginConstructor(app: any) {
       // don't apply (chmod there only toggles the read-only attribute) —
       // harmless no-op, not an error, so wrapped the same as any other
       // filesystem access here.
-      for (const d of [dir, gribDir]) {
+      for (const d of [dir, gribDir, utcefDir]) {
         try {
           fs.mkdirSync(d, { recursive: true, mode: 0o777 });
           fs.chmodSync(d, 0o777);
@@ -180,6 +196,7 @@ function pluginConstructor(app: any) {
       }
 
       state.grib = createGribSource(gribDir);
+      state.utcef = createUtcefSource(utcefDir);
       state.preferGrib = config.preferGrib;
 
       const updateStatus = () => {
@@ -192,11 +209,16 @@ function pluginConstructor(app: any) {
         if (g && g.slots.length > 0) {
           parts.push(`${g.files.length} GRIB file(s), ${g.slots.length} forecast times`);
         }
+        const u = state.utcef?.get();
+        if (u && u.currentStations.length > 0) {
+          parts.push(`${u.currentStations.length} UTCEF current station(s)`);
+        }
         if (parts.length > 0) {
           app.setPluginStatus(`Loaded ${parts.join(' + ')}`);
         } else {
           app.setPluginError(
-            `No current data: ${state.error ?? 'no harmonics pair'} and no GRIB2 files in ${gribDir}`,
+            `No current data: ${state.error ?? 'no harmonics pair'}, no GRIB2 files in ${gribDir}, ` +
+              `and no UTCEF files in ${utcefDir}`,
           );
         }
       };
@@ -265,7 +287,7 @@ function pluginConstructor(app: any) {
             const origin =
               resolved.source === 'grib'
                 ? 'GRIB2 forecast grid'
-                : `station: ${resolved.station!.name}, ${resolved.distanceKm} km`;
+                : `${resolved.source === 'utcef' ? 'UTCEF' : 'station'}: ${resolvedStationName(resolved)}, ${resolved.distanceKm} km`;
             deltaPublished = true;
             app.handleMessage(PLUGIN_ID, {
               updates: [
@@ -321,6 +343,7 @@ function pluginConstructor(app: any) {
       }
       state.data = null;
       state.grib = null;
+      state.utcef = null;
       state.error = 'stopped';
       app.setPluginStatus('Stopped');
     },
@@ -342,15 +365,16 @@ const openApiSpec = {
     title: 'Tidal Currents API',
     version: '0.2.0',
     description:
-      'Tidal current predictions from OpenCPN/XTide harmonic files (station-based) and GRIB2 ' +
-      'current fields (gridded, positional). Station samples: signed speed along the flood/ebb ' +
-      'axis (+ = flood). GRIB samples: speed is a magnitude.',
+      'Tidal current predictions from OpenCPN/XTide harmonic files (station-based), GRIB2 ' +
+      'current fields (gridded, positional), and UTCEF datasets (station-based 2D harmonic ' +
+      'currents). Legacy station samples: signed speed along the flood/ebb axis (+ = flood). ' +
+      'UTCEF and GRIB samples: speed is a magnitude.',
   },
   paths: {
-    '/': { get: { summary: 'Dataset summary (harmonics + GRIB sources)', responses: { '200': { description: 'OK' } } } },
+    '/': { get: { summary: 'Dataset summary (harmonics + GRIB + UTCEF sources)', responses: { '200': { description: 'OK' } } } },
     '/stations': {
       get: {
-        summary: 'Nearest current stations (harmonic source only)',
+        summary: 'Nearest current stations (harmonic + UTCEF sources)',
         parameters: [
           { name: 'latitude', in: 'query', required: true, schema: { type: 'number' } },
           { name: 'longitude', in: 'query', required: true, schema: { type: 'number' } },

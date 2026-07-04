@@ -3,14 +3,17 @@
 # signalk-tidal-currents
 
 A [Signal K](https://signalk.org) server plugin that predicts **tidal currents**
-(set & drift) from two kinds of sources:
+(set & drift) from three kinds of sources:
 
 - OpenCPN/XTide legacy ASCII harmonic files — the `HARMONIC` +
   `HARMONIC.IDX` pair used by OpenCPN and the classic DOS tide programs
-  (station-based harmonic prediction), and
+  (station-based harmonic prediction),
 - **GRIB2 files** with gridded current fields (u/v velocity components from
   ocean/tidal models) — positional lookups with bilinear interpolation in
-  space and linear interpolation in time; no stations involved.
+  space and linear interpolation in time; no stations involved, and
+- **UTCEF datasets** (`*.utcef` / `*.utcef.gz`) — a modern JSON/GeoJSON
+  tidal-exchange format carrying full 2D harmonic current constituents per
+  station, so every station yields a real set/drift vector.
 
 Unlike tide-height plugins (e.g. the excellent
 [signalk-tides](https://github.com/bkeepers/signalk-tides)), this plugin is
@@ -33,11 +36,20 @@ showing predicted set/drift on instruments.
   differencing; bitmaps for land masking). Accepts u/v component fields
   (the common encoding) and direction/speed fields. New files dropped into
   the GRIB directory are picked up automatically — no restart needed.
-- **Source selection**: when both a GRIB grid and a harmonic station cover
-  a position, the GRIB forecast wins (configurable); stations are the
-  fallback outside GRIB coverage or beyond the GRIB time range. The
-  harmonics-only limitation that reference stations carry **no direction**
-  does not apply to GRIB data — grids are always vector-capable.
+- Parses **UTCEF datasets** (`*.utcef`, or gzip-compressed `*.utcef.gz`)
+  with a built-in **dependency-free astronomical engine** (constituent
+  speeds, Greenwich equilibrium arguments and Schureman/Foreman nodal
+  corrections) — UTCEF, unlike the legacy files, ships only amplitude and
+  phase and expects the engine to derive the rest. Implements the
+  `harmonic_constituents_currents` method (full 2D u/v vectors, always
+  direction-capable). New files dropped into the UTCEF directory are picked
+  up automatically — no restart needed.
+- **Source selection**: when several sources cover a position, the GRIB
+  forecast wins by default (configurable), then UTCEF vector stations, then
+  the legacy harmonic stations; a source is the fallback outside another's
+  coverage or time range. The harmonics-only limitation that reference
+  stations carry **no direction** does not apply to GRIB or UTCEF data —
+  both are always vector-capable.
 - **Signal K v1 data model**: publishes `environment.current`
   (`setTrue` rad / `drift` m/s) predicted at the vessel position.
 - **v2-style REST API** at `/signalk/v2/api/currents` (also mirrored at the
@@ -265,6 +277,12 @@ the vector either way).
   bit-unpacking.
 - GRIB2 JPEG2000 (template 5.40) packing — needs a JS JPEG2000 codec.
 - Interpolation between stations; harmonic subordinate handling refinements.
+- **GRIB2 download page** — a UI (Admin UI panel or companion webapp) that
+  lets a user browse a catalog of available NOAA current GRIB2 products
+  and download a selection straight into the GRIB2 Data Directory,
+  instead of hunting for/downloading files manually. The catalog itself
+  (which NOAA products, regions, URLs) is a separate, not-yet-started
+  effort in signalk-router-data.
 
 ## Development
 
