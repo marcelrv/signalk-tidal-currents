@@ -17,7 +17,7 @@ export function RegionInspector({ rows, onClose }: { rows: SourceRow[]; onClose:
     <Modal title={`${rows.length} dataset${rows.length === 1 ? '' : 's'} cover this area`} onClose={onClose}>
       <ul>
         {rows.map((row) => (
-          <SourceListRow key={row.key} row={row} dataset={datasetForRow(datasets, row)} onSelected={onClose} />
+          <SourceListRow key={row.key} row={row} dataset={datasetForRow(datasets, row)} onSelected={onClose} compact />
         ))}
       </ul>
     </Modal>

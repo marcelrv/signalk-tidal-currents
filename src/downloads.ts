@@ -70,6 +70,15 @@ export interface DownloadEngine {
   cancel(id: string): void;
   /** Subscribes to every update (state transition or throttled progress tick) for one job; returns an unsubscribe function. Backs the SSE route (PRD §9 Phase 2). */
   onUpdate(id: string, listener: (job: DownloadJob) => void): () => void;
+  /**
+   * Fires once for ANY job (regardless of id, and regardless of whether a
+   * caller happened to already be watching it via `onUpdate`) the moment it
+   * reaches a terminal state (`done`/`error`). Lets `index.ts` react to
+   * "a download just finished" without needing to know job ids ahead of
+   * time — used to force an immediate GRIB/UTCEF directory recheck instead
+   * of waiting for their own lazy poll interval.
+   */
+  onAnyDone(listener: (job: DownloadJob) => void): () => void;
 }
 
 /** Progress-only updates are throttled to at most once per this many ms per job — state transitions always emit immediately regardless. */
@@ -233,7 +242,10 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       if (Date.now() - last < PROGRESS_EMIT_THROTTLE_MS) return;
     }
     lastEmitAt.set(job.id, Date.now());
-    if (job.state === 'done' || job.state === 'error') lastEmitAt.delete(job.id);
+    if (job.state === 'done' || job.state === 'error') {
+      lastEmitAt.delete(job.id);
+      emitter.emit('any-done', { ...job });
+    }
     emitter.emit(`job:${job.id}`, { ...job });
   }
 
@@ -261,9 +273,17 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         const url = resolveStaticUrl(file, opts.catalogUrl);
         if (!url) throw new Error(`file "${file.filename}" has no url and none could be derived`);
         const target = path.join(dir, file.filename);
+        // `total` is the SAME constant Content-Length on every chunk callback
+        // (see downloadOne) — only fold it into job.totalBytes once per file,
+        // or it inflates by (chunk count × file size) and the progress
+        // percentage stays near 0 until the download is already done.
+        let totalCounted = false;
         const result = await downloadOne(url, target, (delta, total) => {
           job.bytes += delta;
-          if (total !== null) job.totalBytes = (job.totalBytes ?? 0) + total;
+          if (total !== null && !totalCounted) {
+            job.totalBytes = (job.totalBytes ?? 0) + total;
+            totalCounted = true;
+          }
           notify(job, true);
         }, controller.signal);
         if (file.sha256 && file.sha256 !== result.sha256) {
@@ -317,9 +337,15 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       const url = fillTemplate(templateFile.url_template, ymd, hh, hour);
       const filename = `${source.id}_${ymd}${hh}_f${pad3(hour)}${path.extname(new URL(url).pathname) || '.grb2'}`;
       const target = path.join(dir, filename);
+      // Same fix as the static-file branch above: `total` repeats on every
+      // chunk, only count it once per forecast-hour file.
+      let totalCounted = false;
       const result = await downloadOne(url, target, (delta, total) => {
         job.bytes += delta;
-        if (total !== null) job.totalBytes = (job.totalBytes ?? 0) + total;
+        if (total !== null && !totalCounted) {
+          job.totalBytes = (job.totalBytes ?? 0) + total;
+          totalCounted = true;
+        }
         notify(job, true);
       }, controller.signal);
       names.push(filename);
@@ -404,6 +430,10 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       const channel = `job:${id}`;
       emitter.on(channel, listener);
       return () => emitter.off(channel, listener);
+    },
+    onAnyDone(listener: (job: DownloadJob) => void): () => void {
+      emitter.on('any-done', listener);
+      return () => emitter.off('any-done', listener);
     },
     cancel(id: string): void {
       abortControllers.get(id)?.abort();

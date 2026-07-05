@@ -107,6 +107,8 @@ export interface DatasetEntry {
   expiresAt?: string;
   remainingHours?: number;
   maxAgeHours?: number;
+  /** "Keep fresh when online" opt-in (PRD §5.5 Phase 2) — always false for orphans (no catalogSourceId to re-download against). */
+  autoUpdate: boolean;
   contributor?: string;
   sourceUrl?: string;
   license?: string;

@@ -113,6 +113,19 @@ test('createGribSource picks up newly dropped files', () => {
   assert.ok(data && data.slots.length === 1);
 });
 
+test('invalidate() forces an immediate reload, bypassing checkIntervalMs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-invalidate-'));
+  // Long interval — without invalidate(), a get() right after dropping a new
+  // file in would still return the stale (null) result for up to a minute.
+  const src = createGribSource(dir, 60_000);
+  assert.equal(src.get(), null);
+  fs.writeFileSync(path.join(dir, 'new.grb2'), encodeGrib2File([gridField(2, 0, 1), gridField(3, 0, 0)]));
+  assert.equal(src.get(), null, 'still within checkIntervalMs — should not have reloaded yet');
+  src.invalidate();
+  const data = src.get();
+  assert.ok(data && data.slots.length === 1, 'invalidate() should force the very next get() to reload');
+});
+
 // ── API integration (stub router, harmonics fixture + synthetic GRIB) ──
 
 interface Captured {

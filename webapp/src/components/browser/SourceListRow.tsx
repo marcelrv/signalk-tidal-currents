@@ -4,6 +4,7 @@ import { SourceRow, displayStatus } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { StatusBadge } from '../shared/StatusBadge';
 import { ExpiryCountdown } from '../shared/ExpiryCountdown';
+import { AutoUpdateToggle } from '../shared/AutoUpdateToggle';
 import { DownloadButton } from '../downloads/DownloadButton';
 
 const TYPE_BADGE: Record<SourceRow['source']['type'], string> = { utcef: 'UTCEF', grib2: 'GRIB2', harmonic: 'Harmonic' };
@@ -13,15 +14,23 @@ const TYPE_BADGE: Record<SourceRow['source']['type'], string> = { utcef: 'UTCEF'
  * RegionInspector to close itself when a row inside it is picked, so
  * selecting a row there doesn't leave the Inspector modal open underneath
  * the Detail modal (they'd otherwise visually stack/mix).
+ *
+ * `compact` drops the per-row management chrome (expiry countdown,
+ * auto-update toggle) that's redundant inside RegionInspector — that modal's
+ * whole job is picking WHICH dataset before opening the full Detail modal,
+ * so showing every management control on every candidate row there is pure
+ * clutter, not information, and crowds the already-narrow modal.
  */
 export function SourceListRow({
   row,
   dataset,
   onSelected,
+  compact,
 }: {
   row: SourceRow;
   dataset: DatasetEntry | undefined;
   onSelected?: () => void;
+  compact?: boolean;
 }) {
   const select = useAppStore((s) => s.select);
   const selected = useAppStore((s) => s.selection.key === row.key);
@@ -50,7 +59,8 @@ export function SourceListRow({
         {row.sizeBytes === null ? 'size varies' : formatBytes(row.sizeBytes)}
       </span>
       <StatusBadge status={status} />
-      {dataset && <ExpiryCountdown dataset={dataset} />}
+      {!compact && dataset && <ExpiryCountdown dataset={dataset} />}
+      {!compact && dataset && <AutoUpdateToggle dataset={dataset} />}
       <DownloadButton source={row.source} regionId={row.regionId} fileType={row.fileType} status={status} />
     </li>
   );

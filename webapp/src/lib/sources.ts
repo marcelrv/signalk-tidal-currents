@@ -98,11 +98,27 @@ export function rowForDataset(rows: SourceRow[], dataset: DatasetEntry): SourceR
   );
 }
 
-/** Pre-download check (PRD §5.4): would downloading `sizeBytes` more push the disk past 90% full? `null`/unknown inputs never trigger a warning — better to let the user proceed than block on incomplete information. */
+/** Pre-download check (PRD §5.4): would downloading `sizeBytes` more push the disk past 90% full? `null`/unknown inputs never trigger this specific check — see `hasUnknownSizeRisk` below for that case instead. */
 export function wouldExceedDiskThreshold(sizeBytes: number | null, storage: StorageStats | null): boolean {
   if (sizeBytes === null || !storage?.totalBytes || storage.freeBytes === null) return false;
   const usedAfter = storage.totalBytes - storage.freeBytes + sizeBytes;
   return usedAfter / storage.totalBytes > 0.9;
+}
+
+/**
+ * A template/forecast source has no catalog-declared size (see
+ * `totalSizeBytes` — cycle files vary and aren't known ahead of download),
+ * so `wouldExceedDiskThreshold` can never fire for it no matter how full the
+ * disk already is — a silent gap that could fill a small SD card/eMMC on a
+ * Pi/Cerbo. This doesn't try to guess a size (a fabricated number is worse
+ * than no number); it just flags "unknown size, and the disk is already
+ * fairly full" so the UI can show an explicit warning instead of proceeding
+ * silently. Uses a lower bar (75%) than the 90% hard threshold above, since
+ * there's no known size to actually compare against 90% with.
+ */
+export function hasUnknownSizeRisk(sizeBytes: number | null, storage: StorageStats | null): boolean {
+  if (sizeBytes !== null || !storage?.totalBytes || storage.freeBytes === null) return false;
+  return (storage.totalBytes - storage.freeBytes) / storage.totalBytes > 0.75;
 }
 
 export interface SourceFilters {

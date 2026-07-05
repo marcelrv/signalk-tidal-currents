@@ -4,7 +4,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { usePolling } from '../../hooks/usePolling';
 import { useDownloadProgress } from '../../hooks/useDownloadProgress';
 import { CatalogSource } from '../../api/types';
-import { DisplayStatus, downloadKeyFor, totalSizeBytes, wouldExceedDiskThreshold } from '../../lib/sources';
+import { DisplayStatus, downloadKeyFor, hasUnknownSizeRisk, totalSizeBytes, wouldExceedDiskThreshold } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
 
@@ -56,8 +56,11 @@ export function DownloadButton({
     }
   };
 
+  const sizeBytes = totalSizeBytes(source);
+  const unknownSizeRisk = hasUnknownSizeRisk(sizeBytes, storage);
+
   const handleClick = () => {
-    if (wouldExceedDiskThreshold(totalSizeBytes(source), storage)) {
+    if (wouldExceedDiskThreshold(sizeBytes, storage) || unknownSizeRisk) {
       setConfirmingOverfull(true);
       return;
     }
@@ -91,8 +94,9 @@ export function DownloadButton({
       {confirmingOverfull && (
         <Modal title="Disk almost full" onClose={() => setConfirmingOverfull(false)}>
           <p className="mb-4 text-muted">
-            Downloading {source.name} ({formatBytes(totalSizeBytes(source))}) would push this disk past 90% full.
-            Continue anyway?
+            {unknownSizeRisk
+              ? `${source.name}'s download size can't be known ahead of time (forecast cycle file), and this disk is already over 75% full. Ensure you have enough free space before continuing.`
+              : `Downloading ${source.name} (${formatBytes(sizeBytes)}) would push this disk past 90% full. Continue anyway?`}
           </p>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setConfirmingOverfull(false)} className="min-h-11 rounded px-4 text-muted">

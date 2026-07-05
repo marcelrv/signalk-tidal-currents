@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 
 import {
+  createUtcefSource,
   loadUtcefDir,
   nearestUtcefStations,
   parseUtcef,
@@ -146,6 +147,19 @@ test('loads the reference document: one current station, one height, one unsuppo
   assert.equal(st.name, 'Zeeland Offshore 03');
   assert.equal(st.constituents.length, 3);
   assert.equal(st.meanU, 0.012);
+});
+
+test('createUtcefSource: invalidate() forces an immediate reload, bypassing checkIntervalMs', () => {
+  const dir = tmpDir();
+  // Long interval — without invalidate(), a get() right after dropping a new
+  // file in would still return the stale (null) result for up to a minute.
+  const src = createUtcefSource(dir, 60_000);
+  assert.equal(src.get(), null);
+  fs.writeFileSync(path.join(dir, 'ref.utcef'), JSON.stringify(referenceDoc()));
+  assert.equal(src.get(), null, 'still within checkIntervalMs — should not have reloaded yet');
+  src.invalidate();
+  const data = src.get();
+  assert.ok(data && data.currentStations.length === 1, 'invalidate() should force the very next get() to reload');
 });
 
 test('surfaces license/citation/attribution metadata (PRD attribution surface)', () => {

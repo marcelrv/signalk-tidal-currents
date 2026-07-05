@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 
 import { useAppStore } from '../../store/useAppStore';
-import { rowForDataset, rowsForSources, totalSizeBytes, wouldExceedDiskThreshold } from '../../lib/sources';
+import { hasUnknownSizeRisk, rowForDataset, rowsForSources, totalSizeBytes, wouldExceedDiskThreshold } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
 
@@ -51,8 +51,14 @@ export function UpdateAllBanner() {
     }
   };
 
+  // Unknown-size (template/forecast) entries are excluded from knownTotal
+  // entirely, so wouldExceedDiskThreshold alone can silently pass even when
+  // the disk is already fairly full and several unknown-size cycle files are
+  // about to be re-downloaded — flag that case explicitly instead.
+  const unknownSizeRisk = unknownCount > 0 && hasUnknownSizeRisk(null, storage);
+
   const handleClick = () => {
-    if (wouldExceedDiskThreshold(knownTotal, storage)) {
+    if (wouldExceedDiskThreshold(knownTotal, storage) || unknownSizeRisk) {
       setConfirmingOverfull(true);
       return;
     }
@@ -87,8 +93,10 @@ export function UpdateAllBanner() {
       {confirmingOverfull && (
         <Modal title="Disk almost full" onClose={() => setConfirmingOverfull(false)}>
           <p className="mb-2 text-muted">
-            Updating all {updatable.length} region(s) (~{formatBytes(knownTotal)}) would push this disk past 90%
-            full. Continue anyway?
+            Updating all {updatable.length} region(s) (~{formatBytes(knownTotal)}
+            {unknownCount > 0 ? ` + ${unknownCount} of unknown size` : ''}) would push this disk past 90% full
+            {unknownSizeRisk ? ' — and some of these are forecast cycle files whose size can\'t be known ahead of time' : ''}.
+            Continue anyway?
           </p>
           <ul className="mb-4 list-inside list-disc text-xs text-muted">
             {updatable.map(({ dataset, source, row }) => (

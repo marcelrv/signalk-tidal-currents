@@ -469,6 +469,8 @@ export function utcefSummary(data: UtcefData): Record<string, unknown> {
 export interface UtcefSource {
   get(): UtcefData | null;
   readonly error: string | null;
+  /** Forces the next get() call to re-stat the directory and reload immediately, bypassing checkIntervalMs — used right after a catalog-driven download finishes so a newly-downloaded file is served without waiting up to a minute. */
+  invalidate(): void;
 }
 
 export function createUtcefSource(dir: string, checkIntervalMs = 60_000): UtcefSource {
@@ -514,6 +516,9 @@ export function createUtcefSource(dir: string, checkIntervalMs = 60_000): UtcefS
     },
     get error(): string | null {
       return error;
+    },
+    invalidate(): void {
+      lastCheck = -Infinity;
     },
   };
 }

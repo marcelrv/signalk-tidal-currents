@@ -13,9 +13,10 @@ import * as path from 'path';
 
 import { ApiState } from './api.js';
 import { CatalogClient } from './catalog.js';
-import { CatalogSourceType, StaticCatalogFile, isTemplateFile } from './catalogTypes.js';
+import { CatalogSourceType } from './catalogTypes.js';
+import { computeInstallStatus } from './datasetStatus.js';
 import { DownloadEngine, FileSelector } from './downloads.js';
-import { ManifestDir, readManifest, removeInstall, writeManifestAtomic } from './manifest.js';
+import { ManifestDir, readManifest, removeInstall, upsertInstall, writeManifestAtomic } from './manifest.js';
 import { DEFAULT_PRIORITY, SourceType, isValidPriorityOrder } from './priority.js';
 import { StorageDirs, cleanupCandidates, statStorage } from './storage.js';
 
@@ -104,6 +105,8 @@ interface DatasetEntry {
   expiresAt?: string;
   remainingHours?: number;
   maxAgeHours?: number;
+  /** Opt-in "keep fresh when online" (PRD §5.5 Phase 2) — always false for orphans, which aren't manifest-tracked so there's nothing to toggle. */
+  autoUpdate: boolean;
   contributor?: string;
   sourceUrl?: string;
   // UTCEF-only attribution surface (PRD §5.7) — parsed from the file's own metadata, see utcef.ts.
@@ -123,28 +126,7 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
     const filesExist = install.files.every((f) => fs.existsSync(path.join(dirPath, f)));
     const source = catalogDoc?.sources.find((s) => s.id === install.catalogSourceId);
 
-    let status: DatasetEntry['status'] = filesExist ? 'active' : 'error';
-    let expiry: Pick<DatasetEntry, 'updateCheckMethod' | 'expiresAt' | 'remainingHours' | 'maxAgeHours'> = {};
-    if (filesExist && source) {
-      if (source.update_check.method === 'sha256' && install.sha256) {
-        const staticFile = source.files.find(
-          (f): f is StaticCatalogFile => !isTemplateFile(f) && !!f.sha256,
-        );
-        if (staticFile && staticFile.sha256 !== install.sha256) status = 'update-available';
-      } else if (source.update_check.method === 'expiry' && install.cycle && source.update_check.max_age_hours) {
-        const maxAgeHours = source.update_check.max_age_hours;
-        const cycleMs = Date.parse(install.cycle);
-        const ageHours = (Date.now() - cycleMs) / 3600_000;
-        const remainingHours = maxAgeHours - ageHours;
-        expiry = {
-          updateCheckMethod: 'expiry',
-          expiresAt: new Date(cycleMs + maxAgeHours * 3600_000).toISOString(),
-          remainingHours,
-          maxAgeHours,
-        };
-        if (ageHours > maxAgeHours) status = 'update-available';
-      }
-    }
+    const { status, ...expiry } = computeInstallStatus(install, source, filesExist);
 
     const entry: DatasetEntry = {
       id: install.id,
@@ -160,6 +142,7 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
       fileType: install.fileType,
       status,
       ...expiry,
+      autoUpdate: install.autoUpdate ?? false,
       contributor: source?.contributor,
       sourceUrl: source?.url,
     };
@@ -196,7 +179,7 @@ function orphanDatasets(mgr: ManagerState): DatasetEntry[] {
       }
       results.push({
         id: `orphan:${tag}:${f}`, catalogSourceId: null, type, name: f,
-        files: [f], dir: tag, sizeBytes, downloadedAt: null, status: 'active',
+        files: [f], dir: tag, sizeBytes, downloadedAt: null, status: 'active', autoUpdate: false,
       });
     }
   };
@@ -268,6 +251,27 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     }
 
     res.status(404).json({ error: `unknown dataset id: ${id}` });
+  });
+
+  // Per-dataset "keep fresh when online" opt-in (PRD §5.5 Phase 2). Only
+  // meaningful for manifest-tracked installs — an orphan has no
+  // catalogSourceId for `runAutoUpdateSweep` to re-download against.
+  router.put('/datasets/:id/auto-update', (req, res) => {
+    const id = req.params.id;
+    const body = (req.body ?? {}) as { enabled?: unknown };
+    if (typeof body.enabled !== 'boolean') {
+      res.status(400).json({ error: 'enabled must be a boolean' });
+      return;
+    }
+    const manifest = readManifest(mgr.manifestPath);
+    const install = manifest.installs.find((i) => i.id === id);
+    if (!install) {
+      res.status(404).json({ error: `unknown dataset id: ${id}` });
+      return;
+    }
+    const updated = { ...install, autoUpdate: body.enabled };
+    writeManifestAtomic(mgr.manifestPath, upsertInstall(manifest, updated));
+    res.json({ ok: true, autoUpdate: body.enabled });
   });
 
   router.get('/storage', async (_req, res) => {

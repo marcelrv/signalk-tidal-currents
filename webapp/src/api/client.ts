@@ -33,6 +33,11 @@ export const api = {
 
   getDatasets: () => request<DatasetEntry[]>('/datasets'),
   deleteDataset: (id: string) => request<{ ok: true }>(`/datasets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  setAutoUpdate: (id: string, enabled: boolean) =>
+    request<{ ok: true; autoUpdate: boolean }>(`/datasets/${encodeURIComponent(id)}/auto-update`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
 
   getStorage: () => request<StorageStats>('/storage'),
   getCleanupCandidates: (maxDistanceNm?: number) =>

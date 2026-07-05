@@ -55,7 +55,17 @@ function buildTooltip(row: SourceRow, status: DisplayStatus): HTMLElement {
 
 /** Captures map clicks to open the Region Inspector (react-leaflet requires this inside <MapContainer>). */
 function ClickCapture({ onClick }: { onClick: (latlng: LatLng) => void }) {
-  useMapEvents({ click: (e) => onClick(e.latlng) });
+  const map = useMapEvents({
+    click: (e) => {
+      // A tap on a touch device fires Leaflet's hover-emulation (opening a
+      // `sticky: true` tooltip) AND this click handler — but a sticky
+      // tooltip only follows a moving pointer, and touch has none after the
+      // tap ends, so without this it stays visually "stuck" over/behind the
+      // Region Inspector modal that's about to open.
+      map.eachLayer((layer) => layer.closeTooltip());
+      onClick(e.latlng);
+    },
+  });
   return null;
 }
 

@@ -103,15 +103,29 @@ export interface CleanupCandidate {
 }
 
 /**
+ * Clamps `lon` into `[minLon, maxLon]` for the nearest-point-on-bbox
+ * distance below. Several real catalog regions cross the antimeridian
+ * (e.g. Bering Sea: min_lon 155, max_lon -165 — the catalog's own
+ * convention for "wraps through ±180"), where the valid range is actually
+ * `[minLon, 180] ∪ [-180, maxLon]`, not a plain numeric interval.
+ */
+function clampLonToBbox(lon: number, minLon: number, maxLon: number): number {
+  if (minLon <= maxLon) return Math.min(Math.max(lon, minLon), maxLon);
+  if (lon >= minLon || lon <= maxLon) return lon; // already inside the wrapped range
+  const distToMin = Math.min(Math.abs(lon - minLon), 360 - Math.abs(lon - minLon));
+  const distToMax = Math.min(Math.abs(lon - maxLon), 360 - Math.abs(lon - maxLon));
+  return distToMin <= distToMax ? minLon : maxLon;
+}
+
+/**
  * Installed datasets farther than `maxDistanceNm` from the vessel — safe
  * candidates to delete to free space (PRD §5.4 Smart Cleanup). Distance is
  * to the NEAREST POINT ON the source's bounding box (clamping the vessel
  * position into it), not the centroid: this is what the PRD's own wording
  * specifies ("distance from vessel position to dataset bboxes"), and it
  * correctly returns 0 when the vessel is currently inside a region — never
- * suggesting deletion of data being actively sailed through. No antimeridian
- * handling, consistent with api.ts's existing parseBbox limitation. Pure —
- * returns `[]` immediately when no vessel position is available.
+ * suggesting deletion of data being actively sailed through. Pure — returns
+ * `[]` immediately when no vessel position is available.
  */
 export function cleanupCandidates(
   manifest: InstallManifest,
@@ -137,7 +151,7 @@ export function cleanupCandidates(
     }
     const bbox = source.region.bounding_box;
     const clampedLat = Math.min(Math.max(vesselPos.lat, bbox.min_lat), bbox.max_lat);
-    const clampedLon = Math.min(Math.max(vesselPos.lon, bbox.min_lon), bbox.max_lon);
+    const clampedLon = clampLonToBbox(vesselPos.lon, bbox.min_lon, bbox.max_lon);
     const distanceNm = distanceKm(vesselPos.lat, vesselPos.lon, clampedLat, clampedLon) * NM_PER_KM;
     if (distanceNm > maxDistanceNm) {
       candidates.push({

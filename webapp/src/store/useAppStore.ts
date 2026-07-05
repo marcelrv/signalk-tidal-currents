@@ -33,6 +33,7 @@ export interface AppState {
   datasetsLoading: boolean;
   fetchDatasets: () => Promise<void>;
   deleteDataset: (id: string) => Promise<void>;
+  setAutoUpdate: (id: string, enabled: boolean) => Promise<void>;
 
   storage: StorageStats | null;
   fetchStorage: () => Promise<void>;
@@ -108,6 +109,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   deleteDataset: async (id) => {
     await api.deleteDataset(id);
+    await get().fetchDatasets();
+  },
+  setAutoUpdate: async (id, enabled) => {
+    await api.setAutoUpdate(id, enabled);
     await get().fetchDatasets();
   },
 

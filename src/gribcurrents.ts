@@ -363,6 +363,8 @@ export interface GribSource {
   get(): GribCurrentsData | null;
   /** Set when the last load attempt failed outright. */
   readonly error: string | null;
+  /** Forces the next get() call to re-stat the directory and reload immediately, bypassing checkIntervalMs — used right after a catalog-driven download finishes so a newly-downloaded file is served without waiting up to a minute. */
+  invalidate(): void;
 }
 
 export function createGribSource(dir: string, checkIntervalMs = 60_000): GribSource {
@@ -408,6 +410,9 @@ export function createGribSource(dir: string, checkIntervalMs = 60_000): GribSou
     },
     get error(): string | null {
       return error;
+    },
+    invalidate(): void {
+      lastCheck = -Infinity;
     },
   };
 }

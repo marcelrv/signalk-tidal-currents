@@ -167,14 +167,21 @@ test('job.bytes increases monotonically during a slow/chunked response', async (
       const engine = createDownloadEngine({ dirs, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
       const job = engine.start('slow');
       const samples: number[] = [];
+      const totalSamples: (number | null)[] = [];
       while (engine.get(job.id)!.state !== 'done' && engine.get(job.id)!.state !== 'error') {
         samples.push(engine.get(job.id)!.bytes);
+        totalSamples.push(engine.get(job.id)!.totalBytes);
         await new Promise((r) => setTimeout(r, 5));
       }
       samples.push(engine.get(job.id)!.bytes);
       assert.equal(engine.get(job.id)!.state, 'done');
       for (let i = 1; i < samples.length; i++) assert.ok(samples[i] >= samples[i - 1], samples.join(','));
       assert.equal(samples[samples.length - 1], 30);
+      // Regression: totalBytes must reflect the real 30-byte Content-Length
+      // throughout — NOT re-accumulate it on every one of the 3 chunk events
+      // (which would inflate it to 90 and make bytes/totalBytes stay near 0%
+      // until the download was already finished).
+      for (const t of totalSamples) if (t !== null) assert.equal(t, 30, totalSamples.join(','));
     },
   );
 });
@@ -422,6 +429,32 @@ test('onUpdate() streams progress with monotonic bytes, terminal state last, dou
 
       unsubscribe();
       assert.doesNotThrow(() => unsubscribe());
+    },
+  );
+});
+
+test('onAnyDone() fires for a job the caller never subscribed to via onUpdate(), only on terminal state', async () => {
+  const content = Buffer.from('fires-without-onupdate');
+  await withServer(
+    (req, res) => { res.writeHead(200, { 'Content-Length': String(content.length) }); res.end(content); },
+    async (baseUrl) => {
+      const { dirs, manifestPath } = tmpDirs();
+      const source: CatalogSource = {
+        id: 'unwatched', source: 'test', type: 'harmonic', name: 'Test', description: '',
+        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'sha256', last_checked: new Date().toISOString() },
+        files: [{ filename: 'HARMONIC', url: `${baseUrl}/f`, size_bytes: content.length }],
+      };
+      const engine = createDownloadEngine({ dirs, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const done: DownloadJob[] = [];
+      engine.onAnyDone((j) => done.push(j));
+
+      const job = engine.start('unwatched');
+      await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
+
+      assert.equal(done.length, 1, JSON.stringify(done));
+      assert.equal(done[0].id, job.id);
+      assert.equal(done[0].state, 'done');
     },
   );
 });

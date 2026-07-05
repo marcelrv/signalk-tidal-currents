@@ -1,16 +1,54 @@
 import { BoundingBox, GeoJsonGeometry } from '../api/types';
 
+/**
+ * Several real catalog regions cross the antimeridian (e.g. Bering Sea:
+ * min_lon 155, max_lon -165 — the catalog's own convention for "wraps
+ * through ±180", also used by `pointInRing` below). A plain `>=`/`<=` range
+ * check is inverted in that case (min_lon > max_lon), so the wrapped range
+ * — [min_lon, 180] ∪ [-180, max_lon] — needs its own branch.
+ */
 export function bboxContains(bbox: BoundingBox, lat: number, lon: number): boolean {
-  return lat >= bbox.min_lat && lat <= bbox.max_lat && lon >= bbox.min_lon && lon <= bbox.max_lon;
+  if (lat < bbox.min_lat || lat > bbox.max_lat) return false;
+  if (bbox.min_lon <= bbox.max_lon) return lon >= bbox.min_lon && lon <= bbox.max_lon;
+  return lon >= bbox.min_lon || lon <= bbox.max_lon;
+}
+
+/**
+ * Antimeridian-crossing rings (e.g. Bering Sea: `[[155,55],[-165,55],...]`)
+ * jump from ~180 to ~-180 between adjacent vertices — left as raw degrees,
+ * standard ray-casting reads that as "all the way around the wrong side of
+ * the globe" and gets containment backwards. Unwrapping the ring into a
+ * continuous (non-modular) longitude space relative to its first vertex —
+ * and the query point into the SAME space — fixes both crossing and
+ * non-crossing rings with one code path (non-crossing rings are untouched,
+ * since no adjacent-vertex delta there exceeds 180°).
+ */
+function unwrapRingLongitudes(ring: number[][]): number[][] {
+  const unwrapped: number[][] = [ring[0]];
+  for (let i = 1; i < ring.length; i++) {
+    const prevLon = unwrapped[i - 1][0];
+    let lon = ring[i][0];
+    while (lon - prevLon > 180) lon -= 360;
+    while (lon - prevLon < -180) lon += 360;
+    unwrapped.push([lon, ring[i][1]]);
+  }
+  return unwrapped;
 }
 
 /** Ray-casting point-in-polygon over one ring ([lon,lat] pairs, GeoJSON order). */
 function pointInRing(ring: number[][], lat: number, lon: number): boolean {
+  if (ring.length === 0) return false;
+  const unwrapped = unwrapRingLongitudes(ring);
+  const ref = unwrapped[0][0];
+  let queryLon = lon;
+  while (queryLon - ref > 180) queryLon -= 360;
+  while (queryLon - ref < -180) queryLon += 360;
+
   let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i];
-    const [xj, yj] = ring[j];
-    const intersect = yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+  for (let i = 0, j = unwrapped.length - 1; i < unwrapped.length; j = i++) {
+    const [xi, yi] = unwrapped[i];
+    const [xj, yj] = unwrapped[j];
+    const intersect = yi > lat !== yj > lat && queryLon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
     if (intersect) inside = !inside;
   }
   return inside;

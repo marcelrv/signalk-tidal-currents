@@ -25,6 +25,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { registerRoutes, resolveVector, resolvedStationName, ApiState, RouterLike } from './api.js';
+import { runAutoUpdateSweep } from './autoUpdate.js';
 import { createCatalogClient } from './catalog.js';
 import { ensureStandardData } from './download.js';
 import { createDownloadEngine } from './downloads.js';
@@ -52,6 +53,7 @@ interface Config {
   catalogUrl: string;
   catalogRefreshHours: number;
   sourcePriority: SourceType[];
+  autoUpdateCheckMinutes: number;
 }
 
 const DEFAULTS: Config = {
@@ -66,6 +68,7 @@ const DEFAULTS: Config = {
   catalogUrl: DEFAULT_CATALOG_URL,
   catalogRefreshHours: 24,
   sourcePriority: DEFAULT_PRIORITY,
+  autoUpdateCheckMinutes: 30,
 };
 
 // Deliberately loose server typing: the plugin only touches a small,
@@ -104,6 +107,8 @@ function readVesselPosition(app: any): { lat: number; lon: number } | null {
 
 function pluginConstructor(app: any) {
   let timer: ReturnType<typeof setInterval> | null = null;
+  let catalogRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  let autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
   const state: ApiState = { data: null, error: 'not started' };
   let mountedV2 = false;
   let deltaPublished = false;
@@ -120,6 +125,7 @@ function pluginConstructor(app: any) {
       list: () => [],
       cancel: () => {},
       onUpdate: () => () => {},
+      onAnyDone: () => () => {},
     },
     manifestPath: '',
     dirs: { harmonic: '', grib2: '', utcef: '' },
@@ -238,6 +244,15 @@ function pluginConstructor(app: any) {
             default: DEFAULTS.catalogRefreshHours,
             minimum: 1,
           },
+          autoUpdateCheckMinutes: {
+            type: 'number',
+            title: 'Auto-Update Check Interval (minutes)',
+            description:
+              'How often to check datasets with "keep fresh when online" enabled (per-dataset toggle in the Tidal ' +
+              'Currents Manager webapp) and re-download any that have gone stale.',
+            default: DEFAULTS.autoUpdateCheckMinutes,
+            minimum: 5,
+          },
         },
       };
     },
@@ -303,6 +318,19 @@ function pluginConstructor(app: any) {
       mgr.catalog = catalogClient;
       mgr.downloads = downloadEngine;
       mgr.manifestPath = manifestPath;
+
+      // A GRIB2/UTCEF source only re-stats its directory at most once every
+      // checkIntervalMs (60s) — fine for "dropped a file in by hand", but it
+      // meant a catalog-driven download completing (via this same engine)
+      // could sit unserved for up to a minute, and the plugin status text
+      // never reflected new data at all until the next restart. Force an
+      // immediate recheck + status refresh the moment ANY job succeeds.
+      downloadEngine.onAnyDone((job) => {
+        if (job.state !== 'done') return;
+        state.grib?.invalidate();
+        state.utcef?.invalidate();
+        updateStatus();
+      });
       mgr.dirs = { harmonic: dir, grib2: gribDir, utcef: utcefDir };
       mgr.managerDir = managerDir;
       mgr.getPriority = () => currentPriority;
@@ -324,6 +352,30 @@ function pluginConstructor(app: any) {
           console.warn(`[${PLUGIN_ID}] catalog refresh failed: ${e}`);
         });
       }
+      // Recurring refresh: the check above only fires once, at start() — a
+      // plugin instance commonly runs for weeks unattended on a boat, so
+      // without this the catalog (and therefore sha256-based update
+      // detection, and auto-update below) would only ever see new data
+      // after a server restart.
+      catalogRefreshTimer = setInterval(() => {
+        catalogClient.refresh().catch((e) => {
+          console.warn(`[${PLUGIN_ID}] catalog refresh failed: ${e}`);
+        });
+      }, staleAfterMs);
+
+      // "Keep fresh when online" (PRD §5.5 Phase 2): periodically re-download
+      // any manifest install with autoUpdate enabled that's gone stale.
+      // Fires once shortly after start() too (not just on the first
+      // interval tick), so datasets already stale at boot aren't left
+      // waiting a full check interval before the first sweep.
+      const autoUpdateIntervalMs = Math.max(5, config.autoUpdateCheckMinutes) * 60_000;
+      const sweep = () => {
+        runAutoUpdateSweep(mgr).catch((e) => {
+          console.warn(`[${PLUGIN_ID}] auto-update sweep failed: ${e}`);
+        });
+      };
+      setTimeout(sweep, 10_000);
+      autoUpdateTimer = setInterval(sweep, autoUpdateIntervalMs);
 
       const updateStatus = () => {
         const parts: string[] = [];
@@ -454,6 +506,14 @@ function pluginConstructor(app: any) {
       if (timer) {
         clearInterval(timer);
         timer = null;
+      }
+      if (catalogRefreshTimer) {
+        clearInterval(catalogRefreshTimer);
+        catalogRefreshTimer = null;
+      }
+      if (autoUpdateTimer) {
+        clearInterval(autoUpdateTimer);
+        autoUpdateTimer = null;
       }
       if (deltaPublished) {
         app.handleMessage(PLUGIN_ID, {

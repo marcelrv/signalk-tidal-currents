@@ -77,6 +77,7 @@ function fakeDownloadEngine(): DownloadEngine {
     list: () => [...jobs.values()],
     cancel: () => {},
     onUpdate: () => () => {},
+    onAnyDone: () => () => {},
   };
 }
 
@@ -241,6 +242,38 @@ test('DELETE /datasets/:id returns 404 for an unknown id', async () => {
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
   const res = await call('DELETE', '/datasets/:id', { params: { id: 'does-not-exist' } });
+  assert.equal(res.statusCode, 404);
+});
+
+test('PUT /datasets/:id/auto-update enables the flag, persists across a re-read', async () => {
+  const { mgr, manifestPath } = baseMgr();
+  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
+    id: 'grib-install', catalogSourceId: 'grib-install', type: 'grib2', files: [], dir: 'grib',
+    size_bytes: 1, downloaded_at: new Date().toISOString(),
+  }));
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const res = await call('PUT', '/datasets/:id/auto-update', { params: { id: 'grib-install' }, body: { enabled: true } });
+  assert.equal(res.statusCode, 200);
+
+  const res2 = await call('GET', '/datasets', {});
+  const entry = (res2.body as any[]).find((d) => d.id === 'grib-install');
+  assert.equal(entry.autoUpdate, true);
+});
+
+test('PUT /datasets/:id/auto-update returns 400 when enabled is not a boolean', async () => {
+  const { mgr } = baseMgr();
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const res = await call('PUT', '/datasets/:id/auto-update', { params: { id: 'x' }, body: { enabled: 'yes' } });
+  assert.equal(res.statusCode, 400);
+});
+
+test('PUT /datasets/:id/auto-update returns 404 for an unknown (or orphan) id', async () => {
+  const { mgr } = baseMgr();
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const res = await call('PUT', '/datasets/:id/auto-update', { params: { id: 'orphan:harmonic:HARMONIC' }, body: { enabled: true } });
   assert.equal(res.statusCode, 404);
 });
 

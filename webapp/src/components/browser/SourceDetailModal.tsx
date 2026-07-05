@@ -5,6 +5,7 @@ import { datasetForRow, displayStatus, rowsForSources } from '../../lib/sources'
 import { Modal } from '../shared/Modal';
 import { StatusBadge } from '../shared/StatusBadge';
 import { ExpiryCountdown } from '../shared/ExpiryCountdown';
+import { AutoUpdateToggle } from '../shared/AutoUpdateToggle';
 import { DownloadButton } from '../downloads/DownloadButton';
 import { AttributionPanel } from '../attribution/AttributionPanel';
 
@@ -28,6 +29,7 @@ export function SourceDetailModal() {
         <div className="flex flex-wrap items-center gap-3">
           <StatusBadge status={status} />
           {dataset && <ExpiryCountdown dataset={dataset} />}
+          {dataset && <AutoUpdateToggle dataset={dataset} />}
           <DownloadButton source={row.source} regionId={row.regionId} fileType={row.fileType} status={status} />
         </div>
         <p className="text-sm text-muted">{row.regionName}</p>

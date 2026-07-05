@@ -104,6 +104,29 @@ test('cleanupCandidates: vessel far outside a bbox is included with correct nm d
   assert.ok(Math.abs(candidates[0].distanceNm! - expectedNm) < 0.01, `${candidates[0].distanceNm} vs ${expectedNm}`);
 });
 
+// --- antimeridian-crossing bbox (e.g. the real Bering Sea catalog entry: min_lon 155, max_lon -165) ---
+
+test('cleanupCandidates: vessel INSIDE an antimeridian-crossing bbox is excluded (distance 0)', () => {
+  const manifest = { manifest_version: 1 as const, installs: [mkInstall('a', 'bering', 100)] };
+  const bbox = { min_lat: 50, min_lon: 155, max_lat: 65, max_lon: -165 };
+  const catalogDoc = catalogWith(mkSource('bering', bbox));
+  // 178°E — inside the wrapped [155,180] ∪ [-180,-165] range, and inside the lat range.
+  const candidates = cleanupCandidates(manifest, catalogDoc, { lat: 60, lon: 178 }, 1);
+  assert.deepEqual(candidates, []);
+});
+
+test('cleanupCandidates: vessel OUTSIDE an antimeridian-crossing bbox clamps to the nearer edge, not a wildly wrong point', () => {
+  const manifest = { manifest_version: 1 as const, installs: [mkInstall('a', 'bering', 100)] };
+  const bbox = { min_lat: 50, min_lon: 155, max_lat: 65, max_lon: -165 };
+  const catalogDoc = catalogWith(mkSource('bering', bbox));
+  // 120°E is well outside the wrapped range — nearer to min_lon (155) than max_lon (-165, i.e. 195°E).
+  const vessel = { lat: 60, lon: 120 };
+  const candidates = cleanupCandidates(manifest, catalogDoc, vessel, 50);
+  assert.equal(candidates.length, 1);
+  const expectedNm = distanceKm(vessel.lat, vessel.lon, 60, 155) / 1.852;
+  assert.ok(Math.abs(candidates[0].distanceNm! - expectedNm) < 0.01, `${candidates[0].distanceNm} vs ${expectedNm}`);
+});
+
 test('cleanupCandidates: an install whose catalogSourceId no longer resolves is always included, null distance, sorted last', () => {
   const manifest = {
     manifest_version: 1 as const,
