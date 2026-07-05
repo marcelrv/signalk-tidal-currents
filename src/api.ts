@@ -25,6 +25,7 @@
 
 import { GribSource, gribGridSamples, gribSummary, gribVectorAt } from './gribcurrents.js';
 import { HarmonicsData, IdxStation } from './harmonics.js';
+import { SourceType } from './priority.js';
 import {
   CurrentSample,
   currentSampleAt,
@@ -62,8 +63,10 @@ export interface ApiState {
   grib?: GribSource | null;
   /** UTCEF current source; null/undefined when not configured. */
   utcef?: UtcefSource | null;
-  /** When several sources cover a position/time, use GRIB first (default true). */
+  /** When several sources cover a position/time, use GRIB first (default true). Superseded by sourcePriority when set. */
   preferGrib?: boolean;
+  /** Explicit source-type rank (PRD §5.3 Phase 1); falls back to the preferGrib boolean when unset. */
+  sourcePriority?: SourceType[];
 }
 
 export interface ResolvedVector {
@@ -121,16 +124,21 @@ export function resolveVector(
     if (!sample) return null;
     return { source: 'station', sample, station: near[0].station, distanceKm: near[0].distanceKm };
   };
-  // GRIB is the "forecast grid"; the two station-type sources (UTCEF, then
-  // legacy harmonics) follow, with UTCEF preferred for its 2D vectors.
-  const order = state.preferGrib === false
-    ? [fromUtcef, fromStation, fromGrib]
-    : [fromGrib, fromUtcef, fromStation];
-  for (const src of order) {
-    const r = src();
+  const fns: Record<SourceType, () => ResolvedVector | null> = { grib2: fromGrib, utcef: fromUtcef, harmonic: fromStation };
+  for (const key of sourceRank(state)) {
+    const r = fns[key]();
     if (r) return r;
   }
   return null;
+}
+
+/**
+ * Source-type rank to try in order: an explicit `sourcePriority` (PRD §5.3
+ * Phase 1) wins when set; otherwise falls back to the legacy `preferGrib`
+ * boolean so existing saved configs keep behaving the same way.
+ */
+function sourceRank(state: ApiState): SourceType[] {
+  return state.sourcePriority ?? (state.preferGrib === false ? ['utcef', 'harmonic', 'grib2'] : ['grib2', 'utcef', 'harmonic']);
 }
 
 function stationInfo(s: IdxStation, extra: Record<string, unknown> = {}) {
@@ -381,16 +389,15 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     const g = gribData();
 
     // Per-sample source candidates in preference order (same policy as
-    // resolveVector): GRIB grid first by default, then UTCEF vectors, then
-    // the legacy harmonic station.
+    // resolveVector, via the same sourceRank()).
     const fromGrib = (t: number) => (g ? gribVectorAt(g, pos.lat, pos.lon, t) : null);
     const fromUtcef = (t: number) => (utcefNear ? utcefSampleAt(utcefNear.station, t) : null);
     const fromStation = (t: number) =>
       station && state.data ? currentSampleAt(state.data, station.station, t) : null;
+    const fns: Record<SourceType, (t: number) => CurrentSample | null> = { grib2: fromGrib, utcef: fromUtcef, harmonic: fromStation };
+    const sourceLabel: Record<SourceType, 'grib' | 'utcef' | 'station'> = { grib2: 'grib', utcef: 'utcef', harmonic: 'station' };
     const candidates: Array<{ source: 'grib' | 'utcef' | 'station'; fn: (t: number) => CurrentSample | null }> =
-      state.preferGrib === false
-        ? [{ source: 'utcef', fn: fromUtcef }, { source: 'station', fn: fromStation }, { source: 'grib', fn: fromGrib }]
-        : [{ source: 'grib', fn: fromGrib }, { source: 'utcef', fn: fromUtcef }, { source: 'station', fn: fromStation }];
+      sourceRank(state).map((key) => ({ source: sourceLabel[key], fn: fns[key] }));
 
     const samples: Array<CurrentSample & { source: 'grib' | 'utcef' | 'station' }> = [];
     const usedSources = new Set<string>();

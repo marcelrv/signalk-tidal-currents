@@ -1,0 +1,69 @@
+@import 'tailwindcss';
+
+/*
+ * Three themes as CSS variables (PRD §4): Day (high-contrast light), Dark,
+ * and Red night mode (preserves night vision). Red mode uses shades of
+ * red/black/white for EVERY semantic color, not just accent — a literal
+ * green "success" dot in red mode would defeat the whole point.
+ */
+:root[data-theme='day'] {
+  --color-bg: #f5f7fa;
+  --color-surface: #ffffff;
+  --color-fg: #0f172a;
+  --color-muted: #64748b;
+  --color-accent: #0369a1;
+  --color-success: #15803d;
+  --color-warn: #b45309;
+  --color-danger: #b91c1c;
+}
+
+:root[data-theme='dark'] {
+  --color-bg: #0b1220;
+  --color-surface: #131c2e;
+  --color-fg: #e2e8f0;
+  --color-muted: #94a3b8;
+  --color-accent: #38bdf8;
+  --color-success: #4ade80;
+  --color-warn: #fbbf24;
+  --color-danger: #f87171;
+}
+
+:root[data-theme='red'] {
+  --color-bg: #0a0000;
+  --color-surface: #1a0000;
+  --color-fg: #ff8080;
+  --color-muted: #a03030;
+  --color-accent: #ff4040;
+  --color-success: #ff4040;
+  --color-warn: #cc2020;
+  --color-danger: #ffffff;
+}
+
+@theme {
+  --color-bg: var(--color-bg);
+  --color-surface: var(--color-surface);
+  --color-fg: var(--color-fg);
+  --color-muted: var(--color-muted);
+  --color-accent: var(--color-accent);
+  --color-success: var(--color-success);
+  --color-warn: var(--color-warn);
+  --color-danger: var(--color-danger);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

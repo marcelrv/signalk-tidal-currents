@@ -25,13 +25,20 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { registerRoutes, resolveVector, resolvedStationName, ApiState, RouterLike } from './api.js';
+import { createCatalogClient } from './catalog.js';
 import { ensureStandardData } from './download.js';
+import { createDownloadEngine } from './downloads.js';
 import { createGribSource } from './gribcurrents.js';
 import { HarmonicsData, loadHarmonicsDir } from './harmonics.js';
+import { ManagerRouterLike, ManagerState, registerManagerRoutes } from './managerApi.js';
+import { DEFAULT_PRIORITY, SourceType, isValidPriorityOrder, loadPriorityOverride, savePriorityOverrideAtomic } from './priority.js';
 import { createUtcefSource } from './utcef.js';
 
 const PLUGIN_ID = 'signalk-tidal-currents';
 const DEG2RAD = Math.PI / 180;
+
+/** Inferred default catalog hosting URL — the signalk-router-data repo that actually generates and commits it weekly. The spec itself names no canonical URL, so this is a configurable default, not a hardcoded requirement. */
+const DEFAULT_CATALOG_URL = 'https://raw.githubusercontent.com/marcelrv/signalk-router-data/main/tide-current-index.json';
 
 interface Config {
   dataDir: string;
@@ -42,6 +49,9 @@ interface Config {
   updateSeconds: number;
   maxStationDistanceKm: number;
   autoDownloadStandardData: boolean;
+  catalogUrl: string;
+  catalogRefreshHours: number;
+  sourcePriority: SourceType[];
 }
 
 const DEFAULTS: Config = {
@@ -53,6 +63,9 @@ const DEFAULTS: Config = {
   updateSeconds: 60,
   maxStationDistanceKm: 15,
   autoDownloadStandardData: true,
+  catalogUrl: DEFAULT_CATALOG_URL,
+  catalogRefreshHours: 24,
+  sourcePriority: DEFAULT_PRIORITY,
 };
 
 // Deliberately loose server typing: the plugin only touches a small,
@@ -63,12 +76,17 @@ const DEFAULTS: Config = {
 // default along with it (e.g. pointing dataDir at an external OpenCPN
 // folder must not relocate the GRIB2 default into that folder too).
 /* eslint-disable @typescript-eslint/no-explicit-any */
-function defaultDirs(app: any): { dataDir: string; gribDir: string; utcefDir: string } {
+function defaultDirs(app: any): { dataDir: string; gribDir: string; utcefDir: string; managerDir: string } {
   const pluginRoot = app.getDataDirPath ? app.getDataDirPath() : '.';
   return {
     dataDir: path.join(pluginRoot, 'tcdata'),
     gribDir: path.join(pluginRoot, 'grib'),
     utcefDir: path.join(pluginRoot, 'utcef'),
+    // The manager's own files (catalog cache, install manifest, priority
+    // override) live at the plugin root itself — deliberately independent of
+    // dataDir/gribDir/utcefDir, which a user may redirect elsewhere (e.g. an
+    // external OpenCPN folder) without dragging the manager state along.
+    managerDir: pluginRoot,
   };
 }
 
@@ -77,6 +95,26 @@ function pluginConstructor(app: any) {
   const state: ApiState = { data: null, error: 'not started' };
   let mountedV2 = false;
   let deltaPublished = false;
+
+  // A stable object reference (like `state` above), mutated in place by
+  // start() rather than reassigned — registerWithRouter/the v2 mount shim
+  // may run before or after start() depending on server lifecycle, and route
+  // handlers read these fields at REQUEST time, so this works either way.
+  const mgr: ManagerState = {
+    catalog: { get: () => ({ status: 'empty', document: null, fetchedAt: null, error: 'plugin not started', sourceUrl: '', warnings: [] }), refresh: async () => mgr.catalog.get() },
+    downloads: {
+      start: () => { throw new Error('plugin not started'); },
+      get: () => undefined,
+      list: () => [],
+      cancel: () => {},
+    },
+    manifestPath: '',
+    dirs: { harmonic: '', grib2: '', utcef: '' },
+    managerDir: '',
+    getPriority: () => DEFAULT_PRIORITY,
+    setPriority: () => { /* not started yet */ },
+    apiState: state,
+  };
 
   const plugin: any = {
     id: PLUGIN_ID,
@@ -124,8 +162,20 @@ function pluginConstructor(app: any) {
             title: 'Prefer GRIB over stations',
             description:
               'When both a GRIB grid and a harmonic station cover the position, use the GRIB ' +
-              'forecast; stations remain the fallback outside GRIB coverage or beyond its time range',
+              'forecast; stations remain the fallback outside GRIB coverage or beyond its time range. ' +
+              '(Legacy — superseded by Source Priority below when set.)',
             default: DEFAULTS.preferGrib,
+          },
+          sourcePriority: {
+            type: 'array',
+            title: 'Source Priority',
+            description:
+              'Order to try the 3 source TYPES in when several cover a position (Phase 1: applies ' +
+              'per data type, not per dataset). This is a fallback control surface — the Tidal ' +
+              'Currents Manager webapp\'s reorder list is the primary way to change it, and any ' +
+              'change made there is saved independently of this form.',
+            items: { type: 'string', enum: ['grib2', 'utcef', 'harmonic'] },
+            default: DEFAULTS.sourcePriority,
           },
           publishDelta: {
             type: 'boolean',
@@ -158,6 +208,22 @@ function pluginConstructor(app: any) {
               'a file literally named HARMONIC/HARMONIC.IDX, so a custom pair you provide always wins.',
             default: DEFAULTS.autoDownloadStandardData,
           },
+          catalogUrl: {
+            type: 'string',
+            title: 'Tide/Current Catalog URL',
+            description:
+              'Source of the downloadable-dataset catalog used by the Tidal Currents Manager webapp ' +
+              '(schema 1.0.0, see signalk-router-data). Cached locally so the webapp keeps working ' +
+              'offline after the first successful fetch.',
+            default: DEFAULTS.catalogUrl,
+          },
+          catalogRefreshHours: {
+            type: 'number',
+            title: 'Catalog Refresh Interval (hours)',
+            description: 'Re-fetch the catalog at most this often; a failed refresh keeps serving the last cached copy.',
+            default: DEFAULTS.catalogRefreshHours,
+            minimum: 1,
+          },
         },
       };
     },
@@ -170,6 +236,7 @@ function pluginConstructor(app: any) {
         config.gribDir && config.gribDir.trim() !== '' ? config.gribDir : defaults.gribDir;
       const utcefDir =
         config.utcefDir && config.utcefDir.trim() !== '' ? config.utcefDir : defaults.utcefDir;
+      const managerDir = defaults.managerDir;
 
       // Create both directories (default or user-specified) if missing, so
       // saving the config is enough — no manual mkdir before dropping in a
@@ -186,7 +253,7 @@ function pluginConstructor(app: any) {
       // don't apply (chmod there only toggles the read-only attribute) —
       // harmless no-op, not an error, so wrapped the same as any other
       // filesystem access here.
-      for (const d of [dir, gribDir, utcefDir]) {
+      for (const d of [dir, gribDir, utcefDir, managerDir]) {
         try {
           fs.mkdirSync(d, { recursive: true, mode: 0o777 });
           fs.chmodSync(d, 0o777);
@@ -198,6 +265,51 @@ function pluginConstructor(app: any) {
       state.grib = createGribSource(gribDir);
       state.utcef = createUtcefSource(utcefDir);
       state.preferGrib = config.preferGrib;
+
+      // Tidal Currents Manager (PRD docs/PRD-tidal-currents-manager.md, Phase
+      // 1): catalog fetch/cache, download engine, and source-type priority.
+      // priority.json (written by the webapp's reorder list) takes
+      // precedence over the plain config form's sourcePriority, which is
+      // just the initial/admin-form fallback.
+      let currentPriority: SourceType[] =
+        loadPriorityOverride(managerDir) ?? (isValidPriorityOrder(config.sourcePriority) ? config.sourcePriority : DEFAULT_PRIORITY);
+      state.sourcePriority = currentPriority;
+
+      const catalogClient = createCatalogClient({
+        url: config.catalogUrl && config.catalogUrl.trim() !== '' ? config.catalogUrl : DEFAULT_CATALOG_URL,
+        cacheFile: path.join(managerDir, 'catalog-cache.json'),
+      });
+      const manifestPath = path.join(managerDir, 'install-manifest.json');
+      const downloadEngine = createDownloadEngine({
+        dirs: { harmonic: dir, grib2: gribDir, utcef: utcefDir },
+        manifestPath,
+        catalog: catalogClient,
+        catalogUrl: config.catalogUrl && config.catalogUrl.trim() !== '' ? config.catalogUrl : DEFAULT_CATALOG_URL,
+      });
+      mgr.catalog = catalogClient;
+      mgr.downloads = downloadEngine;
+      mgr.manifestPath = manifestPath;
+      mgr.dirs = { harmonic: dir, grib2: gribDir, utcef: utcefDir };
+      mgr.managerDir = managerDir;
+      mgr.getPriority = () => currentPriority;
+      mgr.setPriority = (order) => {
+        currentPriority = order;
+        state.sourcePriority = order;
+        savePriorityOverrideAtomic(managerDir, order);
+      };
+
+      // Fire-and-forget: refresh the catalog if there's no cached copy yet,
+      // or the cached one is older than catalogRefreshHours. Never blocks
+      // start() — the webapp renders "Last catalog sync: X ago" from
+      // whatever's cached in the meantime (PRD §5.5 / §9 offline criterion).
+      const cached = catalogClient.get();
+      const staleAfterMs = Math.max(1, config.catalogRefreshHours) * 3600_000;
+      const catalogIsStale = !cached.fetchedAt || Date.now() - Date.parse(cached.fetchedAt) > staleAfterMs;
+      if (catalogIsStale) {
+        catalogClient.refresh().catch((e) => {
+          console.warn(`[${PLUGIN_ID}] catalog refresh failed: ${e}`);
+        });
+      }
 
       const updateStatus = () => {
         const parts: string[] = [];
@@ -247,10 +359,14 @@ function pluginConstructor(app: any) {
       if (!mountedV2 && typeof app.get === 'function') {
         try {
           const V2_BASE = '/signalk/v2/api/currents';
-          const prefixed: RouterLike = {
+          const prefixed: RouterLike & ManagerRouterLike = {
             get: (p, h) => app.get(p === '/' ? V2_BASE : V2_BASE + p, h),
+            post: (p, h) => app.post(V2_BASE + p, h),
+            put: (p, h) => app.put(V2_BASE + p, h),
+            delete: (p, h) => app.delete(V2_BASE + p, h),
           };
           registerRoutes(prefixed, state);
+          registerManagerRoutes(prefixed, mgr);
           mountedV2 = true;
         } catch (e) {
           console.warn(`[${PLUGIN_ID}] could not mount /signalk/v2/api/currents: ${e}`);
@@ -348,9 +464,10 @@ function pluginConstructor(app: any) {
       app.setPluginStatus('Stopped');
     },
 
-    registerWithRouter(router: RouterLike) {
+    registerWithRouter(router: RouterLike & ManagerRouterLike) {
       // v1 plugin path: /plugins/signalk-tidal-currents/…
       registerRoutes(router, state);
+      registerManagerRoutes(router, mgr);
     },
 
     getOpenApi: () => openApiSpec,
@@ -429,6 +546,46 @@ const openApiSpec = {
         ],
         responses: { '200': { description: 'OK' }, '404': { description: 'No coverage / no station in range' } },
       },
+    },
+    '/catalog': {
+      get: { summary: 'Cached tide/current dataset catalog (Tidal Currents Manager)', responses: { '200': { description: 'OK' } } },
+    },
+    '/catalog/refresh': {
+      post: {
+        summary: 'Force a catalog re-fetch',
+        responses: { '200': { description: 'OK' }, '502': { description: 'Fetch failed — cached copy returned alongside the error' } },
+      },
+    },
+    '/datasets': {
+      get: { summary: 'Installed dataset inventory (manifest installs + orphaned/legacy files)', responses: { '200': { description: 'OK' } } },
+    },
+    '/datasets/{id}': {
+      delete: {
+        summary: 'Remove an installed or orphaned dataset',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'OK' }, '400': { description: 'Refused — outside the managed directories' }, '404': { description: 'Unknown dataset id' } },
+      },
+    },
+    '/storage': {
+      get: { summary: 'Disk usage for the plugin data directories', responses: { '200': { description: 'OK' } } },
+    },
+    '/downloads': {
+      get: { summary: 'All download jobs', responses: { '200': { description: 'OK' } } },
+      post: {
+        summary: 'Start a catalog-driven download',
+        responses: { '200': { description: 'OK' }, '404': { description: 'Unknown catalog source' } },
+      },
+    },
+    '/downloads/{id}': {
+      get: {
+        summary: 'Download job progress',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'OK' }, '404': { description: 'Unknown job id' } },
+      },
+    },
+    '/priority': {
+      get: { summary: 'Current source-type priority order', responses: { '200': { description: 'OK' } } },
+      put: { summary: 'Set the source-type priority order', responses: { '200': { description: 'OK' }, '400': { description: 'Not a permutation of the 3 source types' } } },
     },
   },
 };

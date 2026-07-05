@@ -11,7 +11,8 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:webapp",
+    "build:webapp": "npm --prefix webapp ci && npm --prefix webapp run build",
     "test": "tsc && node -e \"require('fs').rmSync('dist-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node -e \"require('fs').cpSync('test/fixtures','dist-test/fixtures',{recursive:true})\" && node --test \"dist-test/*.test.js\"",
     "prepublishOnly": "npm run build"
   },
@@ -19,6 +20,7 @@
     "signalk-node-server-plugin",
     "signalk-category-weather",
     "signalk-category-utility",
+    "signalk-webapp",
     "signalk",
     "tides",
     "tidal-currents",
@@ -26,14 +28,20 @@
     "opencpn",
     "harmonics",
     "grib",
-    "grib2"
+    "grib2",
+    "utcef"
   ],
   "signalk": {
     "displayName": "Tidal Currents",
     "appIcon": "./img/icon.svg",
     "screenshots": [
       "./img/screenshot-config.jpg"
-    ]
+    ],
+    "webapp": {
+      "name": "Tidal Currents Manager",
+      "description": "Discover, download, and manage tidal-current data (UTCEF, GRIB2, harmonic) for offline use",
+      "location": "/plugins/signalk-tidal-currents/"
+    }
   },
   "signalk-plugin-enabled-by-default": false,
   "author": "Marcel Verpaalen",
@@ -51,6 +59,7 @@
   },
   "files": [
     "dist",
+    "public",
     "img",
     "README.md",
     "CHANGELOG.md",

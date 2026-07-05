@@ -60,10 +60,27 @@ export interface UtcefCurrentStation {
   representativeArea?: number[][][];
 }
 
+/** A `metadata.data_sources[]` entry (spec §4.1). */
+export interface UtcefDataSource {
+  name: string;
+  url?: string;
+  role?: string;
+}
+
 export interface UtcefData {
   dir: string;
   files: string[];
   title?: string;
+  /** Legal copyright/attribution statement (`metadata.copyright`). */
+  copyright?: string;
+  /** Data-sharing terms, e.g. "CC-BY-4.0" (`metadata.license`). */
+  license?: string;
+  /** Link to the full license text, when the dataset provides one (`metadata.license_url`). */
+  licenseUrl?: string;
+  /** Citation text required by the underlying data source, if any (`metadata.citation_required`). */
+  citationRequired?: string;
+  /** Source organizations/models feeding this dataset (`metadata.data_sources`). */
+  dataSources?: UtcefDataSource[];
   currentStations: UtcefCurrentStation[];
   /** Count of parsed height features (retained for future use, not published). */
   heightStationCount: number;
@@ -85,6 +102,11 @@ function toMsPerSecond(unit: string | undefined): number {
 /** Parse one UTCEF document (already-decompressed JSON text) into current stations. */
 export function parseUtcef(text: string, sourceLabel: string, warnings: string[]): {
   title?: string;
+  copyright?: string;
+  license?: string;
+  licenseUrl?: string;
+  citationRequired?: string;
+  dataSources?: UtcefDataSource[];
   currentStations: UtcefCurrentStation[];
   heightStationCount: number;
   unsupportedFeatureCount: number;
@@ -186,7 +208,23 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
     });
   }
 
-  return { title: meta.title, currentStations, heightStationCount, unsupportedFeatureCount };
+  const dataSources: UtcefDataSource[] | undefined = Array.isArray(meta.data_sources)
+    ? meta.data_sources
+        .filter((s: any) => s && typeof s.name === 'string')
+        .map((s: any) => ({ name: s.name, url: s.url, role: s.role }))
+    : undefined;
+
+  return {
+    title: meta.title,
+    copyright: meta.copyright,
+    license: meta.license,
+    licenseUrl: meta.license_url,
+    citationRequired: meta.citation_required,
+    dataSources,
+    currentStations,
+    heightStationCount,
+    unsupportedFeatureCount,
+  };
 }
 
 /**
@@ -265,6 +303,11 @@ export function loadUtcefDir(dir: string): UtcefData | null {
   const files: string[] = [];
   const seenIds = new Set<string>();
   let title: string | undefined;
+  let copyright: string | undefined;
+  let license: string | undefined;
+  let licenseUrl: string | undefined;
+  let citationRequired: string | undefined;
+  let dataSources: UtcefDataSource[] | undefined;
   let heightStationCount = 0;
   let unsupportedFeatureCount = 0;
 
@@ -274,6 +317,11 @@ export function loadUtcefDir(dir: string): UtcefData | null {
       const text = readUtcefFile(full);
       const parsed = parseUtcef(text, name, warnings);
       if (!title) title = parsed.title;
+      if (!copyright) copyright = parsed.copyright;
+      if (!license) license = parsed.license;
+      if (!licenseUrl) licenseUrl = parsed.licenseUrl;
+      if (!citationRequired) citationRequired = parsed.citationRequired;
+      if (!dataSources) dataSources = parsed.dataSources;
       heightStationCount += parsed.heightStationCount;
       unsupportedFeatureCount += parsed.unsupportedFeatureCount;
       let added = 0;
@@ -296,6 +344,11 @@ export function loadUtcefDir(dir: string): UtcefData | null {
     dir,
     files,
     title,
+    copyright,
+    license,
+    licenseUrl,
+    citationRequired,
+    dataSources,
     currentStations,
     heightStationCount,
     unsupportedFeatureCount,
@@ -395,6 +448,11 @@ export function utcefSummary(data: UtcefData): Record<string, unknown> {
     dir: data.dir,
     files: data.files,
     title: data.title,
+    copyright: data.copyright,
+    license: data.license,
+    licenseUrl: data.licenseUrl,
+    citationRequired: data.citationRequired,
+    dataSources: data.dataSources,
     currentStations: data.currentStations.length,
     heightStations: data.heightStationCount,
     unsupportedFeatures: data.unsupportedFeatureCount,

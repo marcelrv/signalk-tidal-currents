@@ -148,6 +148,23 @@ test('loads the reference document: one current station, one height, one unsuppo
   assert.equal(st.meanU, 0.012);
 });
 
+test('surfaces license/citation/attribution metadata (PRD attribution surface)', () => {
+  const dir = tmpDir();
+  const doc = referenceDoc() as any;
+  doc.metadata.license_url = 'https://example.org/license.pdf';
+  doc.metadata.citation_required = 'Please cite Test Dataset 2026';
+  doc.metadata.data_sources = [{ name: 'Test Model', url: 'https://example.org', role: 'Model Developer' }];
+  fs.writeFileSync(path.join(dir, 'ref.utcef'), JSON.stringify(doc));
+  const data = loadUtcefDir(dir)!;
+  assert.equal(data.copyright, 'c');
+  assert.equal(data.license, 'CC-BY-4.0');
+  assert.equal(data.licenseUrl, 'https://example.org/license.pdf');
+  assert.equal(data.citationRequired, 'Please cite Test Dataset 2026');
+  assert.deepEqual(data.dataSources, [
+    { name: 'Test Model', url: 'https://example.org', role: 'Model Developer' },
+  ]);
+});
+
 test('predicts a finite, well-formed set/drift vector', () => {
   const dir = tmpDir();
   fs.writeFileSync(path.join(dir, 'ref.utcef'), JSON.stringify(referenceDoc()));

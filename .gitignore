@@ -4,6 +4,7 @@ node_modules/
 # Build output
 dist/
 dist-test/
+/public/
 *.tgz
 
 # Private tooling / data — never commit
