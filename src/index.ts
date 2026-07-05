@@ -90,6 +90,18 @@ function defaultDirs(app: any): { dataDir: string; gribDir: string; utcefDir: st
   };
 }
 
+/** Shared by the delta-publish loop and ManagerState.getVesselPosition — the one place that reads/validates navigation.position off the server API. */
+function readVesselPosition(app: any): { lat: number; lon: number } | null {
+  try {
+    const pos = app.getSelfPath('navigation.position');
+    const p = pos?.value ?? pos;
+    if (typeof p?.latitude !== 'number' || typeof p?.longitude !== 'number') return null;
+    return { lat: p.latitude, lon: p.longitude };
+  } catch {
+    return null;
+  }
+}
+
 function pluginConstructor(app: any) {
   let timer: ReturnType<typeof setInterval> | null = null;
   const state: ApiState = { data: null, error: 'not started' };
@@ -107,6 +119,7 @@ function pluginConstructor(app: any) {
       get: () => undefined,
       list: () => [],
       cancel: () => {},
+      onUpdate: () => () => {},
     },
     manifestPath: '',
     dirs: { harmonic: '', grib2: '', utcef: '' },
@@ -114,6 +127,7 @@ function pluginConstructor(app: any) {
     getPriority: () => DEFAULT_PRIORITY,
     setPriority: () => { /* not started yet */ },
     apiState: state,
+    getVesselPosition: () => readVesselPosition(app),
   };
 
   const plugin: any = {
@@ -389,13 +403,12 @@ function pluginConstructor(app: any) {
       if (config.publishDelta) {
         const publish = () => {
           try {
-            const pos = app.getSelfPath('navigation.position');
-            const p = pos?.value ?? pos;
-            if (typeof p?.latitude !== 'number' || typeof p?.longitude !== 'number') return;
+            const pos = readVesselPosition(app);
+            if (!pos) return;
             const resolved = resolveVector(
               state,
-              p.latitude,
-              p.longitude,
+              pos.lat,
+              pos.lon,
               Date.now(),
               config.maxStationDistanceKm,
             );

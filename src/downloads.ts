@@ -12,6 +12,7 @@
  */
 
 import * as crypto from 'crypto';
+import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -43,6 +44,8 @@ export interface DownloadJob {
 
 export interface FileSelector {
   region_id?: string;
+  /** Disambiguates when a region has BOTH a forecast and a nowcast template file (observed in the real NOAA catalog — same region_id, two products). */
+  type?: 'forecast' | 'nowcast';
   filename?: string;
 }
 
@@ -65,7 +68,12 @@ export interface DownloadEngine {
   get(id: string): DownloadJob | undefined;
   list(): DownloadJob[];
   cancel(id: string): void;
+  /** Subscribes to every update (state transition or throttled progress tick) for one job; returns an unsubscribe function. Backs the SSE route (PRD §9 Phase 2). */
+  onUpdate(id: string, listener: (job: DownloadJob) => void): () => void;
 }
+
+/** Progress-only updates are throttled to at most once per this many ms per job — state transitions always emit immediately regardless. */
+const PROGRESS_EMIT_THROTTLE_MS = 200;
 
 function dirAndTagForType(type: CatalogSourceType, dirs: DownloadEngineDirs): { dir: string; tag: ManifestDir } {
   if (type === 'grib2') return { dir: dirs.grib2, tag: 'grib' };
@@ -117,19 +125,43 @@ function fillTemplate(template: string, ymd: string, hh: string, forecastHour: n
     .replace(/\{hour:03d\}/g, pad3(forecastHour));
 }
 
+/**
+ * Validates a selector eagerly (before queueing) against what `runJob` will
+ * actually do. A multi-file STATIC source (e.g. a HARMONIC + .IDX pair) is
+ * downloaded as one atomic bundle regardless of selector — so no selector is
+ * ever required there. TEMPLATE files are ambiguous without a `region_id`
+ * whenever a source has more than one; some real catalog regions (observed
+ * in NOAA's) additionally carry BOTH a `forecast` and a `nowcast` file under
+ * the SAME `region_id` — those need `type` too, or `region_id` alone still
+ * resolves to more than one file.
+ */
 function pickFile(source: CatalogSource, selector?: FileSelector): CatalogFile {
+  const templateFiles = source.files.filter(isTemplateFile);
   if (selector?.filename) {
     const f = source.files.find((f) => !isTemplateFile(f) && f.filename === selector.filename);
     if (!f) throw new Error(`no file named "${selector.filename}" in source "${source.id}"`);
     return f;
   }
   if (selector?.region_id) {
-    const f = source.files.find((f) => isTemplateFile(f) && f.region_id === selector.region_id);
-    if (!f) throw new Error(`no template file for region "${selector.region_id}" in source "${source.id}"`);
-    return f;
+    let matches = templateFiles.filter((f) => f.region_id === selector.region_id);
+    if (selector.type) matches = matches.filter((f) => f.type === selector.type);
+    if (matches.length === 0) {
+      throw new Error(
+        `no template file for region "${selector.region_id}"${selector.type ? ` (${selector.type})` : ''} in source "${source.id}"`,
+      );
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `region "${selector.region_id}" in source "${source.id}" has multiple types (${matches.map((f) => f.type).join(', ')}) — a type selector is required`,
+      );
+    }
+    return matches[0];
   }
-  if (source.files.length === 1) return source.files[0];
-  throw new Error(`source "${source.id}" has ${source.files.length} files — a filename or region_id selector is required`);
+  if (templateFiles.length > 1) {
+    throw new Error(`source "${source.id}" has ${templateFiles.length} template regions — a region_id selector is required`);
+  }
+  if (source.files.length === 0) throw new Error(`source "${source.id}" has no files`);
+  return templateFiles[0] ?? source.files[0];
 }
 
 async function writeChunk(stream: fs.WriteStream, chunk: Uint8Array): Promise<void> {
@@ -184,8 +216,26 @@ async function downloadOne(
 export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngine {
   const jobs = new Map<string, DownloadJob>();
   const abortControllers = new Map<string, AbortController>();
+  const selectors = new Map<string, FileSelector | undefined>();
   const queue: string[] = [];
   let processing = false;
+
+  // Small number of concurrent SSE viewers expected at once (one browser tab
+  // per boat, typically) — unbounded listener count is not a leak signal here.
+  const emitter = new EventEmitter();
+  emitter.setMaxListeners(0);
+  const lastEmitAt = new Map<string, number>();
+
+  /** Emits a snapshot of `job` to its subscribers. State transitions (the default) always emit immediately; pass `progressOnly: true` from a byte-progress callback to throttle. */
+  function notify(job: DownloadJob, progressOnly = false): void {
+    if (progressOnly) {
+      const last = lastEmitAt.get(job.id) ?? 0;
+      if (Date.now() - last < PROGRESS_EMIT_THROTTLE_MS) return;
+    }
+    lastEmitAt.set(job.id, Date.now());
+    if (job.state === 'done' || job.state === 'error') lastEmitAt.delete(job.id);
+    emitter.emit(`job:${job.id}`, { ...job });
+  }
 
   function targetDirFor(type: CatalogSourceType): { dir: string; tag: ManifestDir } {
     return dirAndTagForType(type, opts.dirs);
@@ -214,6 +264,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         const result = await downloadOne(url, target, (delta, total) => {
           job.bytes += delta;
           if (total !== null) job.totalBytes = (job.totalBytes ?? 0) + total;
+          notify(job, true);
         }, controller.signal);
         if (file.sha256 && file.sha256 !== result.sha256) {
           try { fs.unlinkSync(target); } catch { /* best effort */ }
@@ -247,8 +298,18 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
 
     // Template (forecast/nowcast) source: download every forecast_hours entry
     // for one chosen cycle as a single manifest install — multi-hour coverage
-    // is what gribcurrents.ts's time interpolation actually needs.
-    const templateFile = source.files.find((f) => isTemplateFile(f)) as TemplateCatalogFile;
+    // is what gribcurrents.ts's time interpolation actually needs. When the
+    // source has multiple region-scoped template files, the selector's
+    // region_id says which one — NOT just "the first one found" (a source
+    // like a multi-region NOAA forecast lists one template file per region).
+    const templateFiles = source.files.filter(isTemplateFile);
+    const selector = selectors.get(job.id);
+    const templateFile = selector?.region_id
+      ? templateFiles.find((f) => f.region_id === selector.region_id && (!selector.type || f.type === selector.type))
+      : templateFiles[0];
+    if (!templateFile) {
+      throw new Error(`no template file for region "${selector?.region_id}"${selector?.type ? ` (${selector.type})` : ''} in source "${source.id}"`);
+    }
     const { ymd, hh, iso } = chooseCycle(templateFile, source.update_check.latest_cycle);
     const names: string[] = [];
     let sizeBytes = 0;
@@ -259,12 +320,17 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       const result = await downloadOne(url, target, (delta, total) => {
         job.bytes += delta;
         if (total !== null) job.totalBytes = (job.totalBytes ?? 0) + total;
+        notify(job, true);
       }, controller.signal);
       names.push(filename);
       sizeBytes += result.size;
     }
     const install: ManifestInstall = {
-      id: `${source.id}:${templateFile.region_id}`,
+      // Some real catalog regions carry BOTH a forecast and a nowcast file
+      // under the SAME region_id (observed in the NOAA catalog) — the id
+      // must include the file's own `type` too, or downloading one would
+      // silently clobber the other's manifest entry.
+      id: `${source.id}:${templateFile.region_id}:${templateFile.type}`,
       catalogSourceId: source.id,
       type: source.type,
       files: names,
@@ -272,6 +338,8 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       size_bytes: sizeBytes,
       downloaded_at: new Date().toISOString(),
       cycle: iso,
+      regionId: templateFile.region_id,
+      fileType: templateFile.type,
     };
     const manifest = readManifest(opts.manifestPath);
     writeManifestAtomic(opts.manifestPath, upsertInstall(manifest, install));
@@ -288,6 +356,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         if (!job) continue;
         job.state = 'active';
         job.startedAt = new Date().toISOString();
+        notify(job);
         try {
           await runJob(job);
           job.state = 'done';
@@ -297,6 +366,8 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         } finally {
           job.finishedAt = new Date().toISOString();
           abortControllers.delete(id);
+          selectors.delete(id);
+          notify(job);
         }
       }
       processing = false;
@@ -318,6 +389,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       const job: DownloadJob = { id, catalogSourceId: sourceId, state: 'queued', bytes: 0, totalBytes: null };
       jobs.set(id, job);
       abortControllers.set(id, new AbortController());
+      selectors.set(id, fileSelector);
       queue.push(id);
       processQueue();
       return job;
@@ -328,6 +400,11 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     list(): DownloadJob[] {
       return [...jobs.values()];
     },
+    onUpdate(id: string, listener: (job: DownloadJob) => void): () => void {
+      const channel = `job:${id}`;
+      emitter.on(channel, listener);
+      return () => emitter.off(channel, listener);
+    },
     cancel(id: string): void {
       abortControllers.get(id)?.abort();
       const idx = queue.indexOf(id);
@@ -337,6 +414,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         job.state = 'error';
         job.error = 'cancelled';
         job.finishedAt = new Date().toISOString();
+        notify(job);
       }
     },
   };

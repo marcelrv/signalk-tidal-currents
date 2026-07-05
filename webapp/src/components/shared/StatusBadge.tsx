@@ -1,6 +1,6 @@
 import { DisplayStatus } from '../../lib/sources';
 
-const LABELS: Record<DisplayStatus, string> = {
+export const STATUS_LABELS: Record<DisplayStatus, string> = {
   active: 'Downloaded & active',
   'update-available': 'Update available',
   'not-installed': 'Available — not downloaded',
@@ -9,7 +9,7 @@ const LABELS: Record<DisplayStatus, string> = {
 
 /** The 5-symbol status vocabulary from PRD §4, used consistently on map polygons, list rows, and cards. */
 export function StatusBadge({ status }: { status: DisplayStatus }) {
-  const label = LABELS[status];
+  const label = STATUS_LABELS[status];
   return (
     <span className="inline-flex items-center gap-1.5 text-sm" title={label}>
       <span

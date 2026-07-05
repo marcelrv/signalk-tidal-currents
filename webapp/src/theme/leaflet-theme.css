@@ -1,0 +1,45 @@
+/*
+ * Leaflet never sets an explicit z-index on `.leaflet-container` itself —
+ * only `position: relative`. Per CSS stacking rules that means the container
+ * does NOT establish its own stacking context, so its internal panes/
+ * controls (z-index 200–1000, see leaflet.css) are placed directly into
+ * whatever stacking context encloses the map, where they can out-rank
+ * unrelated app UI with a lower explicit z-index — e.g. a sticky tooltip
+ * (z-index 650) left open on a just-clicked polygon painting ON TOP of our
+ * z-50 Modal, which looked like "the dialog and the underlying map mix
+ * together". `isolation: isolate` forces a new stacking context without
+ * needing to fight over specific z-index numbers, containing all of
+ * Leaflet's internal z-indices inside the map itself.
+ */
+.leaflet-container {
+  isolation: isolate;
+}
+
+/*
+ * Leaflet's own bundled CSS hardcodes white backgrounds for its zoom
+ * controls, attribution bar, and popups — verified directly in
+ * node_modules/leaflet/dist/leaflet.css (`.leaflet-bar a { background-color:
+ * #fff }`, `.leaflet-control-attribution { background: #fff }`,
+ * `.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: white }`).
+ * None of it reacts to data-theme, so without this override, dark/red modes
+ * get bright-white UI chrome floating on top of an otherwise dark/all-red
+ * map — a real PRD §4 violation ("Red mode uses shades of red/black/white
+ * for EVERY semantic color"). Must be imported AFTER leaflet.css so these
+ * rules win the cascade.
+ */
+[data-theme='dark'] .leaflet-bar a,
+[data-theme='red'] .leaflet-bar a,
+[data-theme='dark'] .leaflet-control-attribution,
+[data-theme='red'] .leaflet-control-attribution,
+[data-theme='dark'] .leaflet-popup-content-wrapper,
+[data-theme='red'] .leaflet-popup-content-wrapper,
+[data-theme='dark'] .leaflet-popup-tip,
+[data-theme='red'] .leaflet-popup-tip {
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+
+[data-theme='dark'] .leaflet-control-attribution a,
+[data-theme='red'] .leaflet-control-attribution a {
+  color: var(--color-accent);
+}

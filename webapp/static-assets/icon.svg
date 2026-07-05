@@ -1,0 +1,26 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcel Verpaalen
+SPDX-License-Identifier: Apache-2.0
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1976d2"/>
+      <stop offset="1" stop-color="#0d3b66"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#sea)"/>
+  <!-- tidal stream lines -->
+  <g stroke="#bfe3ff" stroke-width="6" stroke-linecap="round" fill="none" opacity="0.9">
+    <path d="M22 48 q12 -10 24 0 t24 0 t24 0"/>
+    <path d="M22 70 q12 -10 24 0 t24 0 t24 0" opacity="0.65"/>
+    <path d="M22 92 q12 -10 24 0 t24 0 t24 0" opacity="0.4"/>
+  </g>
+  <!-- current arrow -->
+  <g fill="#ffd54f">
+    <path d="M84 24 l24 12 -24 12 6 -12 z"/>
+  </g>
+  <g stroke="#ffd54f" stroke-width="6" stroke-linecap="round" fill="none">
+    <path d="M28 36 q30 -14 60 0" />
+  </g>
+</svg>

@@ -99,7 +99,14 @@ export interface DatasetEntry {
   sizeBytes: number;
   downloadedAt: string | null;
   cycle?: string;
+  regionId?: string;
+  /** A region can carry both a forecast and a nowcast file (real NOAA catalog shape) — region_id alone doesn't uniquely re-select the same one. */
+  fileType?: 'forecast' | 'nowcast';
   status: 'active' | 'update-available' | 'error';
+  updateCheckMethod?: 'sha256' | 'expiry';
+  expiresAt?: string;
+  remainingHours?: number;
+  maxAgeHours?: number;
   contributor?: string;
   sourceUrl?: string;
   license?: string;
@@ -113,6 +120,22 @@ export interface StorageStats {
   totalBytes: number | null;
   freeBytes: number | null;
   usedByPluginBytes: number;
+}
+
+export interface CleanupCandidate {
+  id: string;
+  catalogSourceId: string | null;
+  name: string;
+  type: CatalogSourceType;
+  sizeBytes: number;
+  distanceNm: number | null;
+  downloadedAt: string | null;
+}
+
+export interface CleanupCandidatesResponse {
+  vesselPosition: { lat: number; lon: number } | null;
+  maxDistanceNm: number;
+  candidates: CleanupCandidate[];
 }
 
 export type DownloadJobState = 'queued' | 'active' | 'done' | 'error';

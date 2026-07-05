@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CircleMarker, GeoJSON, MapContainer, useMapEvents } from 'react-leaflet';
-import type { LatLng } from 'leaflet';
+import type { LatLng, Layer } from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import '../../theme/leaflet-theme.css';
 
 import { useAppStore } from '../../store/useAppStore';
 import { useTheme } from '../../theme/ThemeProvider';
-import { THEME_COLORS } from '../../theme/palette';
-import { CatalogSource } from '../../api/types';
-import { datasetForSource, displayStatus, DisplayStatus, matchesFilters } from '../../lib/sources';
+import { THEME_COLORS, ThemePalette } from '../../theme/palette';
+import { CatalogSourceType } from '../../api/types';
+import { SourceRow, datasetForRow, displayStatus, DisplayStatus, matchesFilters, rowsForSources } from '../../lib/sources';
 import { pointInGeometry } from '../../lib/geo';
+import { STATUS_LABELS } from '../shared/StatusBadge';
 import { RegionInspector } from './RegionInspector';
 
 // Deliberately opaque, like the backend's GeoJsonGeometry type (catalogTypes.ts)
@@ -18,12 +20,38 @@ interface FeatureCollection {
   features: unknown[];
 }
 
-const STATUS_COLOR_KEY: Record<DisplayStatus, keyof typeof THEME_COLORS.day> = {
-  active: 'success',
-  'update-available': 'warn',
-  'not-installed': 'muted',
-  error: 'danger',
+const TYPE_COLOR_KEY: Record<CatalogSourceType, keyof ThemePalette> = {
+  harmonic: 'typeHarmonic',
+  grib2: 'typeGrib2',
+  utcef: 'typeUtcef',
 };
+const TYPE_LABEL: Record<CatalogSourceType, string> = { utcef: 'UTCEF', grib2: 'GRIB2', harmonic: 'Harmonic' };
+
+/** Color by TYPE (so the 3 catalog types are always visually distinguishable); STATUS is conveyed via opacity/dash/weight on top, with 'error' overriding the color entirely since a broken dataset is more urgent than its type. */
+function styleForRow(row: SourceRow, status: DisplayStatus, colors: ThemePalette) {
+  const color = status === 'error' ? colors.danger : colors[TYPE_COLOR_KEY[row.source.type]];
+  return {
+    color,
+    weight: status === 'update-available' ? 3 : 2,
+    fillColor: color,
+    fillOpacity: status === 'not-installed' ? 0.08 : 0.3,
+    dashArray: status === 'not-installed' ? '6 4' : undefined,
+  };
+}
+
+/** Small DOM-built tooltip (not an HTML string) so catalog-provided text (name/region) can never inject markup. */
+function buildTooltip(row: SourceRow, status: DisplayStatus): HTMLElement {
+  const el = document.createElement('div');
+  const title = document.createElement('div');
+  title.style.fontWeight = '600';
+  title.textContent = row.name;
+  const meta = document.createElement('div');
+  meta.textContent = `${TYPE_LABEL[row.source.type]} · ${STATUS_LABELS[status]}`;
+  const region = document.createElement('div');
+  region.textContent = row.regionName;
+  el.append(title, meta, region);
+  return el;
+}
 
 /** Captures map clicks to open the Region Inspector (react-leaflet requires this inside <MapContainer>). */
 function ClickCapture({ onClick }: { onClick: (latlng: LatLng) => void }) {
@@ -32,9 +60,13 @@ function ClickCapture({ onClick }: { onClick: (latlng: LatLng) => void }) {
 }
 
 /**
- * Map view (PRD §5.1): bundled offline coastline + per-source region
- * polygons colored by status + vessel marker. Local vector source only —
- * never a tile/style/CDN URL (PRD §6.3).
+ * Map view (PRD §5.1): bundled offline coastline + per-row region polygons
+ * colored by TYPE (status conveyed via opacity/dash/weight) + vessel marker.
+ * Local vector source only — never a tile/style/CDN URL (PRD §6.3). Tapping
+ * a polygon ALWAYS goes through the Region Inspector (never straight to the
+ * Detail modal) — a single, consistent interaction model that also avoids
+ * both the map's click handler and a polygon's own click handler firing for
+ * the same tap and opening two modals at once.
  */
 export function SourceMap() {
   const { theme } = useTheme();
@@ -43,9 +75,8 @@ export function SourceMap() {
   const datasets = useAppStore((s) => s.datasets);
   const filters = useAppStore((s) => s.filters);
   const vesselPosition = useAppStore((s) => s.vesselPosition);
-  const select = useAppStore((s) => s.select);
   const [coastline, setCoastline] = useState<FeatureCollection | null>(null);
-  const [inspecting, setInspecting] = useState<CatalogSource[] | null>(null);
+  const [inspecting, setInspecting] = useState<SourceRow[] | null>(null);
 
   useEffect(() => {
     fetch(`${import.meta.env.BASE_URL}coastline-110m.geojson`)
@@ -54,13 +85,13 @@ export function SourceMap() {
       .catch(() => setCoastline({ type: 'FeatureCollection', features: [] }));
   }, []);
 
-  const sources = useMemo(
-    () => (catalog?.document?.sources ?? []).filter((s) => matchesFilters(s, filters)),
-    [catalog, filters],
-  );
+  const rows = useMemo(() => {
+    const sources = (catalog?.document?.sources ?? []).filter((s) => matchesFilters(s, filters));
+    return rowsForSources(sources);
+  }, [catalog, filters]);
 
   const handleMapClick = (latlng: LatLng) => {
-    const covering = sources.filter((s) => pointInGeometry(s.region.boundary_geometry, latlng.lat, latlng.lng));
+    const covering = rows.filter((r) => pointInGeometry(r.geometry, latlng.lat, latlng.lng));
     if (covering.length > 0) setInspecting(covering);
   };
 
@@ -80,21 +111,21 @@ export function SourceMap() {
             style={{ color: colors.muted, weight: 1, fillColor: colors.muted, fillOpacity: 0.15 }}
           />
         )}
-        {sources.map((source) => {
-          const status = displayStatus(datasetForSource(datasets, source.id));
-          const color = colors[STATUS_COLOR_KEY[status]];
+        {rows.map((row) => {
+          const status = displayStatus(datasetForRow(datasets, row));
           return (
+            // react-leaflet's GeoJSON/CircleMarker only re-apply style/
+            // pathOptions when that PROP's object reference changes — a
+            // fresh `style={{...}}` literal every render (as below) is what
+            // makes map colors react live to theme switches. Memoizing this
+            // object would silently break that.
             <GeoJSON
-              key={source.id}
-              data={source.region.boundary_geometry as never}
-              style={{
-                color,
-                weight: 2,
-                fillColor: color,
-                fillOpacity: status === 'not-installed' ? 0.08 : 0.25,
-                dashArray: status === 'not-installed' ? '6 4' : undefined,
+              key={row.key}
+              data={row.geometry as never}
+              style={styleForRow(row, status, colors)}
+              onEachFeature={(_feature, layer: Layer) => {
+                layer.bindTooltip(buildTooltip(row, status), { sticky: true, direction: 'top' });
               }}
-              eventHandlers={{ click: () => select(source.id) }}
             />
           );
         })}
@@ -107,7 +138,7 @@ export function SourceMap() {
         )}
         <ClickCapture onClick={handleMapClick} />
       </MapContainer>
-      {inspecting && <RegionInspector sources={inspecting} onClose={() => setInspecting(null)} />}
+      {inspecting && <RegionInspector rows={inspecting} onClose={() => setInspecting(null)} />}
     </div>
   );
 }

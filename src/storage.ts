@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Disk-usage stats for the Storage & Health Dashboard (PRD §5.4, Phase 1
- * scope: gauge only). `cleanupCandidates` is a Phase 2 feature (Smart
- * Cleanup) — its signature is reserved here for forward reference but it is
- * NOT implemented or route-wired in Phase 1.
+ * Disk-usage stats for the Storage & Health Dashboard (PRD §5.4), plus Smart
+ * Cleanup (`cleanupCandidates`, PRD §9 Phase 2 — distance from the vessel to
+ * each installed dataset's region, server-side as the PRD specifies).
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+
+import { CatalogDocument, CatalogSourceType } from './catalogTypes.js';
+import { InstallManifest } from './manifest.js';
+import { distanceKm } from './predict.js';
 
 export interface StorageStats {
   /** Path fs.promises.statfs was run against (the manager's own data root). */
@@ -88,9 +91,66 @@ export async function statStorage(dirs: StorageDirs): Promise<StorageStats> {
   return { path: dirs.managerDir, totalBytes, freeBytes, usedByPluginBytes };
 }
 
-// Phase 2 — reserved for Smart Cleanup (PRD §5.4), NOT implemented/mounted:
-// export interface CleanupCandidate { id: string; distanceNm: number; sizeBytes: number; }
-// export async function cleanupCandidates(
-//   manifest: InstallManifest, catalog: CatalogDocument,
-//   vesselPos: { lat: number; lon: number }, maxDistanceNm: number,
-// ): Promise<CleanupCandidate[]> { throw new Error('Phase 2 — not implemented'); }
+export interface CleanupCandidate {
+  id: string;
+  catalogSourceId: string | null;
+  name: string;
+  type: CatalogSourceType;
+  sizeBytes: number;
+  /** null only when the install's catalogSourceId no longer resolves in the current catalog — surfaced regardless of maxDistanceNm since relevance can't be judged, sorted last. */
+  distanceNm: number | null;
+  downloadedAt: string | null;
+}
+
+/**
+ * Installed datasets farther than `maxDistanceNm` from the vessel — safe
+ * candidates to delete to free space (PRD §5.4 Smart Cleanup). Distance is
+ * to the NEAREST POINT ON the source's bounding box (clamping the vessel
+ * position into it), not the centroid: this is what the PRD's own wording
+ * specifies ("distance from vessel position to dataset bboxes"), and it
+ * correctly returns 0 when the vessel is currently inside a region — never
+ * suggesting deletion of data being actively sailed through. No antimeridian
+ * handling, consistent with api.ts's existing parseBbox limitation. Pure —
+ * returns `[]` immediately when no vessel position is available.
+ */
+export function cleanupCandidates(
+  manifest: InstallManifest,
+  catalogDoc: CatalogDocument | null,
+  vesselPos: { lat: number; lon: number } | null,
+  maxDistanceNm: number,
+): CleanupCandidate[] {
+  if (!vesselPos) return [];
+
+  const NM_PER_KM = 1 / 1.852;
+  const candidates: CleanupCandidate[] = [];
+  for (const install of manifest.installs) {
+    const source = catalogDoc?.sources.find((s) => s.id === install.catalogSourceId);
+    if (!source) {
+      // Can't judge relevance without the source's region — always surface
+      // it rather than silently hiding a dataset the catalog no longer knows
+      // about (e.g. removed upstream since it was installed).
+      candidates.push({
+        id: install.id, catalogSourceId: install.catalogSourceId, name: install.catalogSourceId,
+        type: install.type, sizeBytes: install.size_bytes, distanceNm: null, downloadedAt: install.downloaded_at,
+      });
+      continue;
+    }
+    const bbox = source.region.bounding_box;
+    const clampedLat = Math.min(Math.max(vesselPos.lat, bbox.min_lat), bbox.max_lat);
+    const clampedLon = Math.min(Math.max(vesselPos.lon, bbox.min_lon), bbox.max_lon);
+    const distanceNm = distanceKm(vesselPos.lat, vesselPos.lon, clampedLat, clampedLon) * NM_PER_KM;
+    if (distanceNm > maxDistanceNm) {
+      candidates.push({
+        id: install.id, catalogSourceId: install.catalogSourceId, name: source.name,
+        type: install.type, sizeBytes: install.size_bytes, distanceNm, downloadedAt: install.downloaded_at,
+      });
+    }
+  }
+
+  return candidates.sort((a, b) => {
+    if (a.distanceNm === null && b.distanceNm === null) return b.sizeBytes - a.sizeBytes;
+    if (a.distanceNm === null) return 1;
+    if (b.distanceNm === null) return -1;
+    return b.distanceNm - a.distanceNm || b.sizeBytes - a.sizeBytes;
+  });
+}

@@ -204,11 +204,128 @@ test('template file: exact {YYYYMMDD}/{HH}/{hour:03d} substitution, all forecast
       assert.deepEqual(requestedPaths.sort(), ['/20260703/00/f024.grb2', '/20260703/00/f048.grb2']);
       const manifest = readManifest(manifestPath);
       assert.equal(manifest.installs.length, 1);
-      assert.equal(manifest.installs[0].id, 'grib-template:nw-europe');
+      assert.equal(manifest.installs[0].id, 'grib-template:nw-europe:forecast');
       assert.equal(manifest.installs[0].files.length, 2);
       assert.equal(manifest.installs[0].cycle, cycleIso);
       assert.equal(manifest.installs[0].sha256, undefined);
       assert.equal(manifest.installs[0].dir, 'grib');
+      assert.equal(manifest.installs[0].regionId, 'nw-europe');
+      assert.equal(manifest.installs[0].fileType, 'forecast');
+    },
+  );
+});
+
+test('multi-region template source: region_id selector picks the RIGHT region, not just the first one', async () => {
+  const requestedPaths: string[] = [];
+  await withServer(
+    (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('grib-bytes')); },
+    async (baseUrl) => {
+      const { dirs, manifestPath } = tmpDirs();
+      const cycleIso = '2026-07-03T00:00:00Z';
+      const mkTemplate = (regionId: string) => ({
+        region_id: regionId, name: regionId, description: '', boundary_geometry: region().boundary_geometry,
+        type: 'forecast' as const, url_template: `${baseUrl}/${regionId}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+        forecast_hours: [24], cycle_hours: ['00'],
+      });
+      const source: CatalogSource = {
+        id: 'noaa-multi', source: 'noaa', type: 'grib2', name: 'NOAA Multi-Region', description: '',
+        contributor: 'NOAA', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 24, latest_cycle: cycleIso },
+        files: [mkTemplate('gulf-of-mexico'), mkTemplate('caribbean'), mkTemplate('west-coast')],
+      };
+      const engine = createDownloadEngine({ dirs, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      // Without a selector, a genuinely ambiguous multi-region source must
+      // still be rejected eagerly (not silently default to the first region).
+      assert.throws(() => engine.start('noaa-multi'), /region_id selector is required/);
+
+      const job = engine.start('noaa-multi', { region_id: 'caribbean' });
+      await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
+      const final = engine.get(job.id)!;
+      assert.equal(final.state, 'done', final.error);
+      assert.deepEqual(requestedPaths, ['/caribbean/20260703/00/f024.grb2']);
+      const manifest = readManifest(manifestPath);
+      assert.equal(manifest.installs.length, 1);
+      assert.equal(manifest.installs[0].regionId, 'caribbean');
+      assert.equal(manifest.installs[0].id, 'noaa-multi:caribbean:forecast');
+    },
+  );
+});
+
+test('a region with BOTH a forecast and a nowcast file (real NOAA shape): region_id alone is ambiguous, type disambiguates, both installs coexist', async () => {
+  const requestedPaths: string[] = [];
+  await withServer(
+    (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('x')); },
+    async (baseUrl) => {
+      const { dirs, manifestPath } = tmpDirs();
+      const cycleIso = '2026-07-03T00:00:00Z';
+      const source: CatalogSource = {
+        id: 'noaa_rtofs', source: 'noaa', type: 'grib2', name: 'NOAA RTOFS', description: '',
+        contributor: 'NOAA', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 24, latest_cycle: cycleIso },
+        files: [
+          {
+            region_id: 'west_atl', name: 'Western Atlantic', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'forecast', url_template: `${baseUrl}/forecast/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+            forecast_hours: [24], cycle_hours: ['00'],
+          },
+          {
+            region_id: 'west_atl', name: 'Western Atlantic', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'nowcast', url_template: `${baseUrl}/nowcast/{YYYYMMDD}/{HH}/n{hour:03d}.grb2`,
+            forecast_hours: [24], cycle_hours: ['00'],
+          },
+        ],
+      };
+      const engine = createDownloadEngine({ dirs, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      // region_id alone still resolves to 2 files — must be rejected, not
+      // silently default to whichever came first in the catalog's array.
+      assert.throws(() => engine.start('noaa_rtofs', { region_id: 'west_atl' }), /multiple types/);
+
+      const forecastJob = engine.start('noaa_rtofs', { region_id: 'west_atl', type: 'forecast' });
+      await waitFor(() => engine.get(forecastJob.id)!.state === 'done' || engine.get(forecastJob.id)!.state === 'error');
+      assert.equal(engine.get(forecastJob.id)!.state, 'done', engine.get(forecastJob.id)!.error);
+
+      const nowcastJob = engine.start('noaa_rtofs', { region_id: 'west_atl', type: 'nowcast' });
+      await waitFor(() => engine.get(nowcastJob.id)!.state === 'done' || engine.get(nowcastJob.id)!.state === 'error');
+      assert.equal(engine.get(nowcastJob.id)!.state, 'done', engine.get(nowcastJob.id)!.error);
+
+      assert.deepEqual(requestedPaths.sort(), ['/forecast/20260703/00/f024.grb2', '/nowcast/20260703/00/n024.grb2']);
+      const manifest = readManifest(manifestPath);
+      // Both installs must coexist, not clobber each other.
+      assert.equal(manifest.installs.length, 2);
+      const ids = manifest.installs.map((i) => i.id).sort();
+      assert.deepEqual(ids, ['noaa_rtofs:west_atl:forecast', 'noaa_rtofs:west_atl:nowcast']);
+    },
+  );
+});
+
+test('multi-file static source (e.g. a HARMONIC + .IDX pair): no selector required, both files download', async () => {
+  await withServer(
+    (req, res) => { res.writeHead(200); res.end(Buffer.from('x')); },
+    async (baseUrl) => {
+      const { dirs, manifestPath } = tmpDirs();
+      const source: CatalogSource = {
+        id: 'harmonic-pair', source: 'opencpn', type: 'harmonic', name: 'OpenCPN XTide Harmonics', description: '',
+        contributor: 'OpenCPN', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'sha256', last_checked: new Date().toISOString() },
+        files: [
+          { filename: 'HARMONICS_NO_US', url: `${baseUrl}/HARMONICS_NO_US`, size_bytes: 1 },
+          { filename: 'HARMONICS_NO_US.IDX', url: `${baseUrl}/HARMONICS_NO_US.IDX`, size_bytes: 1 },
+        ],
+      };
+      const engine = createDownloadEngine({ dirs, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      // The bug: this used to throw "2 files — a filename or region_id
+      // selector is required" even though runJob downloads all static files
+      // in a source together regardless of any selector.
+      const job = engine.start('harmonic-pair');
+      await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
+      const final = engine.get(job.id)!;
+      assert.equal(final.state, 'done', final.error);
+      assert.ok(fs.existsSync(path.join(dirs.harmonic, 'HARMONICS_NO_US')));
+      assert.ok(fs.existsSync(path.join(dirs.harmonic, 'HARMONICS_NO_US.IDX')));
+      const manifest = readManifest(manifestPath);
+      assert.equal(manifest.installs[0].files.length, 2);
     },
   );
 });
@@ -261,6 +378,50 @@ test('directory routing: harmonic/grib2/utcef land in their own configured dirs'
       assert.ok(fs.existsSync(path.join(dirs.harmonic, 'HARMONIC')));
       assert.ok(fs.existsSync(path.join(dirs.grib2, 'f.grb2')));
       assert.ok(fs.existsSync(path.join(dirs.utcef, 'x.utcef')));
+    },
+  );
+});
+
+test('onUpdate() streams progress with monotonic bytes, terminal state last, double-unsubscribe is safe', async () => {
+  // Chunks spaced well past the engine's 200ms progress-emit throttle, so
+  // more than one progress notification is guaranteed to survive it (this
+  // engine.start()/engine.onUpdate() call pair happens back-to-back with no
+  // intervening await, so the subscription is registered before the fetch()
+  // for this download can possibly resolve — no chunk can be missed).
+  await withServer(
+    (req, res) => {
+      res.writeHead(200, { 'Content-Length': '30' });
+      let sent = 0;
+      const iv = setInterval(() => {
+        res.write(Buffer.alloc(10, 65));
+        sent += 10;
+        if (sent >= 30) { clearInterval(iv); res.end(); }
+      }, 250);
+    },
+    async (baseUrl) => {
+      const { dirs, manifestPath } = tmpDirs();
+      const source: CatalogSource = {
+        id: 'watched', source: 'test', type: 'harmonic', name: 'Test', description: '',
+        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'sha256', last_checked: new Date().toISOString() },
+        files: [{ filename: 'HARMONIC', url: `${baseUrl}/slow`, size_bytes: 30 }],
+      };
+      const engine = createDownloadEngine({ dirs, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      const job = engine.start('watched');
+      const seen: DownloadJob[] = [];
+      const unsubscribe = engine.onUpdate(job.id, (j) => seen.push(j));
+
+      await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error', 5000);
+
+      assert.equal(engine.get(job.id)!.state, 'done');
+      assert.ok(seen.length >= 2, `expected at least one progress emission and a terminal one, got ${seen.length}`);
+      assert.equal(seen[seen.length - 1].state, 'done');
+      assert.equal(seen[seen.length - 1].bytes, 30);
+      for (let i = 1; i < seen.length; i++) assert.ok(seen[i].bytes >= seen[i - 1].bytes, seen.map((s) => s.bytes).join(','));
+
+      unsubscribe();
+      assert.doesNotThrow(() => unsubscribe());
     },
   );
 });

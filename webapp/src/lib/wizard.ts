@@ -1,25 +1,25 @@
-import { CatalogSource } from '../api/types';
-import { bboxContains, pointInGeometry } from './geo';
-import { totalSizeBytes } from './sources';
+import { pointInGeometry } from './geo';
+import { SourceRow } from './sources';
 
 /** Fallback tie-break when two candidates have the same (or both unknown) size — mirrors the backend's DEFAULT_PRIORITY. */
-const TYPE_ORDER: Record<CatalogSource['type'], number> = { grib2: 0, utcef: 1, harmonic: 2 };
+const TYPE_ORDER: Record<SourceRow['source']['type'], number> = { grib2: 0, utcef: 1, harmonic: 2 };
 
 /**
- * Sources covering a position, ranked by ascending total download size (PRD
+ * Rows covering a position, ranked by ascending total download size (PRD
  * §5.2 / §10 Q2 — the only concrete, honest metric the catalog provides).
- * Bounding-box containment is the fast filter; boundary_geometry
- * containment narrows it to the actually-covering shape.
+ * Tested against each row's OWN geometry (a per-region row uses that
+ * region's polygon, not the whole source's), since only one region of a
+ * multi-region source may actually cover the position.
  */
-export function coveringSources(sources: CatalogSource[], lat: number, lon: number): CatalogSource[] {
-  return sources
-    .filter((s) => bboxContains(s.region.bounding_box, lat, lon) && pointInGeometry(s.region.boundary_geometry, lat, lon))
+export function coveringRows(rows: SourceRow[], lat: number, lon: number): SourceRow[] {
+  return rows
+    .filter((r) => pointInGeometry(r.geometry, lat, lon))
     .sort((a, b) => {
-      const sizeA = totalSizeBytes(a);
-      const sizeB = totalSizeBytes(b);
-      if (sizeA === null && sizeB === null) return TYPE_ORDER[a.type] - TYPE_ORDER[b.type];
-      if (sizeA === null) return 1; // unknown-size (forecast) sources sort last
+      const sizeA = a.sizeBytes;
+      const sizeB = b.sizeBytes;
+      if (sizeA === null && sizeB === null) return TYPE_ORDER[a.source.type] - TYPE_ORDER[b.source.type];
+      if (sizeA === null) return 1; // unknown-size (forecast) rows sort last
       if (sizeB === null) return -1;
-      return sizeA - sizeB || TYPE_ORDER[a.type] - TYPE_ORDER[b.type];
+      return sizeA - sizeB || TYPE_ORDER[a.source.type] - TYPE_ORDER[b.source.type];
     });
 }

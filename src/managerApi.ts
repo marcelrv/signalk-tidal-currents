@@ -6,9 +6,6 @@
  * alongside (not instead of) the existing prediction API in `api.ts`, on the
  * same two mount points (`/plugins/signalk-tidal-currents` and
  * `/signalk/v2/api/currents`).
- *
- * Phase 1 scope only — `GET /cleanup-candidates` (Smart Cleanup) is
- * deliberately NOT mounted here (Phase 2, see storage.ts).
  */
 
 import * as fs from 'fs';
@@ -20,7 +17,7 @@ import { CatalogSourceType, StaticCatalogFile, isTemplateFile } from './catalogT
 import { DownloadEngine, FileSelector } from './downloads.js';
 import { ManifestDir, readManifest, removeInstall, writeManifestAtomic } from './manifest.js';
 import { DEFAULT_PRIORITY, SourceType, isValidPriorityOrder } from './priority.js';
-import { StorageDirs, statStorage } from './storage.js';
+import { StorageDirs, cleanupCandidates, statStorage } from './storage.js';
 
 interface MReq {
   params: Record<string, string>;
@@ -36,6 +33,20 @@ export interface ManagerRouterLike {
   post(path: string, handler: (req: MReq, res: MRes) => void): void;
   put(path: string, handler: (req: MReq, res: MRes) => void): void;
   delete(path: string, handler: (req: MReq, res: MRes) => void): void;
+}
+
+/**
+ * A wider view of the response object, used ONLY by the SSE download-progress
+ * route. `MRes` above is a narrow TS view over the SAME real Express `res`
+ * signalk-server hands to every route handler (registerWithRouter/the v2
+ * `app.get` shim mount real Express objects, not a runtime shim) — so this
+ * is just a locally-scoped wider type for one handler, not a new mechanism.
+ */
+interface SseRes {
+  writeHead(status: number, headers: Record<string, string>): void;
+  write(chunk: string): boolean;
+  end(): void;
+  on(event: 'close', cb: () => void): void;
 }
 
 export interface ManagerDirs {
@@ -54,6 +65,8 @@ export interface ManagerState {
   setPriority(order: SourceType[]): void;
   /** Shared with the existing prediction ApiState so /datasets can reuse already-parsed metadata (titles, UTCEF license fields) instead of re-parsing files. */
   apiState: ApiState;
+  /** Server-side vessel position for Smart Cleanup's distance math (PRD §5.4 Phase 2) — null when no position fix is available. */
+  getVesselPosition(): { lat: number; lon: number } | null;
 }
 
 function dirForTag(tag: ManifestDir, dirs: ManagerDirs): string {
@@ -81,7 +94,16 @@ interface DatasetEntry {
   sizeBytes: number;
   downloadedAt: string | null;
   cycle?: string;
+  /** Present for template (forecast/nowcast) installs — needed to re-select the same region on a future update (e.g. "Update All"). */
+  regionId?: string;
+  /** Present for template installs — a region can carry both a forecast and a nowcast file, so region_id alone doesn't uniquely re-select the same one. */
+  fileType?: 'forecast' | 'nowcast';
   status: 'active' | 'update-available' | 'error';
+  /** Present only for expiry-method (grib2 forecast) installs — the countdown fields for PRD §5.5's "expires in 14h" display. */
+  updateCheckMethod?: 'sha256' | 'expiry';
+  expiresAt?: string;
+  remainingHours?: number;
+  maxAgeHours?: number;
   contributor?: string;
   sourceUrl?: string;
   // UTCEF-only attribution surface (PRD §5.7) — parsed from the file's own metadata, see utcef.ts.
@@ -102,6 +124,7 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
     const source = catalogDoc?.sources.find((s) => s.id === install.catalogSourceId);
 
     let status: DatasetEntry['status'] = filesExist ? 'active' : 'error';
+    let expiry: Pick<DatasetEntry, 'updateCheckMethod' | 'expiresAt' | 'remainingHours' | 'maxAgeHours'> = {};
     if (filesExist && source) {
       if (source.update_check.method === 'sha256' && install.sha256) {
         const staticFile = source.files.find(
@@ -109,8 +132,17 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
         );
         if (staticFile && staticFile.sha256 !== install.sha256) status = 'update-available';
       } else if (source.update_check.method === 'expiry' && install.cycle && source.update_check.max_age_hours) {
-        const ageHours = (Date.now() - Date.parse(install.cycle)) / 3600_000;
-        if (ageHours > source.update_check.max_age_hours) status = 'update-available';
+        const maxAgeHours = source.update_check.max_age_hours;
+        const cycleMs = Date.parse(install.cycle);
+        const ageHours = (Date.now() - cycleMs) / 3600_000;
+        const remainingHours = maxAgeHours - ageHours;
+        expiry = {
+          updateCheckMethod: 'expiry',
+          expiresAt: new Date(cycleMs + maxAgeHours * 3600_000).toISOString(),
+          remainingHours,
+          maxAgeHours,
+        };
+        if (ageHours > maxAgeHours) status = 'update-available';
       }
     }
 
@@ -124,7 +156,10 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
       sizeBytes: install.size_bytes,
       downloadedAt: install.downloaded_at,
       cycle: install.cycle,
+      regionId: install.regionId,
+      fileType: install.fileType,
       status,
+      ...expiry,
       contributor: source?.contributor,
       sourceUrl: source?.url,
     };
@@ -240,13 +275,21 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     res.json(await statStorage(dirs));
   });
 
+  router.get('/cleanup-candidates', (req, res) => {
+    const parsed = parseFloat(String(req.query.maxDistanceNm));
+    const maxDistanceNm = Number.isFinite(parsed) && parsed >= 0 ? parsed : 50; // plausible day-sail/cruising default, tunable via the query param
+    const vesselPosition = mgr.getVesselPosition();
+    const candidates = cleanupCandidates(readManifest(mgr.manifestPath), mgr.catalog.get().document, vesselPosition, maxDistanceNm);
+    res.json({ vesselPosition, maxDistanceNm, candidates });
+  });
+
   router.post('/downloads', (req, res) => {
-    const body = (req.body ?? {}) as { sourceId?: string; region_id?: string; filename?: string };
+    const body = (req.body ?? {}) as { sourceId?: string; region_id?: string; type?: 'forecast' | 'nowcast'; filename?: string };
     if (!body.sourceId) {
       res.status(400).json({ error: 'sourceId is required' });
       return;
     }
-    const selector: FileSelector = { region_id: body.region_id, filename: body.filename };
+    const selector: FileSelector = { region_id: body.region_id, type: body.type, filename: body.filename };
     try {
       const job = mgr.downloads.start(body.sourceId, selector);
       res.json(job);
@@ -266,6 +309,53 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
       return;
     }
     res.json(job);
+  });
+
+  // SSE progress (PRD §9 Phase 2) — an upgrade layered on top of the polling
+  // route above, not a replacement: the frontend falls back to polling if
+  // this fails/isn't available, and this route itself sends an immediate
+  // snapshot on connect so a client that subscribes after the job already
+  // progressed (or even finished) still gets a correct current state rather
+  // than waiting for an event that may never come.
+  router.get('/downloads/:id/events', (req, res) => {
+    const job = mgr.downloads.get(req.params.id);
+    if (!job) {
+      res.status(404).json({ error: `unknown download job: ${req.params.id}` });
+      return;
+    }
+    const raw = res as unknown as SseRes;
+    raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    let closed = false;
+    const send = (j: unknown) => {
+      if (closed) return;
+      raw.write(`data: ${JSON.stringify(j)}\n\n`);
+    };
+    send(job);
+
+    const heartbeat = setInterval(() => {
+      if (!closed) raw.write(':hb\n\n');
+    }, 15_000);
+
+    const unsubscribe = mgr.downloads.onUpdate(req.params.id, (updated) => {
+      send(updated);
+      if (updated.state === 'done' || updated.state === 'error') cleanup();
+    });
+
+    function cleanup(): void {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+      raw.end();
+    }
+
+    raw.on('close', cleanup);
   });
 
   router.get('/priority', (_req, res) => {

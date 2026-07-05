@@ -39,6 +39,14 @@
   --color-danger: #ffffff;
 }
 
+:root {
+  /* Same value in every theme (black is already an allowed neutral in red
+     mode) — this exists so the modal scrim is a token, not a literal
+     hardcoded color in a component (PRD §4), not because the value itself
+     needs to vary. */
+  --color-scrim: rgb(0 0 0 / 0.4);
+}
+
 @theme {
   --color-bg: var(--color-bg);
   --color-surface: var(--color-surface);
@@ -48,6 +56,7 @@
   --color-success: var(--color-success);
   --color-warn: var(--color-warn);
   --color-danger: var(--color-danger);
+  --color-scrim: var(--color-scrim);
 }
 
 html,

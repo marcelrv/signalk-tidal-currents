@@ -76,6 +76,7 @@ function fakeDownloadEngine(): DownloadEngine {
     get: (id) => jobs.get(id),
     list: () => [...jobs.values()],
     cancel: () => {},
+    onUpdate: () => () => {},
   };
 }
 
@@ -91,6 +92,7 @@ function baseMgr(overrides: Partial<ManagerState> = {}): { mgr: ManagerState; di
     getPriority: () => priority,
     setPriority: (order) => { priority = order; },
     apiState: { data: null, error: null },
+    getVesselPosition: () => null,
     ...overrides,
   };
   return { mgr, dirs, manifestPath };
@@ -146,6 +148,70 @@ test('GET /datasets merges manifest installs, orphan files, and UTCEF license me
   const orphan = body.find((d) => d.id === 'orphan:harmonic:HARMONIC');
   assert.ok(orphan, JSON.stringify(body));
   assert.equal(orphan.catalogSourceId, null);
+});
+
+test('GET /datasets exposes expiry countdown fields for an expiry-method install nearing its max age', async () => {
+  const { mgr, dirs, manifestPath } = baseMgr();
+  const maxAgeHours = 24;
+  const ageHours = 21.6; // 10% of maxAgeHours remaining
+  const cycleMs = Date.now() - ageHours * 3600_000;
+  const source: CatalogSource = {
+    id: 'grib-forecast', source: 'noaa', type: 'grib2', name: 'Forecast', description: '',
+    contributor: 'NOAA', url: 'https://x', tags: [],
+    region: { name: 'r', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 }, boundary_geometry: { type: 'Polygon', coordinates: [] } },
+    update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: maxAgeHours },
+    files: [],
+  };
+  mgr.catalog = {
+    get: () => ({ status: 'cached', document: { catalog_schema_version: '1.0.0', version: 1, generated: '', source_count: 1, sources: [source] }, fetchedAt: new Date().toISOString(), error: null, sourceUrl: '', warnings: [] }),
+    refresh: async () => mgr.catalog.get(),
+  };
+  fs.writeFileSync(path.join(dirs.grib2, 'f.grb2'), 'x');
+  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
+    id: 'grib-forecast', catalogSourceId: 'grib-forecast', type: 'grib2', files: ['f.grb2'], dir: 'grib',
+    size_bytes: 1, downloaded_at: new Date().toISOString(), cycle: new Date(cycleMs).toISOString(),
+  }));
+
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const res = await call('GET', '/datasets');
+  const entry = (res.body as any[]).find((d) => d.id === 'grib-forecast');
+  assert.ok(entry, JSON.stringify(res.body));
+  assert.equal(entry.status, 'active'); // not yet past max_age_hours
+  assert.equal(entry.updateCheckMethod, 'expiry');
+  assert.equal(entry.maxAgeHours, maxAgeHours);
+  assert.ok(Math.abs(entry.remainingHours - 2.4) < 0.01, entry.remainingHours);
+  assert.equal(entry.expiresAt, new Date(cycleMs + maxAgeHours * 3600_000).toISOString());
+});
+
+test('GET /datasets reports a negative remainingHours once past max_age_hours, status stays update-available', async () => {
+  const { mgr, dirs, manifestPath } = baseMgr();
+  const maxAgeHours = 24;
+  const cycleMs = Date.now() - 30 * 3600_000; // 6h past expiry
+  const source: CatalogSource = {
+    id: 'grib-forecast', source: 'noaa', type: 'grib2', name: 'Forecast', description: '',
+    contributor: 'NOAA', url: 'https://x', tags: [],
+    region: { name: 'r', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 }, boundary_geometry: { type: 'Polygon', coordinates: [] } },
+    update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: maxAgeHours },
+    files: [],
+  };
+  mgr.catalog = {
+    get: () => ({ status: 'cached', document: { catalog_schema_version: '1.0.0', version: 1, generated: '', source_count: 1, sources: [source] }, fetchedAt: new Date().toISOString(), error: null, sourceUrl: '', warnings: [] }),
+    refresh: async () => mgr.catalog.get(),
+  };
+  fs.writeFileSync(path.join(dirs.grib2, 'f.grb2'), 'x');
+  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
+    id: 'grib-forecast', catalogSourceId: 'grib-forecast', type: 'grib2', files: ['f.grb2'], dir: 'grib',
+    size_bytes: 1, downloaded_at: new Date().toISOString(), cycle: new Date(cycleMs).toISOString(),
+  }));
+
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const res = await call('GET', '/datasets');
+  const entry = (res.body as any[]).find((d) => d.id === 'grib-forecast');
+  assert.ok(entry, JSON.stringify(res.body));
+  assert.equal(entry.status, 'update-available');
+  assert.ok(entry.remainingHours < 0, entry.remainingHours);
 });
 
 test('DELETE /datasets/:id refuses an orphan id with a path-traversal filename', async () => {

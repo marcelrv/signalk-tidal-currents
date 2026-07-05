@@ -35,6 +35,10 @@ export interface ManifestInstall {
   downloaded_at: string;
   /** ISO 8601 — present for expiry-type (grib2 forecast) installs. */
   cycle?: string;
+  /** Present for template (forecast/nowcast) installs — the catalog file's `region_id`, needed to re-select the same template file on a future update without parsing it back out of `id`. */
+  regionId?: string;
+  /** Present for template installs — a region can carry BOTH a `forecast` and a `nowcast` file under the same region_id (observed in the real NOAA catalog), so region_id alone doesn't uniquely identify which one this install is. */
+  fileType?: 'forecast' | 'nowcast';
 }
 
 export interface InstallManifest {

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAppStore } from '../../store/useAppStore';
-import { coveringSources } from '../../lib/wizard';
-import { totalSizeBytes } from '../../lib/sources';
+import { coveringRows } from '../../lib/wizard';
+import { rowsForSources } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
 import { WizardSourceCard } from './WizardSourceCard';
@@ -33,26 +33,25 @@ export function FirstRunWizard() {
 
   const candidates = useMemo(() => {
     if (!position || !catalog?.document) return [];
-    return coveringSources(catalog.document.sources, position.latitude, position.longitude);
+    return coveringRows(rowsForSources(catalog.document.sources), position.latitude, position.longitude);
   }, [position, catalog]);
 
-  // Default-select every covering source — "single install action" per PRD;
+  // Default-select every covering row — "single install action" per PRD;
   // the user can still deselect individual ones.
   useEffect(() => {
-    setSelected(new Set(candidates.map((c) => c.id)));
+    setSelected(new Set(candidates.map((c) => c.key)));
   }, [candidates]);
 
   if (!wizard.open) return null;
 
-  const totalBytes = candidates
-    .filter((c) => selected.has(c.id))
-    .reduce((sum, c) => sum + (totalSizeBytes(c) ?? 0), 0);
-  const anyUnknownSize = candidates.some((c) => selected.has(c.id) && totalSizeBytes(c) === null);
+  const selectedRows = candidates.filter((c) => selected.has(c.key));
+  const totalBytes = selectedRows.reduce((sum, c) => sum + (c.sizeBytes ?? 0), 0);
+  const anyUnknownSize = selectedRows.some((c) => c.sizeBytes === null);
 
   const install = async () => {
     setInstalling(true);
     try {
-      await Promise.all([...selected].map((id) => startDownload(id)));
+      await Promise.all(selectedRows.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType } : undefined)));
       dismissWizard();
       setView('list');
     } finally {
@@ -118,15 +117,15 @@ export function FirstRunWizard() {
             {position.latitude.toFixed(2)}, {position.longitude.toFixed(2)}:
           </p>
           <ul className="flex flex-col gap-2">
-            {candidates.map((source) => (
-              <li key={source.id}>
+            {candidates.map((row) => (
+              <li key={row.key}>
                 <WizardSourceCard
-                  source={source}
-                  checked={selected.has(source.id)}
+                  row={row}
+                  checked={selected.has(row.key)}
                   onToggle={() => {
                     const next = new Set(selected);
-                    if (next.has(source.id)) next.delete(source.id);
-                    else next.add(source.id);
+                    if (next.has(row.key)) next.delete(row.key);
+                    else next.add(row.key);
                     setSelected(next);
                   }}
                 />

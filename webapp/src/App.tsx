@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { useAppStore } from './store/useAppStore';
 import { useTheme } from './theme/ThemeProvider';
@@ -11,7 +11,9 @@ import { SourceDetailModal } from './components/browser/SourceDetailModal';
 import { FirstRunWizard } from './components/wizard/FirstRunWizard';
 import { LiveSourceChip } from './components/layout/LiveSourceChip';
 import { StorageGauge } from './components/storage/StorageGauge';
+import { SmartCleanupPanel } from './components/storage/SmartCleanupPanel';
 import { PriorityList } from './components/priority/PriorityList';
+import { UpdateAllBanner } from './components/updates/UpdateAllBanner';
 import { timeAgo } from './lib/format';
 
 export function App() {
@@ -19,11 +21,13 @@ export function App() {
   const catalog = useAppStore((s) => s.catalog);
   const catalogLoading = useAppStore((s) => s.catalogLoading);
   const fetchCatalog = useAppStore((s) => s.fetchCatalog);
+  const refreshCatalog = useAppStore((s) => s.refreshCatalog);
   const fetchDatasets = useAppStore((s) => s.fetchDatasets);
   const fetchStorage = useAppStore((s) => s.fetchStorage);
   const fetchVesselPosition = useAppStore((s) => s.fetchVesselPosition);
   const view = useAppStore((s) => s.view);
   const openWizard = useAppStore((s) => s.openWizard);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
 
   useEffect(() => {
     fetchCatalog();
@@ -70,13 +74,30 @@ export function App() {
           <p className="text-muted">Loading catalog…</p>
         ) : (
           <>
+            <UpdateAllBanner />
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <ViewToggle />
-              <StorageGauge />
-              <p className="text-xs text-muted">
-                Last catalog sync: {catalog?.fetchedAt ? timeAgo(catalog.fetchedAt) : 'never'}
+              <div className="flex items-center gap-2">
+                <StorageGauge />
+                <button
+                  type="button"
+                  onClick={() => setCleanupOpen(true)}
+                  className="min-h-11 rounded border border-muted/40 px-3 text-xs text-muted"
+                >
+                  Clean up
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => refreshCatalog()}
+                disabled={catalogLoading}
+                className="min-h-11 text-xs text-muted underline decoration-dotted disabled:opacity-50"
+              >
+                {catalogLoading
+                  ? 'Syncing…'
+                  : `Last catalog sync: ${catalog?.fetchedAt ? timeAgo(catalog.fetchedAt) : 'never'}`}
                 {catalog?.error ? ` · ${catalog.error}` : ''}
-              </p>
+              </button>
             </div>
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start">
               <div className="sm:w-64"><SearchBox /></div>
@@ -92,6 +113,7 @@ export function App() {
       </main>
       <FirstRunWizard />
       <SourceDetailModal />
+      {cleanupOpen && <SmartCleanupPanel onClose={() => setCleanupOpen(false)} />}
     </div>
   );
 }

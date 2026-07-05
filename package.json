@@ -1,7 +1,7 @@
 {
   "name": "signalk-tidal-currents",
   "version": "0.2.0",
-  "description": "Tidal current predictions from OpenCPN/XTide harmonic files (HARMONIC/HARMONIC.IDX) and GRIB2 current fields — publishes environment.current and a station/position/timeline REST API",
+    "description": "Tidal current predictions from harmonic, GRIB2, and UTCEF data sources",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -33,13 +33,13 @@
   ],
   "signalk": {
     "displayName": "Tidal Currents",
-    "appIcon": "./img/icon.svg",
+    "appIcon": "icon.svg",
     "screenshots": [
       "./img/screenshot-config.jpg"
     ],
     "webapp": {
       "name": "Tidal Currents Manager",
-      "description": "Discover, download, and manage tidal-current data (UTCEF, GRIB2, harmonic) for offline use",
+      "description": "Download Manager for tidal-current data (UTCEF, GRIB2, harmonic)",
       "location": "/plugins/signalk-tidal-currents/"
     }
   },

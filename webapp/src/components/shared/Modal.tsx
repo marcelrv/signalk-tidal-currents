@@ -6,7 +6,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim sm:items-center"
       onClick={onClose}
     >
       <div

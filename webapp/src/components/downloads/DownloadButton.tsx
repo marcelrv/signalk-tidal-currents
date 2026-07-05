@@ -2,8 +2,9 @@ import { useState } from 'react';
 
 import { useAppStore } from '../../store/useAppStore';
 import { usePolling } from '../../hooks/usePolling';
+import { useDownloadProgress } from '../../hooks/useDownloadProgress';
 import { CatalogSource } from '../../api/types';
-import { DisplayStatus, totalSizeBytes } from '../../lib/sources';
+import { DisplayStatus, downloadKeyFor, totalSizeBytes, wouldExceedDiskThreshold } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
 
@@ -14,39 +15,51 @@ const LABELS: Record<DisplayStatus, string> = {
   error: 'Retry',
 };
 
-/** 1-click download with progress (PRD §5.1): row/card button → downloading (progress %) → done. */
-export function DownloadButton({ source, status }: { source: CatalogSource; status: DisplayStatus }) {
+/** 1-click download with progress (PRD §5.1): row/card button → downloading (progress %) → done. Progress is pushed via SSE with a polling fallback (PRD §9 Phase 2) — the job may have been started elsewhere (e.g. the Update-All banner), not necessarily by this button instance. */
+export function DownloadButton({
+  source,
+  regionId,
+  fileType,
+  status,
+}: {
+  source: CatalogSource;
+  /** Present when this button represents one region of a multi-region source — passed through as the download selector. */
+  regionId?: string;
+  /** Present when that region has both a forecast and a nowcast file (real NOAA catalog shape) — region_id alone wouldn't uniquely select one. */
+  fileType?: 'forecast' | 'nowcast';
+  status: DisplayStatus;
+}) {
   const startDownload = useAppStore((s) => s.startDownload);
   const pollDownload = useAppStore((s) => s.pollDownload);
   const downloads = useAppStore((s) => s.downloads);
   const storage = useAppStore((s) => s.storage);
-  const [jobId, setJobId] = useState<string | null>(null);
+  const jobId = useAppStore((s) => s.jobIdBySource[downloadKeyFor(source.id, regionId, fileType)]) ?? null;
   const [confirmingOverfull, setConfirmingOverfull] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const job = jobId ? downloads[jobId] : undefined;
   const active = job && (job.state === 'queued' || job.state === 'active');
 
+  const fellBackToPolling = useDownloadProgress(active ? jobId : null);
   usePolling(
     () => {
       if (jobId) pollDownload(jobId);
     },
-    active ? 800 : null,
+    active && fellBackToPolling ? 800 : null,
   );
 
   const begin = async () => {
-    const id = await startDownload(source.id);
-    setJobId(id);
+    setError(null);
+    try {
+      await startDownload(source.id, regionId ? { region_id: regionId, type: fileType } : undefined);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const handleClick = () => {
-    // Pre-download check (PRD §5.4): warn before a download would push the
-    // disk past 90% full.
-    const size = totalSizeBytes(source);
-    if (size !== null && storage?.totalBytes && storage.freeBytes !== null) {
-      const usedAfter = storage.totalBytes - storage.freeBytes + size;
-      if (usedAfter / storage.totalBytes > 0.9) {
-        setConfirmingOverfull(true);
-        return;
-      }
+    if (wouldExceedDiskThreshold(totalSizeBytes(source), storage)) {
+      setConfirmingOverfull(true);
+      return;
     }
     begin();
   };
@@ -61,7 +74,7 @@ export function DownloadButton({ source, status }: { source: CatalogSource; stat
   }
 
   return (
-    <>
+    <div className="flex flex-col items-end gap-1">
       <button
         type="button"
         className="min-h-11 min-w-11 rounded border border-accent px-3 text-sm font-medium text-accent hover:bg-accent/10"
@@ -70,6 +83,11 @@ export function DownloadButton({ source, status }: { source: CatalogSource; stat
       >
         {LABELS[status]}
       </button>
+      {error && (
+        <span role="alert" className="max-w-[16rem] text-right text-xs text-danger">
+          {error}
+        </span>
+      )}
       {confirmingOverfull && (
         <Modal title="Disk almost full" onClose={() => setConfirmingOverfull(false)}>
           <p className="mb-4 text-muted">
@@ -93,6 +111,6 @@ export function DownloadButton({ source, status }: { source: CatalogSource; stat
           </div>
         </Modal>
       )}
-    </>
+    </div>
   );
 }

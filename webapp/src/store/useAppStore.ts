@@ -4,11 +4,13 @@ import { api } from '../api/client';
 import {
   CatalogSourceType,
   CatalogState,
+  CleanupCandidate,
   DatasetEntry,
   DownloadJob,
   SourceType,
   StorageStats,
 } from '../api/types';
+import { downloadKeyFor } from '../lib/sources';
 
 export interface Filters {
   types: Set<CatalogSourceType>;
@@ -35,12 +37,21 @@ export interface AppState {
   storage: StorageStats | null;
   fetchStorage: () => Promise<void>;
 
+  cleanupCandidates: CleanupCandidate[];
+  cleanupVesselPosition: { lat: number; lon: number } | null;
+  cleanupMaxDistanceNm: number;
+  fetchCleanupCandidates: (maxDistanceNm?: number) => Promise<void>;
+
   priority: SourceType[];
   setPriority: (order: SourceType[]) => Promise<void>;
 
   downloads: Record<string, DownloadJob>;
-  startDownload: (sourceId: string, selector?: { region_id?: string; filename?: string }) => Promise<string>;
+  /** Keyed by downloadKeyFor(sourceId, regionId) — lets ANY component (a row's own button, or a bulk "Update All" action) find and render the right progress for a source/region it didn't necessarily start itself. */
+  jobIdBySource: Record<string, string>;
+  startDownload: (sourceId: string, selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; filename?: string }) => Promise<string>;
   pollDownload: (id: string) => Promise<void>;
+  /** Pure setter shared by the SSE hook and the polling fallback — one place that writes job state into the store. */
+  setDownloadJob: (job: DownloadJob) => void;
 
   view: 'map' | 'list';
   setView: (v: 'map' | 'list') => void;
@@ -48,8 +59,9 @@ export interface AppState {
   filters: Filters;
   setFilters: (patch: Partial<Filters>) => void;
 
-  selection: { sourceId: string | null };
-  select: (id: string | null) => void;
+  /** Keyed by SourceRow.key (source.id, or `${source.id}:${region_id}` for a per-region row). */
+  selection: { key: string | null };
+  select: (key: string | null) => void;
 
   vesselPosition: { latitude: number; longitude: number } | null;
   fetchVesselPosition: () => Promise<void>;
@@ -105,6 +117,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ storage });
   },
 
+  cleanupCandidates: [],
+  cleanupVesselPosition: null,
+  cleanupMaxDistanceNm: 50,
+  fetchCleanupCandidates: async (maxDistanceNm) => {
+    const res = await api.getCleanupCandidates(maxDistanceNm);
+    set({ cleanupCandidates: res.candidates, cleanupVesselPosition: res.vesselPosition, cleanupMaxDistanceNm: res.maxDistanceNm });
+  },
+
   priority: ['grib2', 'utcef', 'harmonic'],
   setPriority: async (order) => {
     const res = await api.setPriority(order);
@@ -112,14 +132,32 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   downloads: {},
+  jobIdBySource: {},
   startDownload: async (sourceId, selector) => {
     const job = await api.startDownload(sourceId, selector);
-    set((s) => ({ downloads: { ...s.downloads, [job.id]: job } }));
+    const key = downloadKeyFor(sourceId, selector?.region_id, selector?.type);
+    set((s) => ({
+      downloads: { ...s.downloads, [job.id]: job },
+      jobIdBySource: { ...s.jobIdBySource, [key]: job.id },
+    }));
     return job.id;
   },
   pollDownload: async (id) => {
     const job = await api.getDownload(id);
-    set((s) => ({ downloads: { ...s.downloads, [id]: job } }));
+    get().setDownloadJob(job);
+  },
+  setDownloadJob: (job) => {
+    const prev = get().downloads[job.id];
+    set((s) => ({ downloads: { ...s.downloads, [job.id]: job } }));
+    // The download itself succeeded/failed here, but nothing else re-reads
+    // the manifest on its own — without this, a finished job's row/button
+    // just reverts to whatever `datasets`/`storage` said before the
+    // download started (looking like the click "did nothing"), since the
+    // job leaving `active` state is the only signal that data changed.
+    if (job.state !== prev?.state && (job.state === 'done' || job.state === 'error')) {
+      get().fetchDatasets();
+      get().fetchStorage();
+    }
   },
 
   view: 'list',
@@ -128,8 +166,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   filters: { types: new Set(), query: '', tags: new Set() },
   setFilters: (patch) => set((s) => ({ filters: { ...s.filters, ...patch } })),
 
-  selection: { sourceId: null },
-  select: (id) => set({ selection: { sourceId: id } }),
+  selection: { key: null },
+  select: (key) => set({ selection: { key } }),
 
   vesselPosition: null,
   fetchVesselPosition: async () => {

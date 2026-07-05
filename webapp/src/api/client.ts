@@ -1,5 +1,6 @@
 import {
   CatalogState,
+  CleanupCandidatesResponse,
   DatasetEntry,
   DownloadJob,
   PriorityResponse,
@@ -34,8 +35,10 @@ export const api = {
   deleteDataset: (id: string) => request<{ ok: true }>(`/datasets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   getStorage: () => request<StorageStats>('/storage'),
+  getCleanupCandidates: (maxDistanceNm?: number) =>
+    request<CleanupCandidatesResponse>(`/cleanup-candidates${maxDistanceNm !== undefined ? `?maxDistanceNm=${maxDistanceNm}` : ''}`),
 
-  startDownload: (sourceId: string, selector?: { region_id?: string; filename?: string }) =>
+  startDownload: (sourceId: string, selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; filename?: string }) =>
     request<DownloadJob>('/downloads', { method: 'POST', body: JSON.stringify({ sourceId, ...selector }) }),
   getDownload: (id: string) => request<DownloadJob>(`/downloads/${encodeURIComponent(id)}`),
   listDownloads: () => request<DownloadJob[]>('/downloads'),
