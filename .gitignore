@@ -6,6 +6,7 @@ dist/
 dist-test/
 /public/
 *.tgz
+*.tsbuildinfo
 
 # Private tooling / data — never commit
 data/
