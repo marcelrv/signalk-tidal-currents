@@ -49,7 +49,8 @@ export const api = {
   listDownloads: () => request<DownloadJob[]>('/downloads'),
 
   getPriority: () => request<PriorityResponse>('/priority'),
-  setPriority: (order: SourceType[]) => request<PriorityResponse>('/priority', { method: 'PUT', body: JSON.stringify({ order }) }),
+  setPriority: (body: { order?: SourceType[]; datasets?: string[] }) =>
+    request<PriorityResponse>('/priority', { method: 'PUT', body: JSON.stringify(body) }),
 
   getVectorAt: (lat: number, lon: number) =>
     request<VectorResponse>(`/vector?latitude=${lat}&longitude=${lon}`),

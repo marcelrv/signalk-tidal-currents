@@ -22,7 +22,7 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   and the signalk-server integration test run via manual
   workflow_dispatch.
 - Network-dependent tests must **skip, not fail, when offline** (see
-  download.test.ts / opencpn-data.test.ts) and write only to
+  opencpn-data.test.ts) and write only to
   `os.tmpdir()` or gitignored caches.
 
 ## Architecture

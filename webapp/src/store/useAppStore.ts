@@ -44,7 +44,15 @@ export interface AppState {
   fetchCleanupCandidates: (maxDistanceNm?: number) => Promise<void>;
 
   priority: SourceType[];
+  /** Resolved per-dataset stack (PRD §5.3 Phase 3): install ids, top wins. */
+  priorityDatasets: string[];
+  fetchPriority: () => Promise<void>;
   setPriority: (order: SourceType[]) => Promise<void>;
+  setDatasetPriority: (datasets: string[]) => Promise<void>;
+
+  /** The "Storage & data" management sheet (storage, cleanup, priority stack). */
+  manageOpen: boolean;
+  setManageOpen: (open: boolean) => void;
 
   downloads: Record<string, DownloadJob>;
   /** Keyed by downloadKeyFor(sourceId, regionId) — lets ANY component (a row's own button, or a bulk "Update All" action) find and render the right progress for a source/region it didn't necessarily start itself. */
@@ -109,7 +117,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   deleteDataset: async (id) => {
     await api.deleteDataset(id);
-    await get().fetchDatasets();
+    // Deleting frees disk and drops the install out of the priority stack —
+    // refresh everything that displays either, not just the dataset list.
+    await Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
   },
   setAutoUpdate: async (id, enabled) => {
     await api.setAutoUpdate(id, enabled);
@@ -131,10 +141,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   priority: ['grib2', 'utcef', 'harmonic'],
-  setPriority: async (order) => {
-    const res = await api.setPriority(order);
-    set({ priority: res.order });
+  priorityDatasets: [],
+  fetchPriority: async () => {
+    const res = await api.getPriority().catch(() => null);
+    if (res) set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
   },
+  setPriority: async (order) => {
+    const res = await api.setPriority({ order });
+    set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
+  },
+  setDatasetPriority: async (datasets) => {
+    const res = await api.setPriority({ datasets });
+    set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
+  },
+
+  manageOpen: false,
+  setManageOpen: (open) => set({ manageOpen: open }),
 
   downloads: {},
   jobIdBySource: {},

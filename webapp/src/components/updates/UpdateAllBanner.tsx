@@ -68,12 +68,15 @@ export function UpdateAllBanner() {
   const sizeLabel = `${formatBytes(knownTotal)}${unknownCount > 0 ? ` + ${unknownCount} unknown size` : ''}`;
 
   return (
-    <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded border border-warn/40 bg-warn/5 p-3">
-      <details className="text-sm">
-        <summary className="min-h-11 cursor-pointer">
-          {updatable.length} region{updatable.length === 1 ? '' : 's'} have new data
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-xl border border-warn/30 bg-warn/10 px-3 py-1.5">
+      <details className="min-w-0 text-sm">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
+          <span aria-hidden className="h-2 w-2 shrink-0 rounded-full bg-warn motion-safe:animate-pulse" />
+          <span className="font-medium">
+            {updatable.length} region{updatable.length === 1 ? '' : 's'} ha{updatable.length === 1 ? 's' : 've'} new data
+          </span>
         </summary>
-        <ul className="mt-1 list-inside list-disc text-xs text-muted">
+        <ul className="mb-2 mt-1 list-inside list-disc text-xs text-muted">
           {updatable.map(({ dataset, source, row }) => (
             <li key={dataset.id}>
               {row?.name ?? source!.name}
@@ -86,9 +89,9 @@ export function UpdateAllBanner() {
         type="button"
         disabled={starting}
         onClick={handleClick}
-        className="min-h-11 rounded bg-accent px-4 text-sm font-medium text-surface disabled:opacity-50"
+        className="min-h-9 shrink-0 rounded-full bg-warn px-3.5 text-xs font-semibold text-bg disabled:opacity-50"
       >
-        {starting ? 'Starting…' : `Update All (${sizeLabel})`}
+        {starting ? 'Starting…' : `Update all · ${sizeLabel}`}
       </button>
       {confirmingOverfull && (
         <Modal title="Disk almost full" onClose={() => setConfirmingOverfull(false)}>

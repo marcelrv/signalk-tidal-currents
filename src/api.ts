@@ -25,7 +25,7 @@
 
 import { GribSource, gribGridSamples, gribSummary, gribVectorAt } from './gribcurrents.js';
 import { HarmonicsData, IdxStation } from './harmonics.js';
-import { SourceType } from './priority.js';
+import { DatasetRankEntry, SourceType } from './priority.js';
 import {
   CurrentSample,
   currentSampleAt,
@@ -67,6 +67,15 @@ export interface ApiState {
   preferGrib?: boolean;
   /** Explicit source-type rank (PRD §5.3 Phase 1); falls back to the preferGrib boolean when unset. */
   sourcePriority?: SourceType[];
+  /**
+   * Per-dataset priority stack (PRD §5.3 Phase 3), top-first. A getter (not
+   * a snapshot) because the stack changes with every download/delete/reorder;
+   * the provider is expected to memoize — resolveVector runs per timeline
+   * sample. Datasets probe only their own files; anything not covered by the
+   * stack (orphan files, the legacy harmonic pair) is still found by the
+   * type-rank fallback pass.
+   */
+  datasetRank?: () => DatasetRankEntry[];
 }
 
 export interface ResolvedVector {
@@ -78,6 +87,9 @@ export interface ResolvedVector {
   utcefStation?: UtcefCurrentStation;
   distanceKm?: number;
 }
+
+/** Nearest-station fallback radius for a SINGLE dataset's probe in the priority stack (see fromUtcefDataset in resolveVector). */
+export const UTCEF_DATASET_FALLBACK_MAX_KM = 50;
 
 /** Human-readable name of whichever station backed a resolved vector. */
 export function resolvedStationName(r: ResolvedVector): string | null {
@@ -100,20 +112,28 @@ export function resolveVector(
   timeMs: number,
   maxStationKm = Infinity,
 ): ResolvedVector | null {
-  const fromGrib = (): ResolvedVector | null => {
+  const fromGrib = (files?: ReadonlySet<string>): ResolvedVector | null => {
     const g = state.grib?.get();
     if (!g) return null;
-    const sample = gribVectorAt(g, lat, lon, timeMs);
+    const sample = gribVectorAt(g, lat, lon, timeMs, files);
     return sample ? { source: 'grib', sample } : null;
   };
-  const fromUtcef = (): ResolvedVector | null => {
+  const fromUtcef = (files?: ReadonlySet<string>, maxKm = maxStationKm): ResolvedVector | null => {
     const u = state.utcef?.get();
     if (!u) return null;
-    const hit = utcefVectorAt(u, lat, lon, timeMs, maxStationKm);
+    const hit = utcefVectorAt(u, lat, lon, timeMs, maxKm, files);
     return hit
       ? { source: 'utcef', sample: hit.sample, utcefStation: hit.station, distanceKm: hit.distanceKm }
       : null;
   };
+  // A SINGLE dataset's probe must not use the unlimited nearest-station
+  // fallback the merged pass enjoys: "nearest station within this one file"
+  // matches ANY position on earth, so a stacked Caribbean dataset would
+  // claim a query in the North Sea just by being ranked and non-empty.
+  // Containment (representative_area) still applies at any range; only the
+  // nearest-fallback radius is clamped.
+  const fromUtcefDataset = (files: ReadonlySet<string>): ResolvedVector | null =>
+    fromUtcef(files, Math.min(maxStationKm, UTCEF_DATASET_FALLBACK_MAX_KM));
   const fromStation = (): ResolvedVector | null => {
     if (!state.data) return null;
     const near = nearestCurrentStations(state.data, lat, lon, 10).filter(
@@ -124,6 +144,26 @@ export function resolveVector(
     if (!sample) return null;
     return { source: 'station', sample, station: near[0].station, distanceKm: near[0].distanceKm };
   };
+
+  // Per-dataset stack first (PRD §5.3 Phase 3): probe each installed dataset
+  // in stack order, restricted to its own files, so a small high-res coastal
+  // model ranked above a global one actually wins where they overlap — even
+  // across source types, which the type rank below cannot express. The
+  // legacy harmonic pair has no per-file provenance; a harmonic dataset
+  // probes the whole legacy station source.
+  for (const entry of state.datasetRank?.() ?? []) {
+    const files = new Set(entry.files);
+    const r =
+      entry.type === 'grib2'
+        ? fromGrib(files)
+        : entry.type === 'utcef'
+          ? fromUtcefDataset(files)
+          : fromStation();
+    if (r) return r;
+  }
+
+  // Type-rank fallback: catches everything without a stack entry — orphan
+  // (manually dropped) files, the legacy pair, or no manifest at all.
   const fns: Record<SourceType, () => ResolvedVector | null> = { grib2: fromGrib, utcef: fromUtcef, harmonic: fromStation };
   for (const key of sourceRank(state)) {
     const r = fns[key]();
@@ -389,15 +429,45 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     const g = gribData();
 
     // Per-sample source candidates in preference order (same policy as
-    // resolveVector, via the same sourceRank()).
+    // resolveVector: per-dataset stack first, then the type rank).
+    let utcefUsed: { station: UtcefCurrentStation; distanceKm: number } | null = null;
     const fromGrib = (t: number) => (g ? gribVectorAt(g, pos.lat, pos.lon, t) : null);
-    const fromUtcef = (t: number) => (utcefNear ? utcefSampleAt(utcefNear.station, t) : null);
+    const fromUtcef = (t: number) => {
+      if (!utcefNear) return null;
+      const s = utcefSampleAt(utcefNear.station, t);
+      if (s) utcefUsed ??= utcefNear;
+      return s;
+    };
     const fromStation = (t: number) =>
       station && state.data ? currentSampleAt(state.data, station.station, t) : null;
     const fns: Record<SourceType, (t: number) => CurrentSample | null> = { grib2: fromGrib, utcef: fromUtcef, harmonic: fromStation };
     const sourceLabel: Record<SourceType, 'grib' | 'utcef' | 'station'> = { grib2: 'grib', utcef: 'utcef', harmonic: 'station' };
-    const candidates: Array<{ source: 'grib' | 'utcef' | 'station'; fn: (t: number) => CurrentSample | null }> =
-      sourceRank(state).map((key) => ({ source: sourceLabel[key], fn: fns[key] }));
+    // A stack dataset's UTCEF station is resolved ONCE (containment/nearest
+    // doesn't depend on time), then sampled per-t like the fallback path.
+    const stackCandidates = (state.datasetRank?.() ?? []).map((entry) => {
+      const files = new Set(entry.files);
+      if (entry.type === 'grib2') {
+        return { source: 'grib' as const, fn: (t: number) => (g ? gribVectorAt(g, pos.lat, pos.lon, t, files) : null) };
+      }
+      if (entry.type === 'utcef') {
+        // Same clamped nearest-fallback radius as resolveVector's per-dataset probe.
+        const hit = u ? utcefVectorAt(u, pos.lat, pos.lon, win.start, UTCEF_DATASET_FALLBACK_MAX_KM, files) : null;
+        return {
+          source: 'utcef' as const,
+          fn: (t: number) => {
+            if (!hit) return null;
+            const s = utcefSampleAt(hit.station, t);
+            if (s) utcefUsed ??= hit;
+            return s;
+          },
+        };
+      }
+      return { source: 'station' as const, fn: fromStation };
+    });
+    const candidates: Array<{ source: 'grib' | 'utcef' | 'station'; fn: (t: number) => CurrentSample | null }> = [
+      ...stackCandidates,
+      ...sourceRank(state).map((key) => ({ source: sourceLabel[key], fn: fns[key] })),
+    ];
 
     const samples: Array<CurrentSample & { source: 'grib' | 'utcef' | 'station' }> = [];
     const usedSources = new Set<string>();
@@ -420,8 +490,8 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       station: usedSources.has('station') && station
         ? stationInfo(station.station, { distanceKm: station.distanceKm })
         : null,
-      utcefStation: usedSources.has('utcef') && utcefNear
-        ? utcefStationInfo(utcefNear.station, { distanceKm: utcefNear.distanceKm })
+      utcefStation: usedSources.has('utcef') && (utcefUsed ?? utcefNear)
+        ? utcefStationInfo((utcefUsed ?? utcefNear)!.station, { distanceKm: (utcefUsed ?? utcefNear)!.distanceKm })
         : null,
       units: {
         speedKn:

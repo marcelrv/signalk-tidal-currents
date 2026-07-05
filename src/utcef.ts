@@ -37,7 +37,7 @@ const RAD2DEG = 180 / Math.PI;
 /** Highest UTCEF schema major version this parser understands (spec §2). */
 export const SUPPORTED_SCHEMA_MAJOR = 1;
 
-const UTCEF_EXT_RE = /\.utcef(\.gz)?$/i;
+export const UTCEF_EXT_RE = /\.utcef(\.gz)?$/i;
 
 interface CurrentConstituent {
   name: string;
@@ -58,6 +58,8 @@ export interface UtcefCurrentStation {
   constituents: CurrentConstituent[];
   /** GeoJSON Polygon rings [ [ [lon,lat], … ] ] where the prediction is valid, if given. */
   representativeArea?: number[][][];
+  /** Provenance: which file in the UTCEF dir this station came from (set by loadUtcefDir) — the hook per-dataset priority filters on. */
+  file?: string;
 }
 
 /** A `metadata.data_sources[]` entry (spec §4.1). */
@@ -288,14 +290,40 @@ function readUtcefFile(full: string): string {
   return buf.toString('utf8');
 }
 
-/** Parse every UTCEF file in a directory into a merged dataset. */
+/**
+ * Recursive file listing as SORTED forward-slash relative paths — catalog
+ * downloads land in subdirectories (real catalog filenames look like
+ * `regions/europe/netherlands.utcef`), and the install manifest records that
+ * same relative path, so provenance (`station.file`) matches it exactly.
+ * Forward slashes even on Windows: the manifest uses them, and path.join
+ * handles them fine when resolving back to an absolute path.
+ */
+export function listDataFilesRecursive(dir: string, match: RegExp, maxDepth = 4): string[] {
+  const out: string[] = [];
+  const walk = (rel: string, depth: number) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(rel === '' ? dir : path.join(dir, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const relPath = rel === '' ? e.name : `${rel}/${e.name}`;
+      if (e.isDirectory()) {
+        if (depth < maxDepth) walk(relPath, depth + 1);
+      } else if (match.test(e.name)) {
+        out.push(relPath);
+      }
+    }
+  };
+  walk('', 0);
+  return out.sort();
+}
+
+/** Parse every UTCEF file in a directory (recursively — catalog downloads land in subdirs) into a merged dataset. */
 export function loadUtcefDir(dir: string): UtcefData | null {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dir).filter((f) => UTCEF_EXT_RE.test(f));
-  } catch {
-    return null; // directory absent — UTCEF source simply not configured
-  }
+  if (!fs.existsSync(dir)) return null; // directory absent — UTCEF source simply not configured
+  const entries = listDataFilesRecursive(dir, UTCEF_EXT_RE);
   if (entries.length === 0) return null;
 
   const warnings: string[] = [];
@@ -311,7 +339,7 @@ export function loadUtcefDir(dir: string): UtcefData | null {
   let heightStationCount = 0;
   let unsupportedFeatureCount = 0;
 
-  for (const name of entries.sort()) {
+  for (const name of entries) {
     const full = path.join(dir, name);
     try {
       const text = readUtcefFile(full);
@@ -331,6 +359,7 @@ export function loadUtcefDir(dir: string): UtcefData | null {
           continue;
         }
         seenIds.add(st.id);
+        st.file = name;
         currentStations.push(st);
         added++;
       }
@@ -416,6 +445,9 @@ export function nearestUtcefStations(
  * Best current vector at a position/time: prefer a station whose
  * `representative_area` contains the point; otherwise fall back to the
  * nearest station within `maxKm`. Returns null when nothing qualifies.
+ * `files` restricts the search to stations loaded from those files —
+ * how per-dataset priority (PRD §5.3 Phase 3) probes one installed
+ * dataset at a time instead of the whole merged directory.
  */
 export function utcefVectorAt(
   data: UtcefData,
@@ -423,10 +455,14 @@ export function utcefVectorAt(
   lon: number,
   timeMs: number,
   maxKm = Infinity,
+  files?: ReadonlySet<string>,
 ): { station: UtcefCurrentStation; distanceKm: number; sample: CurrentSample } | null {
-  if (data.currentStations.length === 0) return null;
+  const stations = files
+    ? data.currentStations.filter((s) => s.file !== undefined && files.has(s.file))
+    : data.currentStations;
+  if (stations.length === 0) return null;
 
-  const containing = data.currentStations.find(
+  const containing = stations.find(
     (s) => s.representativeArea && pointInArea(s.representativeArea, lat, lon),
   );
   if (containing) {
@@ -437,7 +473,11 @@ export function utcefVectorAt(
     };
   }
 
-  const near = nearestUtcefStations(data, lat, lon, 1)[0];
+  let near: { station: UtcefCurrentStation; distanceKm: number } | null = null;
+  for (const station of stations) {
+    const d = Math.round(distanceKm(lat, lon, station.latitude, station.longitude) * 100) / 100;
+    if (!near || d < near.distanceKm) near = { station, distanceKm: d };
+  }
   if (!near || near.distanceKm > maxKm) return null;
   return { station: near.station, distanceKm: near.distanceKm, sample: utcefSampleAt(near.station, timeMs) };
 }
@@ -481,10 +521,7 @@ export function createUtcefSource(dir: string, checkIntervalMs = 60_000): UtcefS
 
   const currentSignature = (): string => {
     try {
-      return fs
-        .readdirSync(dir)
-        .filter((f) => UTCEF_EXT_RE.test(f))
-        .sort()
+      return listDataFilesRecursive(dir, UTCEF_EXT_RE)
         .map((f) => {
           const st = fs.statSync(path.join(dir, f));
           return `${f}:${st.size}:${st.mtimeMs}`;

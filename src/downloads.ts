@@ -333,9 +333,15 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     const { ymd, hh, iso } = chooseCycle(templateFile, source.update_check.latest_cycle);
     const names: string[] = [];
     let sizeBytes = 0;
+    // The region (and forecast/nowcast type) MUST be part of the filename:
+    // multi-region template sources (e.g. NOAA RTOFS) share one url_template
+    // pattern, and a source-id-only name made every region's download land
+    // on the SAME file — each region silently overwriting the previous one
+    // while the manifest kept claiming all of them were installed.
+    const regionTag = `${templateFile.region_id}_${templateFile.type}`.replace(/[^A-Za-z0-9._-]+/g, '-');
     for (const hour of templateFile.forecast_hours) {
       const url = fillTemplate(templateFile.url_template, ymd, hh, hour);
-      const filename = `${source.id}_${ymd}${hh}_f${pad3(hour)}${path.extname(new URL(url).pathname) || '.grb2'}`;
+      const filename = `${source.id}_${regionTag}_${ymd}${hh}_f${pad3(hour)}${path.extname(new URL(url).pathname) || '.grb2'}`;
       const target = path.join(dir, filename);
       // Same fix as the static-file branch above: `total` repeats on every
       // chunk, only count it once per forecast-hour file.

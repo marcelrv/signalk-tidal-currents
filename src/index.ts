@@ -27,13 +27,21 @@ import * as path from 'path';
 import { registerRoutes, resolveVector, resolvedStationName, ApiState, RouterLike } from './api.js';
 import { runAutoUpdateSweep } from './autoUpdate.js';
 import { createCatalogClient } from './catalog.js';
-import { ensureStandardData } from './download.js';
 import { createDownloadEngine } from './downloads.js';
-import { createGribSource } from './gribcurrents.js';
+import { GRIB_EXT_RE, createGribSource } from './gribcurrents.js';
 import { HarmonicsData, loadHarmonicsDir } from './harmonics.js';
 import { ManagerRouterLike, ManagerState, registerManagerRoutes } from './managerApi.js';
-import { DEFAULT_PRIORITY, SourceType, isValidPriorityOrder, loadPriorityOverride, savePriorityOverrideAtomic } from './priority.js';
-import { createUtcefSource } from './utcef.js';
+import { readManifest } from './manifest.js';
+import {
+  DEFAULT_PRIORITY,
+  DatasetRankEntry,
+  SourceType,
+  isValidPriorityOrder,
+  loadPriorityOverride,
+  resolveDatasetStack,
+  savePriorityOverrideAtomic,
+} from './priority.js';
+import { UTCEF_EXT_RE, createUtcefSource, listDataFilesRecursive } from './utcef.js';
 
 const PLUGIN_ID = 'signalk-tidal-currents';
 const DEG2RAD = Math.PI / 180;
@@ -49,7 +57,6 @@ interface Config {
   publishDelta: boolean;
   updateSeconds: number;
   maxStationDistanceKm: number;
-  autoDownloadStandardData: boolean;
   catalogUrl: string;
   catalogRefreshHours: number;
   sourcePriority: SourceType[];
@@ -64,7 +71,6 @@ const DEFAULTS: Config = {
   publishDelta: true,
   updateSeconds: 60,
   maxStationDistanceKm: 15,
-  autoDownloadStandardData: true,
   catalogUrl: DEFAULT_CATALOG_URL,
   catalogRefreshHours: 24,
   sourcePriority: DEFAULT_PRIORITY,
@@ -132,6 +138,8 @@ function pluginConstructor(app: any) {
     managerDir: '',
     getPriority: () => DEFAULT_PRIORITY,
     setPriority: () => { /* not started yet */ },
+    getDatasetStack: () => [],
+    setDatasetStack: () => { /* not started yet */ },
     apiState: state,
     getVesselPosition: () => readVesselPosition(app),
   };
@@ -219,15 +227,6 @@ function pluginConstructor(app: any) {
             default: DEFAULTS.maxStationDistanceKm,
             minimum: 1,
           },
-          autoDownloadStandardData: {
-            type: 'boolean',
-            title: 'Auto-download OpenCPN standard data',
-            description:
-              "Download OpenCPN's HARMONICS_NO_US (+ .IDX) current-station data into the Harmonics " +
-              'Data Directory if missing, and re-check for updates at most weekly. Never overwrites ' +
-              'a file literally named HARMONIC/HARMONIC.IDX, so a custom pair you provide always wins.',
-            default: DEFAULTS.autoDownloadStandardData,
-          },
           catalogUrl: {
             type: 'string',
             title: 'Tide/Current Catalog URL',
@@ -300,8 +299,11 @@ function pluginConstructor(app: any) {
       // priority.json (written by the webapp's reorder list) takes
       // precedence over the plain config form's sourcePriority, which is
       // just the initial/admin-form fallback.
+      const priorityOverride = loadPriorityOverride(managerDir);
       let currentPriority: SourceType[] =
-        loadPriorityOverride(managerDir) ?? (isValidPriorityOrder(config.sourcePriority) ? config.sourcePriority : DEFAULT_PRIORITY);
+        priorityOverride.order ?? (isValidPriorityOrder(config.sourcePriority) ? config.sourcePriority : DEFAULT_PRIORITY);
+      // Per-dataset stack (PRD §5.3 Phase 3) — persisted install ids, top wins.
+      let currentDatasets: string[] = priorityOverride.datasets;
       state.sourcePriority = currentPriority;
 
       const catalogClient = createCatalogClient({
@@ -333,11 +335,67 @@ function pluginConstructor(app: any) {
       });
       mgr.dirs = { harmonic: dir, grib2: gribDir, utcef: utcefDir };
       mgr.managerDir = managerDir;
+
+      // Memoized per-dataset rank for resolveVector (PRD §5.3 Phase 3). It
+      // runs per timeline SAMPLE, so the manifest/dirs can't be re-read per
+      // call: re-check at most every 5 s, rebuild only on actual change.
+      // Manually-dropped (orphan) grib/utcef files join the rank as pseudo-
+      // datasets in the type-ordered tail — otherwise ANY manifest install
+      // (even a far-away harmonic station set) would outrank a nearby file
+      // the user dropped in by hand, purely because orphans aren't in the
+      // manifest. The legacy harmonic pair needs no pseudo-entry: harmonic
+      // entries probe the whole legacy source, and the type-rank fallback
+      // pass covers it regardless.
+      let rankCache: DatasetRankEntry[] = [];
+      let rankStamp = '';
+      let rankCheckedAt = -Infinity;
+      const invalidateRank = () => {
+        rankCheckedAt = -Infinity;
+        rankStamp = '';
+      };
+      state.datasetRank = () => {
+        const now = Date.now();
+        if (now - rankCheckedAt >= 5_000) {
+          rankCheckedAt = now;
+          let stamp = 'absent';
+          try {
+            const st = fs.statSync(manifestPath);
+            stamp = `${st.size}:${st.mtimeMs}`;
+          } catch {
+            // no manifest yet — keep the sentinel stamp
+          }
+          const gribFiles = listDataFilesRecursive(gribDir, GRIB_EXT_RE);
+          const utcefFiles = listDataFilesRecursive(utcefDir, UTCEF_EXT_RE);
+          stamp += `|${gribFiles.join(',')}|${utcefFiles.join(',')}|${currentDatasets.join(',')}|${currentPriority.join(',')}`;
+          if (stamp !== rankStamp) {
+            rankStamp = stamp;
+            const installs = readManifest(manifestPath).installs;
+            const referenced = new Set(installs.flatMap((i) => i.files.map((f) => `${i.dir}:${f}`)));
+            const orphans = [
+              ...gribFiles.filter((f) => !referenced.has(`grib:${f}`)).map((f) => ({ id: `orphan:grib:${f}`, type: 'grib2' as const, files: [f] })),
+              ...utcefFiles.filter((f) => !referenced.has(`utcef:${f}`)).map((f) => ({ id: `orphan:utcef:${f}`, type: 'utcef' as const, files: [f] })),
+            ];
+            // Installs before orphans: resolveDatasetStack's type sort is
+            // stable, so within a type, manifest installs keep outranking
+            // unmanaged files.
+            rankCache = resolveDatasetStack(currentDatasets, currentPriority, [...installs, ...orphans]);
+          }
+        }
+        return rankCache;
+      };
+
       mgr.getPriority = () => currentPriority;
       mgr.setPriority = (order) => {
         currentPriority = order;
         state.sourcePriority = order;
-        savePriorityOverrideAtomic(managerDir, order);
+        savePriorityOverrideAtomic(managerDir, order, currentDatasets);
+        invalidateRank();
+      };
+      mgr.getDatasetStack = () => currentDatasets;
+      mgr.setDatasetStack = (ids) => {
+        currentDatasets = ids;
+        savePriorityOverrideAtomic(managerDir, currentPriority, ids);
+        invalidateRank();
       };
 
       // Fire-and-forget: refresh the catalog if there's no cached copy yet,
@@ -437,19 +495,6 @@ function pluginConstructor(app: any) {
         } catch (e) {
           console.warn(`[${PLUGIN_ID}] could not mount /signalk/v2/api/currents: ${e}`);
         }
-      }
-
-      if (config.autoDownloadStandardData) {
-        // Fire-and-forget: doesn't block start(). If it downloads
-        // new/updated files, reload so the already-mounted routes (and the
-        // publish loop below) pick them up without a restart.
-        ensureStandardData(dir)
-          .then((changed) => {
-            if (changed) attemptLoad();
-          })
-          .catch((e) => {
-            console.warn(`[${PLUGIN_ID}] OpenCPN standard data check failed: ${e}`);
-          });
       }
 
       if (config.publishDelta) {
@@ -657,8 +702,8 @@ const openApiSpec = {
       },
     },
     '/priority': {
-      get: { summary: 'Current source-type priority order', responses: { '200': { description: 'OK' } } },
-      put: { summary: 'Set the source-type priority order', responses: { '200': { description: 'OK' }, '400': { description: 'Not a permutation of the 3 source types' } } },
+      get: { summary: 'Current source-type priority order and per-dataset stack', responses: { '200': { description: 'OK' } } },
+      put: { summary: 'Set the source-type priority order and/or the per-dataset stack', responses: { '200': { description: 'OK' }, '400': { description: 'Invalid order permutation or dataset id list' } } },
     },
   },
 };

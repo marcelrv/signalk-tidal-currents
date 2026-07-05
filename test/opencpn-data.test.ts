@@ -19,7 +19,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { OPENCPN_BASE_URL, OPENCPN_FILES } from '../dist/download.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { currentSampleAt, currentSpeedAt, nearestCurrentStations, predictReference } from '../dist/predict.js';
 
@@ -27,6 +26,12 @@ const DATA_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..', 'test', 'data-opencpn',
 );
+
+// Formerly exported by src/download.ts (the removed OpenCPN auto-download
+// feature — superseded by the catalog download manager). Only this test
+// still fetches the pair, into its gitignored cache.
+const OPENCPN_BASE_URL = 'https://raw.githubusercontent.com/OpenCPN/OpenCPN/master/data/tcdata';
+const OPENCPN_FILES = ['HARMONICS_NO_US', 'HARMONICS_NO_US.IDX'];
 
 async function ensureData(): Promise<boolean> {
   fs.mkdirSync(DATA_DIR, { recursive: true });

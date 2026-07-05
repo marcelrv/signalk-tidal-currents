@@ -60,7 +60,7 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
           <ul className="flex flex-col gap-2">
             {candidates.map((c) => (
               <li key={c.id}>
-                <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded border border-muted/30 p-3">
+                <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-border p-3">
                   <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} className="h-5 w-5" />
                   <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
                   <span className="text-sm text-muted">{c.distanceNm !== null ? `${Math.round(c.distanceNm)} nm` : 'unknown location'}</span>
@@ -73,7 +73,7 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
             type="button"
             disabled={selected.size === 0 || deleting}
             onClick={confirmDelete}
-            className="min-h-11 rounded bg-accent px-4 font-medium text-surface disabled:opacity-50"
+            className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
           >
             {deleting ? 'Removing…' : `Free ~${formatBytes(freeableBytes)}`}
           </button>

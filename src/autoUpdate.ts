@@ -5,10 +5,9 @@
  * "Keep fresh when online" (PRD §5.5 Phase 2) — periodically re-downloads
  * any manifest install that has opted in via `autoUpdate: true` AND is
  * currently stale (per `computeInstallStatus`, the same check the /datasets
- * listing uses). Invoked on a timer from `index.ts`, mirroring the existing
- * `ensureStandardData` weekly re-check pattern, but as a real recurring
- * timer (not just a check-on-restart) since this plugin is expected to run
- * for weeks unattended on a boat.
+ * listing uses). Invoked on a recurring timer from `index.ts` (not just a
+ * check-on-restart) since this plugin is expected to run for weeks
+ * unattended on a boat.
  *
  * Safety: never starts a download that would push disk usage past 90% full
  * (same threshold the webapp's own Update-All banner warns on), and never

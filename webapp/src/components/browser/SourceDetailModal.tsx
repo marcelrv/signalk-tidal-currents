@@ -7,6 +7,7 @@ import { StatusBadge } from '../shared/StatusBadge';
 import { ExpiryCountdown } from '../shared/ExpiryCountdown';
 import { AutoUpdateToggle } from '../shared/AutoUpdateToggle';
 import { DownloadButton } from '../downloads/DownloadButton';
+import { DeleteDatasetButton } from '../shared/DeleteDatasetButton';
 import { AttributionPanel } from '../attribution/AttributionPanel';
 
 /** Dataset detail — opened by selecting a row from the list or map. */
@@ -24,23 +25,24 @@ export function SourceDetailModal() {
 
   return (
     <Modal title={row.name} onClose={() => select(null)}>
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-3 pt-1">
         <p className="text-sm text-muted">{row.source.description}</p>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <StatusBadge status={status} />
           {dataset && <ExpiryCountdown dataset={dataset} />}
           {dataset && <AutoUpdateToggle dataset={dataset} />}
+          {dataset && <DeleteDatasetButton id={dataset.id} name={row.name} sizeBytes={dataset.sizeBytes} />}
           <DownloadButton source={row.source} regionId={row.regionId} fileType={row.fileType} status={status} />
         </div>
         <p className="text-sm text-muted">{row.regionName}</p>
         <div className="flex flex-wrap gap-1">
           {row.source.tags.map((t) => (
-            <span key={t} className="rounded-full bg-muted/20 px-2 py-0.5 text-xs text-muted">
+            <span key={t} className="rounded-full bg-surface-2 px-2.5 py-1 text-xs text-muted">
               {t}
             </span>
           ))}
         </div>
-        <hr className="border-muted/20" />
+        <hr className="border-border" />
         <AttributionPanel source={row.source} dataset={dataset} />
       </div>
     </Modal>

@@ -23,6 +23,7 @@ import * as path from 'path';
 
 import { Grib2Field, Grib2Grid, parseGrib2, sampleGrid } from './grib2.js';
 import { CurrentSample, KNOTS_TO_MS } from './predict.js';
+import { listDataFilesRecursive } from './utcef.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -31,7 +32,7 @@ const RAD2DEG = 180 / Math.PI;
 export const GRIB_TIME_SLACK_MS = 3 * 3_600_000;
 
 /** One forecast time with matched u and v grids. */
-interface TimeSlot {
+export interface TimeSlot {
   time: number; // ms epoch
   grid: Grib2Grid;
   u: Float64Array; // m/s east
@@ -44,11 +45,18 @@ export interface GribCurrentsData {
   dir: string;
   files: string[];
   slots: TimeSlot[]; // sorted by time
+  /**
+   * The same slots keyed by source file, WITHOUT the cross-file same-time
+   * dedup applied to `slots` — per-dataset priority (PRD §5.3 Phase 3) needs
+   * to probe one file's full coverage even when another file shadowed some
+   * of its valid times in the merged list. Same TimeSlot objects, no copies.
+   */
+  slotsByFile: Record<string, TimeSlot[]>;
   /** Reasons for anything skipped during parsing (surfaced in the summary). */
   warnings: string[];
 }
 
-const GRIB_EXT_RE = /\.(grb2?|grib2?)$/i;
+export const GRIB_EXT_RE = /\.(grb2?|grib2?)$/i;
 
 function isCurrentField(f: Grib2Field): boolean {
   return f.discipline === 10 && f.paramCategory === 1 && f.paramNumber >= 0 && f.paramNumber <= 3;
@@ -140,27 +148,26 @@ function buildSlots(fields: Grib2Field[], file: string, warnings: string[]): Tim
   return slots;
 }
 
-/** Parse every GRIB2 file in a directory into a time-sorted current dataset. */
+/** Parse every GRIB2 file in a directory (recursively — catalog filenames may carry subdir paths) into a time-sorted current dataset. */
 export function loadGribDir(dir: string): GribCurrentsData | null {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dir).filter((f) => GRIB_EXT_RE.test(f));
-  } catch {
-    return null; // directory absent — GRIB source simply not configured
-  }
+  if (!fs.existsSync(dir)) return null; // directory absent — GRIB source simply not configured
+  const entries = listDataFilesRecursive(dir, GRIB_EXT_RE);
   if (entries.length === 0) return null;
 
   const warnings: string[] = [];
   const slots: TimeSlot[] = [];
+  const slotsByFile: Record<string, TimeSlot[]> = {};
   const files: string[] = [];
-  for (const name of entries.sort()) {
+  for (const name of entries) {
     const full = path.join(dir, name);
     try {
       const { fields, skipped } = parseGrib2(fs.readFileSync(full));
       for (const s of skipped) warnings.push(`${name}: ${s}`);
       const fileSlots = buildSlots(fields, name, warnings);
       if (fileSlots.length > 0) {
+        fileSlots.sort((a, b) => a.time - b.time);
         slots.push(...fileSlots);
+        slotsByFile[name] = fileSlots;
         files.push(name);
       } else if (fields.length > 0) {
         warnings.push(`${name}: no ocean-current fields (discipline 10, category 1) found`);
@@ -170,7 +177,7 @@ export function loadGribDir(dir: string): GribCurrentsData | null {
     }
   }
   if (slots.length === 0) {
-    return { dir, files, slots: [], warnings };
+    return { dir, files, slots: [], slotsByFile, warnings };
   }
   slots.sort((a, b) => a.time - b.time);
   // Duplicate valid times across files: keep the one from the later file
@@ -181,7 +188,7 @@ export function loadGribDir(dir: string): GribCurrentsData | null {
     if (last && last.time === s.time && Math.abs(last.depth - s.depth) < 1e-6) dedup[dedup.length - 1] = s;
     else dedup.push(s);
   }
-  return { dir, files, slots: dedup, warnings };
+  return { dir, files, slots: dedup, slotsByFile, warnings };
 }
 
 function sampleSlot(slot: TimeSlot, lat: number, lon: number): { u: number; v: number } | null {
@@ -198,14 +205,26 @@ function sampleSlot(slot: TimeSlot, lat: number, lon: number): { u: number; v: n
  *
  * Unlike station samples, `speedKn` is a magnitude (there is no flood/ebb
  * axis in gridded data — the sign convention does not apply).
+ *
+ * `files` restricts the lookup to slots parsed from those files (union,
+ * merged by time) — how per-dataset priority (PRD §5.3 Phase 3) probes one
+ * installed dataset instead of the whole merged directory.
  */
 export function gribVectorAt(
   data: GribCurrentsData,
   lat: number,
   lon: number,
   timeMs: number,
+  files?: ReadonlySet<string>,
 ): CurrentSample | null {
-  const slots = data.slots;
+  let slots = data.slots;
+  if (files) {
+    const lists = Object.entries(data.slotsByFile)
+      .filter(([name]) => files.has(name))
+      .map(([, list]) => list);
+    if (lists.length === 0) return null;
+    slots = lists.length === 1 ? lists[0] : lists.flat().sort((a, b) => a.time - b.time);
+  }
   if (slots.length === 0) return null;
   if (timeMs < slots[0].time - GRIB_TIME_SLACK_MS) return null;
   if (timeMs > slots[slots.length - 1].time + GRIB_TIME_SLACK_MS) return null;
@@ -375,10 +394,7 @@ export function createGribSource(dir: string, checkIntervalMs = 60_000): GribSou
 
   const currentSignature = (): string => {
     try {
-      return fs
-        .readdirSync(dir)
-        .filter((f) => GRIB_EXT_RE.test(f))
-        .sort()
+      return listDataFilesRecursive(dir, GRIB_EXT_RE)
         .map((f) => {
           const st = fs.statSync(path.join(dir, f));
           return `${f}:${st.size}:${st.mtimeMs}`;

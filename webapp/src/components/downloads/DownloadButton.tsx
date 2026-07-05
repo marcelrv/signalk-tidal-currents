@@ -7,13 +7,7 @@ import { CatalogSource } from '../../api/types';
 import { DisplayStatus, downloadKeyFor, hasUnknownSizeRisk, totalSizeBytes, wouldExceedDiskThreshold } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
-
-const LABELS: Record<DisplayStatus, string> = {
-  active: '✓ Installed',
-  'update-available': 'Update',
-  'not-installed': 'Download',
-  error: 'Retry',
-};
+import { Icon } from '../shared/Icon';
 
 /** 1-click download with progress (PRD §5.1): row/card button → downloading (progress %) → done. Progress is pushed via SSE with a polling fallback (PRD §9 Phase 2) — the job may have been started elsewhere (e.g. the Update-All banner), not necessarily by this button instance. */
 export function DownloadButton({
@@ -70,36 +64,64 @@ export function DownloadButton({
   if (active) {
     const pct = job.totalBytes ? Math.min(100, Math.round((job.bytes / job.totalBytes) * 100)) : null;
     return (
-      <span className="min-h-11 min-w-11 inline-flex items-center justify-center rounded border border-muted/40 px-3 text-sm text-muted">
+      <span
+        role="status"
+        aria-label="Downloading"
+        className="inline-flex min-h-9 min-w-14 shrink-0 items-center justify-center rounded-full border border-accent/40 bg-accent/10 px-2.5 text-xs font-medium text-accent tabular-nums motion-safe:animate-pulse"
+      >
         {pct !== null ? `${pct}%` : formatBytes(job.bytes)}
       </span>
     );
   }
 
+  if (status === 'active') {
+    return (
+      <span
+        aria-label="Installed"
+        title="Installed"
+        className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center text-success"
+      >
+        <Icon name="check" className="h-4.5 w-4.5" />
+      </span>
+    );
+  }
+
+  const label = status === 'update-available' ? 'Update' : status === 'error' ? 'Retry' : 'Get';
   return (
-    <div className="flex flex-col items-end gap-1">
+    <div className="flex shrink-0 flex-col items-end gap-1">
       <button
         type="button"
-        className="min-h-11 min-w-11 rounded border border-accent px-3 text-sm font-medium text-accent hover:bg-accent/10"
+        aria-label={`${label} ${source.name}`}
+        className={`flex min-h-9 items-center gap-1.5 rounded-full px-3.5 text-xs font-semibold ${
+          status === 'update-available'
+            ? 'bg-warn/15 text-warn'
+            : status === 'error'
+              ? 'bg-danger/15 text-danger'
+              : 'bg-accent text-bg'
+        }`}
         onClick={handleClick}
-        disabled={status === 'active'}
       >
-        {LABELS[status]}
+        <Icon name="download" className="h-3.5 w-3.5" />
+        {label}
       </button>
       {error && (
-        <span role="alert" className="max-w-[16rem] text-right text-xs text-danger">
+        <span role="alert" className="max-w-[14rem] text-right text-xs text-danger">
           {error}
         </span>
       )}
       {confirmingOverfull && (
         <Modal title="Disk almost full" onClose={() => setConfirmingOverfull(false)}>
-          <p className="mb-4 text-muted">
+          <p className="mb-4 text-sm text-muted">
             {unknownSizeRisk
               ? `${source.name}'s download size can't be known ahead of time (forecast cycle file), and this disk is already over 75% full. Ensure you have enough free space before continuing.`
               : `Downloading ${source.name} (${formatBytes(sizeBytes)}) would push this disk past 90% full. Continue anyway?`}
           </p>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setConfirmingOverfull(false)} className="min-h-11 rounded px-4 text-muted">
+            <button
+              type="button"
+              onClick={() => setConfirmingOverfull(false)}
+              className="min-h-11 rounded-full px-4 text-sm font-medium text-muted hover:bg-surface-2"
+            >
               Cancel
             </button>
             <button
@@ -108,7 +130,7 @@ export function DownloadButton({
                 setConfirmingOverfull(false);
                 begin();
               }}
-              className="min-h-11 rounded bg-accent px-4 font-medium text-surface"
+              className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg"
             >
               Download anyway
             </button>

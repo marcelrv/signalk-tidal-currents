@@ -5,10 +5,16 @@
  * and Red night mode (preserves night vision). Red mode uses shades of
  * red/black/white for EVERY semantic color, not just accent — a literal
  * green "success" dot in red mode would defeat the whole point.
+ *
+ * `--color-border` and `--color-surface-2` exist so hairlines and raised
+ * chips/inputs are theme tokens too (a fixed muted/NN alpha reads too heavy
+ * in day mode and too faint in red mode).
  */
 :root[data-theme='day'] {
   --color-bg: #f5f7fa;
   --color-surface: #ffffff;
+  --color-surface-2: #edf1f6;
+  --color-border: #dde4ec;
   --color-fg: #0f172a;
   --color-muted: #64748b;
   --color-accent: #0369a1;
@@ -20,6 +26,8 @@
 :root[data-theme='dark'] {
   --color-bg: #0b1220;
   --color-surface: #131c2e;
+  --color-surface-2: #1b2740;
+  --color-border: #223050;
   --color-fg: #e2e8f0;
   --color-muted: #94a3b8;
   --color-accent: #38bdf8;
@@ -31,6 +39,8 @@
 :root[data-theme='red'] {
   --color-bg: #0a0000;
   --color-surface: #1a0000;
+  --color-surface-2: #260505;
+  --color-border: #3a0d0d;
   --color-fg: #ff8080;
   --color-muted: #a03030;
   --color-accent: #ff4040;
@@ -44,12 +54,14 @@
      mode) — this exists so the modal scrim is a token, not a literal
      hardcoded color in a component (PRD §4), not because the value itself
      needs to vary. */
-  --color-scrim: rgb(0 0 0 / 0.4);
+  --color-scrim: rgb(0 0 0 / 0.5);
 }
 
 @theme {
   --color-bg: var(--color-bg);
   --color-surface: var(--color-surface);
+  --color-surface-2: var(--color-surface-2);
+  --color-border: var(--color-border);
   --color-fg: var(--color-fg);
   --color-muted: var(--color-muted);
   --color-accent: var(--color-accent);
@@ -68,6 +80,23 @@ body,
 body {
   background-color: var(--color-bg);
   color: var(--color-fg);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Horizontal filter/chip rails scroll without a visible scrollbar. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

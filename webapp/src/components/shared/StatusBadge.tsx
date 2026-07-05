@@ -7,23 +7,30 @@ export const STATUS_LABELS: Record<DisplayStatus, string> = {
   error: 'Error',
 };
 
+const DOT_CLASS: Record<DisplayStatus, string> = {
+  active: 'bg-success',
+  'update-available': 'bg-warn motion-safe:animate-pulse',
+  'not-installed': 'border-2 border-dashed border-muted',
+  error: 'bg-danger',
+};
+
+/** Dot-only form of the PRD §4 status vocabulary — for dense list rows where the label would repeat on every line. */
+export function StatusDot({ status, className }: { status: DisplayStatus; className?: string }) {
+  return (
+    <span
+      aria-label={STATUS_LABELS[status]}
+      title={STATUS_LABELS[status]}
+      className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${DOT_CLASS[status]} ${className ?? ''}`}
+    />
+  );
+}
+
 /** The 5-symbol status vocabulary from PRD §4, used consistently on map polygons, list rows, and cards. */
 export function StatusBadge({ status }: { status: DisplayStatus }) {
-  const label = STATUS_LABELS[status];
   return (
-    <span className="inline-flex items-center gap-1.5 text-sm" title={label}>
-      <span
-        aria-hidden
-        className={
-          {
-            active: 'inline-block h-2.5 w-2.5 rounded-full bg-success',
-            'update-available': 'inline-block h-2.5 w-2.5 rounded-full bg-warn motion-safe:animate-pulse',
-            'not-installed': 'inline-block h-2.5 w-2.5 rounded-full border-2 border-dashed border-muted',
-            error: 'inline-block h-2.5 w-2.5 rounded-full bg-danger',
-          }[status]
-        }
-      />
-      <span className="text-muted">{label}</span>
+    <span className="inline-flex items-center gap-1.5 text-sm">
+      <StatusDot status={status} />
+      <span className="text-muted">{STATUS_LABELS[status]}</span>
     </span>
   );
 }

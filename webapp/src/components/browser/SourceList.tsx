@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { datasetForRow, groupRowsByProvider, matchesFilters, rowsForSources } from '../../lib/sources';
 import { pointInGeometry } from '../../lib/geo';
+import { Icon } from '../shared/Icon';
 import { SourceListRow } from './SourceListRow';
 
 /**
@@ -45,38 +46,50 @@ export function SourceList() {
   }, [groups, vesselPosition]);
 
   if (!catalog?.document) {
-    return <p className="p-4 text-muted">No catalog yet — sync when online.</p>;
+    return <p className="p-4 text-sm text-muted">No catalog yet — sync when online.</p>;
   }
   if (groups.length === 0) {
-    return <p className="p-4 text-muted">No datasets match the current filters.</p>;
+    return <p className="p-4 text-sm text-muted">No datasets match the current filters.</p>;
   }
 
   return (
-    <div>
-      {groups.map(({ provider, rows }) => (
-        <details
-          key={provider}
-          open={expanded.has(provider)}
-          onToggle={(e) => {
-            const isOpen = e.currentTarget.open;
-            setExpanded((prev) => {
-              const next = new Set(prev);
-              if (isOpen) next.add(provider);
-              else next.delete(provider);
-              return next;
-            });
-          }}
-        >
-          <summary className="min-h-11 cursor-pointer bg-muted/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
-            {provider} <span className="normal-case text-muted/70">({rows.length})</span>
-          </summary>
-          <ul>
-            {rows.map((row) => (
-              <SourceListRow key={row.key} row={row} dataset={datasetForRow(datasets, row)} />
-            ))}
-          </ul>
-        </details>
-      ))}
+    <div className="flex flex-col gap-2">
+      {groups.map(({ provider, rows }) => {
+        const open = expanded.has(provider);
+        const installedCount = rows.filter((r) => datasetForRow(datasets, r)).length;
+        return (
+          <details
+            key={provider}
+            open={open}
+            onToggle={(e) => {
+              const isOpen = e.currentTarget.open;
+              setExpanded((prev) => {
+                const next = new Set(prev);
+                if (isOpen) next.add(provider);
+                else next.delete(provider);
+                return next;
+              });
+            }}
+            className="overflow-hidden rounded-xl border border-border bg-surface"
+          >
+            <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 py-2 [&::-webkit-details-marker]:hidden">
+              <Icon name="chevronRight" className={`h-4 w-4 shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} />
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold">{provider}</span>
+              {installedCount > 0 && (
+                <span className="shrink-0 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success tabular-nums">
+                  {installedCount} installed
+                </span>
+              )}
+              <span className="shrink-0 text-xs text-muted tabular-nums">{rows.length}</span>
+            </summary>
+            <ul className="border-t border-border px-1 py-1">
+              {rows.map((row) => (
+                <SourceListRow key={row.key} row={row} dataset={datasetForRow(datasets, row)} />
+              ))}
+            </ul>
+          </details>
+        );
+      })}
     </div>
   );
 }

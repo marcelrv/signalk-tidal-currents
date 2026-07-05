@@ -159,6 +159,8 @@ export type SourceType = 'grib2' | 'utcef' | 'harmonic';
 export interface PriorityResponse {
   order: SourceType[];
   default: SourceType[];
+  /** Resolved per-dataset stack (PRD §5.3 Phase 3): install ids top-first — persisted order first, then unranked installs in type order. */
+  datasets: string[];
 }
 
 export interface VectorResponse {

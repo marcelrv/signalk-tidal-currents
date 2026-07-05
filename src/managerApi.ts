@@ -17,8 +17,9 @@ import { CatalogSourceType } from './catalogTypes.js';
 import { computeInstallStatus } from './datasetStatus.js';
 import { DownloadEngine, FileSelector } from './downloads.js';
 import { ManifestDir, readManifest, removeInstall, upsertInstall, writeManifestAtomic } from './manifest.js';
-import { DEFAULT_PRIORITY, SourceType, isValidPriorityOrder } from './priority.js';
+import { DEFAULT_PRIORITY, SourceType, isValidDatasetStack, isValidPriorityOrder, resolveDatasetStack } from './priority.js';
 import { StorageDirs, cleanupCandidates, statStorage } from './storage.js';
+import { listDataFilesRecursive } from './utcef.js';
 
 interface MReq {
   params: Record<string, string>;
@@ -64,6 +65,9 @@ export interface ManagerState {
   managerDir: string;
   getPriority(): SourceType[];
   setPriority(order: SourceType[]): void;
+  /** Persisted per-dataset stack (PRD §5.3 Phase 3) — raw install ids as saved, NOT the resolved full stack. */
+  getDatasetStack(): string[];
+  setDatasetStack(ids: string[]): void;
   /** Shared with the existing prediction ApiState so /datasets can reuse already-parsed metadata (titles, UTCEF license fields) instead of re-parsing files. */
   apiState: ApiState;
   /** Server-side vessel position for Smart Cleanup's distance math (PRD §5.4 Phase 2) — null when no position fix is available. */
@@ -163,9 +167,11 @@ function orphanDatasets(mgr: ManagerState): DatasetEntry[] {
   const results: DatasetEntry[] = [];
 
   const scan = (tag: ManifestDir, dirPath: string, pattern: RegExp, type: CatalogSourceType) => {
+    // Recursive (except the flat legacy harmonic pair) — catalog filenames
+    // carry subdir paths, so untracked leftovers can sit in subdirs too.
     let names: string[] = [];
     try {
-      names = fs.readdirSync(dirPath).filter((f) => pattern.test(f));
+      names = tag === 'harmonic' ? fs.readdirSync(dirPath).filter((f) => pattern.test(f)) : listDataFilesRecursive(dirPath, pattern);
     } catch {
       return;
     }
@@ -229,9 +235,12 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     const orphanMatch = /^orphan:(harmonic|grib|utcef):(.+)$/.exec(id);
     if (orphanMatch) {
       const [, tag, filename] = orphanMatch;
-      // The filename comes from the URL param — reject any path-separator or
-      // parent-traversal component before it ever reaches path.join.
-      if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+      // The filename comes from the URL param. Forward-slash subpaths are
+      // legitimate (catalog downloads land in subdirs, and the orphan scan
+      // reports them that way) — but reject backslashes, parent traversal,
+      // and absolute paths before it ever reaches path.join.
+      // isWithinManagedDirs below re-checks the resolved result regardless.
+      if (filename.includes('\\') || filename.startsWith('/') || filename.split('/').includes('..')) {
         res.status(400).json({ error: 'refused: invalid filename' });
         return;
       }
@@ -362,17 +371,32 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     raw.on('close', cleanup);
   });
 
+  // `datasets` is the RESOLVED full stack (persisted order first, then any
+  // unranked installs appended in type-order) so the webapp can render the
+  // whole Phase 3 priority stack directly without re-deriving the merge.
+  const resolvedStack = () =>
+    resolveDatasetStack(mgr.getDatasetStack(), mgr.getPriority(), readManifest(mgr.manifestPath).installs);
+
   router.get('/priority', (_req, res) => {
-    res.json({ order: mgr.getPriority(), default: DEFAULT_PRIORITY });
+    res.json({ order: mgr.getPriority(), default: DEFAULT_PRIORITY, datasets: resolvedStack().map((e) => e.id) });
   });
 
   router.put('/priority', (req, res) => {
-    const body = (req.body ?? {}) as { order?: unknown };
-    if (!isValidPriorityOrder(body.order)) {
+    const body = (req.body ?? {}) as { order?: unknown; datasets?: unknown };
+    if (body.order === undefined && body.datasets === undefined) {
+      res.status(400).json({ error: 'order and/or datasets is required' });
+      return;
+    }
+    if (body.order !== undefined && !isValidPriorityOrder(body.order)) {
       res.status(400).json({ error: 'order must be a permutation of ["grib2","utcef","harmonic"]' });
       return;
     }
-    mgr.setPriority(body.order);
-    res.json({ order: mgr.getPriority() });
+    if (body.datasets !== undefined && !isValidDatasetStack(body.datasets)) {
+      res.status(400).json({ error: 'datasets must be an array of unique install ids' });
+      return;
+    }
+    if (body.order !== undefined) mgr.setPriority(body.order as SourceType[]);
+    if (body.datasets !== undefined) mgr.setDatasetStack(body.datasets as string[]);
+    res.json({ order: mgr.getPriority(), default: DEFAULT_PRIORITY, datasets: resolvedStack().map((e) => e.id) });
   });
 }

@@ -11,7 +11,8 @@ const SOURCE_LABEL: Record<VectorResponse['source'], string> = { grib: 'GRIB2', 
  * Persistent header element (PRD §5.6): "1.2 kn @ 108° — UTCEF · netherlands".
  * One glance answers "is it working, and which data is it using?" — also a
  * health check. This is the ONLY prediction display in the app (see PRD
- * Non-Goals — this is a data manager, not a current viewer).
+ * Non-Goals — this is a data manager, not a current viewer). Lives as the
+ * app bar's subtitle line, with a status dot doubling as the health signal.
  */
 export function LiveSourceChip() {
   const vesselPosition = useAppStore((s) => s.vesselPosition);
@@ -36,24 +37,23 @@ export function LiveSourceChip() {
   useEffect(poll, [vesselPosition?.latitude, vesselPosition?.longitude]);
   usePolling(poll, vesselPosition ? 15_000 : null);
 
-  if (!vesselPosition) {
-    return <span className="text-sm text-muted">No vessel position</span>;
-  }
-  if (failed || !vector) {
-    return <span className="text-sm text-muted">No current data at vessel position</span>;
+  const ok = Boolean(vesselPosition && !failed && vector);
+  let text: string;
+  if (!vesselPosition) text = 'No vessel position';
+  else if (!ok) text = 'No current data here';
+  else {
+    const { sample, source, station } = vector!;
+    const value =
+      sample.speedKn !== null && sample.direction !== null
+        ? `${Math.abs(sample.speedKn).toFixed(1)} kn @ ${Math.round(sample.direction)}°`
+        : '—';
+    text = `${value} · ${SOURCE_LABEL[source]}${station ? ` · ${station.name}` : ''}`;
   }
 
-  const { sample, source, station } = vector;
   return (
-    <span className="text-sm">
-      {sample.speedKn !== null && sample.direction !== null
-        ? `${Math.abs(sample.speedKn).toFixed(1)} kn @ ${Math.round(sample.direction)}°`
-        : '—'}
-      {' — '}
-      <span className="text-muted">
-        {SOURCE_LABEL[source]}
-        {station ? ` · ${station.name}` : ''}
-      </span>
+    <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+      <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${ok ? 'bg-success' : 'bg-muted/40'}`} />
+      <span className={`truncate tabular-nums ${ok ? 'text-fg/80' : ''}`}>{text}</span>
     </span>
   );
 }

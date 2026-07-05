@@ -1,4 +1,5 @@
 import { CatalogSource, DatasetEntry, GeoJsonGeometry, StorageStats, isTemplateFile } from '../api/types';
+import { bboxAreaSqDeg, geometryBbox } from './geo';
 
 export type DisplayStatus = 'active' | 'update-available' | 'not-installed' | 'error';
 
@@ -136,6 +137,27 @@ export function matchesFilters(source: CatalogSource, filters: SourceFilters): b
     if (!haystack.includes(q)) return false;
   }
   return true;
+}
+
+/**
+ * Approximate coverage area of an installed dataset, for Auto-Sort Priority
+ * (PRD §5.3 Phase 3: bounding-box area ascending — small/high-res on top).
+ * Per-region template installs use their own region file's geometry, not the
+ * whole source's box. Unknown (orphan/uncataloged) → null, sorted last.
+ */
+export function datasetCoverageAreaSqDeg(dataset: DatasetEntry, sources: CatalogSource[]): number | null {
+  const source = sources.find((s) => s.id === dataset.catalogSourceId);
+  if (!source) return null;
+  if (dataset.regionId) {
+    const file = source.files
+      .filter(isTemplateFile)
+      .find((f) => f.region_id === dataset.regionId && (dataset.fileType === undefined || f.type === dataset.fileType));
+    if (file) {
+      const bbox = geometryBbox(file.boundary_geometry);
+      if (bbox) return bboxAreaSqDeg(bbox);
+    }
+  }
+  return bboxAreaSqDeg(source.region.bounding_box);
 }
 
 /** Groups rows by provider (`source.source` field, PRD §5.1 "rows grouped by provider"), preserving first-seen provider order. */

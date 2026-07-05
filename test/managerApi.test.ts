@@ -84,6 +84,7 @@ function fakeDownloadEngine(): DownloadEngine {
 function baseMgr(overrides: Partial<ManagerState> = {}): { mgr: ManagerState; dirs: ReturnType<typeof tmpDirs>['dirs']; manifestPath: string } {
   const { dirs, manifestPath, root } = tmpDirs();
   let priority = [...DEFAULT_PRIORITY];
+  let datasetStack: string[] = [];
   const mgr: ManagerState = {
     catalog: fakeCatalogClient(),
     downloads: fakeDownloadEngine(),
@@ -92,6 +93,8 @@ function baseMgr(overrides: Partial<ManagerState> = {}): { mgr: ManagerState; di
     managerDir: root,
     getPriority: () => priority,
     setPriority: (order) => { priority = order; },
+    getDatasetStack: () => datasetStack,
+    setDatasetStack: (ids) => { datasetStack = ids; },
     apiState: { data: null, error: null },
     getVesselPosition: () => null,
     ...overrides,
@@ -297,4 +300,30 @@ test('PUT /priority validates the order, 400 on an invalid permutation', async (
   assert.deepEqual((good.body as any).order, ['utcef', 'harmonic', 'grib2']);
   const after = await call('GET', '/priority');
   assert.deepEqual((after.body as any).order, ['utcef', 'harmonic', 'grib2']);
+});
+
+test('GET/PUT /priority dataset stack: persisted order first, unranked installs appended in type order', async () => {
+  const { mgr, manifestPath } = baseMgr();
+  let manifest: InstallManifest = { manifest_version: 1, installs: [] };
+  for (const [id, type, dir] of [['a-grib', 'grib2', 'grib'], ['b-utcef', 'utcef', 'utcef'], ['c-utcef', 'utcef', 'utcef']] as const) {
+    manifest = upsertInstall(manifest, {
+      id, catalogSourceId: id, type, files: [`${id}.dat`], dir,
+      size_bytes: 1, downloaded_at: new Date().toISOString(),
+    });
+  }
+  writeManifestAtomic(manifestPath, manifest);
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+
+  // No stack persisted yet — everything appended in type order (grib2 first).
+  const initial = await call('GET', '/priority');
+  assert.deepEqual((initial.body as any).datasets, ['a-grib', 'b-utcef', 'c-utcef']);
+
+  const bad = await call('PUT', '/priority', { body: { datasets: ['c-utcef', 'c-utcef'] } });
+  assert.equal(bad.statusCode, 400); // duplicate id
+
+  // Rank one dataset on top (with a stale id that must be dropped); the rest follow in type order.
+  const good = await call('PUT', '/priority', { body: { datasets: ['c-utcef', 'gone-id'] } });
+  assert.equal(good.statusCode, 200);
+  assert.deepEqual((good.body as any).datasets, ['c-utcef', 'a-grib', 'b-utcef']);
 });

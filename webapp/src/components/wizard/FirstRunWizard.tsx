@@ -73,7 +73,7 @@ export function FirstRunWizard() {
               step="any"
               placeholder="Latitude"
               aria-label="Latitude"
-              className="min-h-11 w-1/2 rounded border border-muted/40 bg-surface px-3"
+              className="min-h-11 w-1/2 rounded-xl border border-border bg-surface px-3 text-sm outline-none focus:border-accent"
               onChange={(e) => setManualPos((p) => ({ lat: e.target.value, lon: p?.lon ?? '' }))}
             />
             <input
@@ -81,7 +81,7 @@ export function FirstRunWizard() {
               step="any"
               placeholder="Longitude"
               aria-label="Longitude"
-              className="min-h-11 w-1/2 rounded border border-muted/40 bg-surface px-3"
+              className="min-h-11 w-1/2 rounded-xl border border-border bg-surface px-3 text-sm outline-none focus:border-accent"
               onChange={(e) => setManualPos((p) => ({ lat: p?.lat ?? '', lon: e.target.value }))}
             />
           </div>
@@ -136,7 +136,7 @@ export function FirstRunWizard() {
             type="button"
             disabled={selected.size === 0 || installing}
             onClick={install}
-            className="min-h-11 rounded bg-accent px-4 font-medium text-surface disabled:opacity-50"
+            className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
           >
             {installing
               ? 'Starting…'

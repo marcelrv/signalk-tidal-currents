@@ -118,6 +118,8 @@ function baseMgr(overrides: Partial<ManagerState>): ManagerState {
     managerDir: root,
     getPriority: () => DEFAULT_PRIORITY,
     setPriority: () => {},
+    getDatasetStack: () => [],
+    setDatasetStack: () => {},
     apiState: { data: null, error: null },
     getVesselPosition: () => null,
     ...overrides,

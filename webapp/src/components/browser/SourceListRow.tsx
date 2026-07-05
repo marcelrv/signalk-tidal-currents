@@ -2,24 +2,26 @@ import { useAppStore } from '../../store/useAppStore';
 import { DatasetEntry } from '../../api/types';
 import { SourceRow, displayStatus } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
-import { StatusBadge } from '../shared/StatusBadge';
+import { StatusDot } from '../shared/StatusBadge';
 import { ExpiryCountdown } from '../shared/ExpiryCountdown';
-import { AutoUpdateToggle } from '../shared/AutoUpdateToggle';
+import { DeleteDatasetButton } from '../shared/DeleteDatasetButton';
 import { DownloadButton } from '../downloads/DownloadButton';
 
 const TYPE_BADGE: Record<SourceRow['source']['type'], string> = { utcef: 'UTCEF', grib2: 'GRIB2', harmonic: 'Harmonic' };
 
 /**
- * `onSelected` fires in addition to the store's own select() — used by
- * RegionInspector to close itself when a row inside it is picked, so
- * selecting a row there doesn't leave the Inspector modal open underneath
- * the Detail modal (they'd otherwise visually stack/mix).
+ * Dense two-line row: status dot + name on top, a single muted meta line
+ * (type · region · size · expiry) below — sized for a 7" helm display where
+ * the old one-control-per-column layout wrapped into a 3-row blob per
+ * dataset. Management extras (auto-update toggle, attribution) live in the
+ * Detail modal, not on every row.
  *
- * `compact` drops the per-row management chrome (expiry countdown,
- * auto-update toggle) that's redundant inside RegionInspector — that modal's
- * whole job is picking WHICH dataset before opening the full Detail modal,
- * so showing every management control on every candidate row there is pure
- * clutter, not information, and crowds the already-narrow modal.
+ * `onSelected` fires in addition to the store's own select() — used by
+ * RegionInspector to close itself when a row inside it is picked, so the
+ * Inspector doesn't stay stacked under the Detail modal.
+ *
+ * `compact` drops the delete button (RegionInspector's job is picking WHICH
+ * dataset to inspect, not managing files).
  */
 export function SourceListRow({
   row,
@@ -38,7 +40,7 @@ export function SourceListRow({
 
   return (
     <li
-      className={`flex min-h-11 flex-wrap items-center gap-3 border-b border-muted/20 px-3 py-3 ${selected ? 'bg-accent/5' : ''}`}
+      className={`flex items-center gap-1 rounded-xl px-1 py-0.5 ${selected ? 'bg-accent/10' : ''}`}
       aria-current={selected || undefined}
     >
       <button
@@ -47,20 +49,27 @@ export function SourceListRow({
           select(row.key);
           onSelected?.();
         }}
-        className="flex min-w-0 flex-1 flex-col items-start text-left"
+        className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left"
       >
-        <span className="flex items-center gap-2 font-medium">
-          <span className="rounded bg-muted/20 px-1.5 py-0.5 text-xs text-muted">{TYPE_BADGE[row.source.type]}</span>
-          {row.name}
+        <StatusDot status={status} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium leading-tight">{row.name}</span>
+          <span className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-muted">
+            <span className="shrink-0 font-medium">{TYPE_BADGE[row.source.type]}</span>
+            <span aria-hidden>·</span>
+            <span className="truncate">{row.regionName}</span>
+            <span aria-hidden>·</span>
+            <span
+              className="shrink-0 tabular-nums"
+              title={row.sizeBytes === null ? 'Forecast/nowcast cycle file — size varies, not known until downloaded' : undefined}
+            >
+              {row.sizeBytes === null ? (dataset ? formatBytes(dataset.sizeBytes) : 'size varies') : formatBytes(row.sizeBytes)}
+            </span>
+            {dataset && <ExpiryCountdown dataset={dataset} />}
+          </span>
         </span>
-        <span className="truncate text-sm text-muted">{row.regionName}</span>
       </button>
-      <span className="text-sm text-muted" title={row.sizeBytes === null ? 'Forecast/nowcast cycle file — size varies, not known until downloaded' : undefined}>
-        {row.sizeBytes === null ? 'size varies' : formatBytes(row.sizeBytes)}
-      </span>
-      <StatusBadge status={status} />
-      {!compact && dataset && <ExpiryCountdown dataset={dataset} />}
-      {!compact && dataset && <AutoUpdateToggle dataset={dataset} />}
+      {!compact && dataset && <DeleteDatasetButton id={dataset.id} name={row.name} sizeBytes={dataset.sizeBytes} />}
       <DownloadButton source={row.source} regionId={row.regionId} fileType={row.fileType} status={status} />
     </li>
   );

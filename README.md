@@ -78,17 +78,11 @@ subdirectory of this plugin's own data directory,
 `<server config dir>/plugin-config-data/signalk-tidal-currents/tcdata`
 — Signal K's standard per-plugin storage location).
 
-**Auto-download (default: on)**: with *Auto-download OpenCPN standard data*
-enabled (plugin config), the plugin fetches OpenCPN's `HARMONICS_NO_US` (+
-`.IDX`) pair — current stations for the Americas — straight from the
-[OpenCPN GitHub repository](https://github.com/OpenCPN/OpenCPN/tree/master/data/tcdata)
-into the Harmonics Data Directory if it's missing, so the plugin works out
-of the box with no manual setup. It re-checks for updates at most once a
-week (a conditional HTTP request; no download if unchanged) — quiet on
-every other server restart. It never overwrites a file you name exactly
-`HARMONIC`/`HARMONIC.IDX`: if you drop a custom pair (e.g. a community
-bundle) into the same directory, that pair always takes priority. Turn the
-option off if you don't want the plugin making outbound network requests.
+**Downloading data**: the bundled **Tidal Currents Manager** webapp
+(Signal K Admin UI → Webapps) browses the tide/current catalog and
+downloads UTCEF, GRIB2, and harmonic datasets for your area with one tap —
+including storage checks, update detection, and per-dataset priorities.
+This replaces the former "Auto-download OpenCPN standard data" option.
 
 Where to get data manually:
 
@@ -264,7 +258,6 @@ the vector either way).
 | Publish environment.current | `true` | Emit deltas at the vessel position |
 | Delta Update Period | `60 s` | How often to re-predict |
 | Max Station Distance | `15 km` | Don't publish from a station when none is nearby (GRIB coverage is not distance-limited) |
-| Auto-download OpenCPN standard data | `true` | Fetch/refresh OpenCPN's `HARMONICS_NO_US` pair into the data directory (see [Data files](#data-files)) |
 
 `<plugin data dir>` is Signal K's standard per-plugin storage location:
 `<server config dir>/plugin-config-data/signalk-tidal-currents`.

@@ -106,7 +106,7 @@ export function SourceMap() {
   };
 
   return (
-    <div className="h-[60vh] overflow-hidden rounded border border-muted/30">
+    <div className="min-h-[320px] flex-1 overflow-hidden rounded-xl border border-border">
       <MapContainer
         center={[20, 0]}
         zoom={2}
