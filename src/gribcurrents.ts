@@ -148,33 +148,82 @@ function buildSlots(fields: Grib2Field[], file: string, warnings: string[]): Tim
   return slots;
 }
 
-/** Parse every GRIB2 file in a directory (recursively — catalog filenames may carry subdir paths) into a time-sorted current dataset. */
-export function loadGribDir(dir: string): GribCurrentsData | null {
+/**
+ * Per-file parse cache, keyed by relative path. A GRIB decode is the most
+ * expensive thing this plugin does (bit-level complex-packing inflation into
+ * Float64Arrays), and a reload is triggered by ANY change to the directory —
+ * including every single completed catalog download. Without this, a boat
+ * that has downloaded many regions re-decodes ALL of them each time one new
+ * cycle file lands, which freezes a Cerbo GX / Pi for seconds and doubles
+ * peak RAM (old + new arrays live simultaneously during the rebuild).
+ * `sig` is size+mtime — the same change signal createGribSource already
+ * trusts for the directory as a whole. Failed parses are cached too, so a
+ * corrupt file is reported once per change, not re-parsed once per minute.
+ */
+export interface GribFileCacheEntry {
+  sig: string;
+  slots: TimeSlot[];
+  warnings: string[];
+}
+export type GribFileCache = Map<string, GribFileCacheEntry>;
+
+/** Parse every GRIB2 file in a directory (recursively — catalog filenames may carry subdir paths) into a time-sorted current dataset. Pass a `cache` (owned by a long-lived source) to re-parse only files whose size/mtime changed. */
+export function loadGribDir(dir: string, cache?: GribFileCache): GribCurrentsData | null {
   if (!fs.existsSync(dir)) return null; // directory absent — GRIB source simply not configured
   const entries = listDataFilesRecursive(dir, GRIB_EXT_RE);
-  if (entries.length === 0) return null;
+  if (entries.length === 0) {
+    cache?.clear();
+    return null;
+  }
 
   const warnings: string[] = [];
   const slots: TimeSlot[] = [];
   const slotsByFile: Record<string, TimeSlot[]> = {};
   const files: string[] = [];
+  const present = new Set<string>();
   for (const name of entries) {
     const full = path.join(dir, name);
+    present.add(name);
+    let sig = '';
     try {
-      const { fields, skipped } = parseGrib2(fs.readFileSync(full));
-      for (const s of skipped) warnings.push(`${name}: ${s}`);
-      const fileSlots = buildSlots(fields, name, warnings);
-      if (fileSlots.length > 0) {
-        fileSlots.sort((a, b) => a.time - b.time);
-        slots.push(...fileSlots);
-        slotsByFile[name] = fileSlots;
-        files.push(name);
-      } else if (fields.length > 0) {
-        warnings.push(`${name}: no ocean-current fields (discipline 10, category 1) found`);
-      }
-    } catch (e) {
-      warnings.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+      const st = fs.statSync(full);
+      sig = `${st.size}:${st.mtimeMs}`;
+    } catch {
+      continue; // vanished between listing and stat
     }
+
+    const cached = cache?.get(name);
+    let fileSlots: TimeSlot[];
+    let fileWarnings: string[];
+    if (cached && cached.sig === sig) {
+      ({ slots: fileSlots, warnings: fileWarnings } = cached);
+    } else {
+      fileWarnings = [];
+      fileSlots = [];
+      try {
+        const { fields, skipped } = parseGrib2(fs.readFileSync(full));
+        for (const s of skipped) fileWarnings.push(`${name}: ${s}`);
+        fileSlots = buildSlots(fields, name, fileWarnings);
+        fileSlots.sort((a, b) => a.time - b.time);
+        if (fileSlots.length === 0 && fields.length > 0) {
+          fileWarnings.push(`${name}: no ocean-current fields (discipline 10, category 1) found`);
+        }
+      } catch (e) {
+        fileWarnings.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      cache?.set(name, { sig, slots: fileSlots, warnings: fileWarnings });
+    }
+
+    warnings.push(...fileWarnings);
+    if (fileSlots.length > 0) {
+      slots.push(...fileSlots);
+      slotsByFile[name] = fileSlots;
+      files.push(name);
+    }
+  }
+  // Deleted files must not pin their decoded arrays in memory forever.
+  if (cache) {
+    for (const key of [...cache.keys()]) if (!present.has(key)) cache.delete(key);
   }
   if (slots.length === 0) {
     return { dir, files, slots: [], slotsByFile, warnings };
@@ -391,6 +440,8 @@ export function createGribSource(dir: string, checkIntervalMs = 60_000): GribSou
   let signature = '';
   let lastCheck = -Infinity;
   let error: string | null = null;
+  // Survives across reloads: only files whose size/mtime changed get re-decoded.
+  const fileCache: GribFileCache = new Map();
 
   const currentSignature = (): string => {
     try {
@@ -414,7 +465,7 @@ export function createGribSource(dir: string, checkIntervalMs = 60_000): GribSou
         if (sig !== signature) {
           signature = sig;
           try {
-            data = loadGribDir(dir);
+            data = loadGribDir(dir, fileCache);
             error = null;
           } catch (e) {
             data = null;

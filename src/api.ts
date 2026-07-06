@@ -259,6 +259,75 @@ function parseWindow(
   return { start, end, stepMs: stepMin * 60_000 };
 }
 
+/**
+ * Cell sizes (degrees) for stable spatial thinning, fine → coarse. Cell
+ * boundaries are aligned to the global origin (multiples of the size from
+ * lon/lat 0), NOT to the query bbox — so which stations survive thinning
+ * depends only on where they are, never on the viewport. Panning at a fixed
+ * density reveals/hides points from one stable set; zooming across a level
+ * re-grids like a tile pyramid, exactly as gribGridSamples does for the grid
+ * lattice. Same philosophy, applied to irregularly-placed stations.
+ */
+const CELL_LADDER_DEG = [0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 40];
+
+/** Upper bound on stations gathered from a viewport before thinning — a guard against a pathological all-of-earth query, well above any real single-viewport station count. */
+export const STATION_GATHER_CAP = 50_000;
+
+interface GeoItem {
+  lat: number;
+  lon: number;
+}
+
+/**
+ * One occupied cell's chosen representative: the item nearest its cell
+ * center (even spatial coverage). Ties in distance are broken by (lat, lon)
+ * so the result is deterministic regardless of input order — a regular
+ * station grid puts two points exactly equidistant from a cell center, and
+ * a "first seen wins" tiebreak would otherwise make the thinned set depend
+ * on iteration order (and so shuffle as sources reload).
+ */
+function pickCellReps<T extends GeoItem>(items: T[], sizeDeg: number): T[] {
+  const best = new Map<string, { item: T; d2: number }>();
+  for (const it of items) {
+    const ci = Math.floor(it.lon / sizeDeg);
+    const cj = Math.floor(it.lat / sizeDeg);
+    const key = `${cj}:${ci}`;
+    const centerLon = (ci + 0.5) * sizeDeg;
+    const centerLat = (cj + 0.5) * sizeDeg;
+    const d2 = (it.lon - centerLon) ** 2 + (it.lat - centerLat) ** 2;
+    const cur = best.get(key);
+    if (
+      !cur ||
+      d2 < cur.d2 ||
+      (d2 === cur.d2 && (it.lat < cur.item.lat || (it.lat === cur.item.lat && it.lon < cur.item.lon)))
+    ) {
+      best.set(key, { item: it, d2 });
+    }
+  }
+  return [...best.values()].map((v) => v.item);
+}
+
+/**
+ * Thin `items` down to at most `maxPoints`, keeping one representative per
+ * grid cell at the finest ladder level whose occupancy fits the budget
+ * (see CELL_LADDER_DEG for why this is stable across pan/zoom). Returns the
+ * input untouched when it already fits — the "zoomed in, show everything"
+ * case. Coarse → fine so we stop the moment a level overflows (occupancy
+ * only grows as cells shrink).
+ */
+export function thinByCellLadder<T extends GeoItem>(items: T[], maxPoints: number): T[] {
+  if (items.length <= maxPoints) return items;
+  let chosen: T[] | null = null;
+  for (let i = CELL_LADDER_DEG.length - 1; i >= 0; i--) {
+    const reps = pickCellReps(items, CELL_LADDER_DEG[i]);
+    if (reps.length <= maxPoints) chosen = reps;
+    else break;
+  }
+  // Even the coarsest level overflows (maxPoints smaller than the number of
+  // occupied 40° cells): fall back to that coarsest set, truncated.
+  return chosen ?? pickCellReps(items, CELL_LADDER_DEG[CELL_LADDER_DEG.length - 1]).slice(0, maxPoints);
+}
+
 export function registerRoutes(router: RouterLike, state: ApiState): void {
   const gribData = () => state.grib?.get() ?? null;
   const utcefData = () => state.utcef?.get() ?? null;
@@ -313,29 +382,40 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       return;
     }
 
-    // bbox mode: every station in a map viewport, not just the nearest few
-    // to a single reference point.
+    // bbox mode: stations in a map viewport, not just the nearest few to a
+    // single reference point. `maxPoints` (aliased by the legacy `limit`)
+    // caps how many are returned — a zoomed-out client asks for a low value
+    // and gets a spatially-even THINNED subset (stable across pan/zoom, see
+    // thinByCellLadder), a zoomed-in client asks for more (or covers a small
+    // enough area that everything fits) and gets full detail. This replaces
+    // the old behaviour of truncating to the first 500 in array order, which
+    // returned an arbitrary spatially-clustered subset and reshuffled as the
+    // viewport moved.
     if (req.query.bbox !== undefined) {
       const bbox = parseBbox(req, res);
       if (!bbox) return;
-      const limit = Math.min(500, parseInt(String(req.query.limit), 10) || 500);
-      const result: unknown[] = state.data
-        ? stationsInBbox(state.data, bbox.west, bbox.south, bbox.east, bbox.north, limit).map((n) =>
-            stationInfo(n.station, { vectorCapable: n.vectorCapable }),
-          )
-        : [];
+      const maxPoints = Math.min(
+        5000,
+        Math.max(1, parseInt(String(req.query.maxPoints ?? req.query.limit), 10) || 500),
+      );
+
+      // Gather everything in the viewport first (capped), then thin the
+      // MERGED set so harmonic + UTCEF together honour one budget.
+      const gathered: Array<{ lat: number; lon: number; info: unknown }> = [];
+      if (state.data) {
+        for (const n of stationsInBbox(state.data, bbox.west, bbox.south, bbox.east, bbox.north, STATION_GATHER_CAP)) {
+          gathered.push({ lat: n.station.latitude, lon: n.station.longitude, info: stationInfo(n.station, { vectorCapable: n.vectorCapable }) });
+        }
+      }
       if (u) {
         for (const s of u.currentStations) {
-          if (
-            s.latitude >= bbox.south && s.latitude <= bbox.north &&
-            s.longitude >= bbox.west && s.longitude <= bbox.east
-          ) {
-            result.push(utcefStationInfo(s));
-            if (result.length >= limit) break;
+          if (s.latitude >= bbox.south && s.latitude <= bbox.north && s.longitude >= bbox.west && s.longitude <= bbox.east) {
+            gathered.push({ lat: s.latitude, lon: s.longitude, info: utcefStationInfo(s) });
+            if (gathered.length >= STATION_GATHER_CAP) break;
           }
         }
       }
-      res.json(result);
+      res.json(thinByCellLadder(gathered, maxPoints).map((g) => g.info));
       return;
     }
 
@@ -544,7 +624,7 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       res.status(400).json({ error: 'invalid time — expected ISO 8601' });
       return;
     }
-    const maxPoints = Math.min(2000, Math.max(1, parseInt(String(req.query.maxPoints), 10) || 400));
+    const maxPoints = Math.min(5000, Math.max(1, parseInt(String(req.query.maxPoints), 10) || 400));
     const points = gribGridSamples(g, bbox, time, maxPoints);
     res.json({ time: new Date(time).toISOString(), units: { speedKn: 'knots (magnitude)', u: 'm/s east', v: 'm/s north' }, points });
   });

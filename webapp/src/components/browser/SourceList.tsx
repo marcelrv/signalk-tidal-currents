@@ -26,16 +26,17 @@ export function SourceList() {
     return groupRowsByProvider(rowsForSources(filtered));
   }, [catalog, filters]);
 
-  // Smart default (once, on first load): expand only groups with a region
-  // covering the vessel's current position; collapse everything if no
-  // position is available yet. Computed once so the user's own toggles
-  // afterward aren't overwritten by catalog/position refreshes.
+  // Smart default (once): expand the groups with a region covering the
+  // vessel's current position. Waits for BOTH the catalog groups AND a
+  // vessel position before firing — the position usually arrives a moment
+  // after the catalog, and consuming the one-shot on that first
+  // position-less render used to leave every group collapsed. Once applied,
+  // the user's own toggles aren't overwritten by later refreshes.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const defaultedRef = useRef(false);
   useEffect(() => {
-    if (defaultedRef.current || groups.length === 0) return;
+    if (defaultedRef.current || groups.length === 0 || !vesselPosition) return;
     defaultedRef.current = true;
-    if (!vesselPosition) return;
     setExpanded(
       new Set(
         groups

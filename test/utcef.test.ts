@@ -379,3 +379,68 @@ test('Feature.id is canonical; station_id alias is not required', () => {
   const data = loadUtcefDir(dir)!;
   assert.equal(data.currentStations[0].id, 'CANON');
 });
+
+test('loadUtcefDir per-file cache: unchanged files are reused, changed files re-parsed, deleted files evicted', () => {
+  const dir = tmpDir();
+  const docB = {
+    metadata: { schema_version: '1.0.0' },
+    dataset: {
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          id: 'B_STATION',
+          geometry: { type: 'Point', coordinates: [5, 52] },
+          properties: {
+            prediction_method: 'harmonic_constituents_currents',
+            data_unit_speed: 'meters_per_second',
+            harmonic_constituents: { M2: { u_amplitude: 0.3, u_phase_g: 0, v_amplitude: 0, v_phase_g: 0 } },
+          },
+        },
+      ],
+    },
+  };
+  fs.writeFileSync(path.join(dir, 'a.utcef'), JSON.stringify(referenceDoc()));
+  fs.writeFileSync(path.join(dir, 'b.utcef'), JSON.stringify(docB));
+
+  const cache = new Map();
+  const first = loadUtcefDir(dir, cache)!;
+  assert.equal(first.currentStations.length, 2);
+  const aStationFirst = first.currentStations.find((s) => s.id === 'NL_03_OFF')!;
+
+  // Nothing changed: the cached parse (same station OBJECT) must be reused.
+  const second = loadUtcefDir(dir, cache)!;
+  const aStationSecond = second.currentStations.find((s) => s.id === 'NL_03_OFF')!;
+  assert.equal(aStationSecond, aStationFirst);
+
+  // Change b only (bump mtime into the future so sig differs even on
+  // coarse-mtime filesystems): a's parse must survive untouched.
+  fs.writeFileSync(path.join(dir, 'b.utcef'), JSON.stringify(docB));
+  const future = new Date(Date.now() + 5_000);
+  fs.utimesSync(path.join(dir, 'b.utcef'), future, future);
+  const bSigBefore = cache.get('b.utcef')!.sig;
+  const third = loadUtcefDir(dir, cache)!;
+  assert.equal(third.currentStations.find((s) => s.id === 'NL_03_OFF'), aStationFirst);
+  assert.notEqual(cache.get('b.utcef')!.sig, bSigBefore);
+
+  // Delete b: its cache entry must be evicted, a still served from cache.
+  fs.unlinkSync(path.join(dir, 'b.utcef'));
+  const fourth = loadUtcefDir(dir, cache)!;
+  assert.equal(fourth.currentStations.length, 1);
+  assert.equal(cache.has('b.utcef'), false);
+  assert.equal(cache.has('a.utcef'), true);
+});
+
+test('loadUtcefDir per-file cache: a corrupt file is parsed once per change, its warning re-surfaced from cache', () => {
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, 'ok.utcef'), JSON.stringify(referenceDoc()));
+  fs.writeFileSync(path.join(dir, 'bad.utcef'), '{not json');
+  const cache = new Map();
+  const first = loadUtcefDir(dir, cache)!;
+  assert.ok(first.warnings.some((w) => w.startsWith('bad.utcef')));
+  assert.equal(cache.get('bad.utcef')!.parsed, null);
+  const badEntry = cache.get('bad.utcef')!;
+  const second = loadUtcefDir(dir, cache)!;
+  assert.ok(second.warnings.some((w) => w.startsWith('bad.utcef')));
+  assert.equal(cache.get('bad.utcef'), badEntry); // same entry — not re-parsed
+});

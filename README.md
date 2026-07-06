@@ -5,23 +5,40 @@
 A [Signal K](https://signalk.org) server plugin that predicts **tidal currents**
 (set & drift) from three kinds of sources:
 
-- OpenCPN/XTide legacy ASCII harmonic files — the `HARMONIC` +
-  `HARMONIC.IDX` pair used by OpenCPN and the classic DOS tide programs
-  (station-based harmonic prediction),
 - **GRIB2 files** with gridded current fields (u/v velocity components from
   ocean/tidal models) — positional lookups with bilinear interpolation in
   space and linear interpolation in time; no stations involved, and
 - **UTCEF datasets** (`*.utcef` / `*.utcef.gz`) — a modern JSON/GeoJSON
   tidal-exchange format carrying full 2D harmonic current constituents per
   station, so every station yields a real set/drift vector.
+- OpenCPN/XTide legacy ASCII harmonic files — the `HARMONIC` +
+  `HARMONIC.IDX` pair used by OpenCPN and the classic DOS tide programs
+  (station-based harmonic prediction),
 
 Unlike tide-height plugins (e.g. the excellent
 [signalk-tides](https://github.com/bkeepers/signalk-tides)), this plugin is
-about **water movement**: how fast the tidal stream runs and in which
-direction, per station, at any time. Typical uses: passage planning around
-tidal gates, current-aware routing (e.g.
-[signalk-autoroute](https://github.com/marcelrv/signalk-autoroute)), and
-showing predicted set/drift on instruments.
+about **water movement**: how fast the tidal stream runs and which way it
+sets — at a station or anywhere a forecast grid covers, at any time.
+Typical uses: passage planning around tidal gates, current-aware routing
+(e.g. [signalk-autoroute](https://github.com/marcelrv/signalk-autoroute)),
+and showing predicted set/drift on instruments.
+
+## Tidal Currents Manager (bundled webapp)
+
+The plugin ships a responsive, offline-first **Tidal Currents Manager**
+webapp (Signal K Admin UI → Webapps) for discovering, downloading and
+prioritising tidal-current datasets for your area — no manual file hunting.
+All downloads run server-side and the bundled vector coastline map needs no
+internet, so it keeps working underway once your data is aboard.
+
+| Browse the catalog | Download for your area | Coverage map |
+| --- | --- | --- |
+| ![Dataset list grouped by provider, with install status and update banner](img/screenshot-list.png) | ![First-run wizard: datasets covering the vessel position](img/screenshot-near-you.png) | ![Offline coverage map of downloaded and available datasets](img/screenshot-map.png) |
+
+One-tap "Near You" downloads for the vessel's position, install/update
+status at a glance, disk-usage checks, per-dataset priority, and an offline
+vector coastline map — all touch-friendly for use at the helm, with Day,
+Dark and Red night themes.
 
 ## Features
 
@@ -45,11 +62,13 @@ showing predicted set/drift on instruments.
   direction-capable). New files dropped into the UTCEF directory are picked
   up automatically — no restart needed.
 - **Source selection**: when several sources cover a position, the GRIB
-  forecast wins by default (configurable), then UTCEF vector stations, then
-  the legacy harmonic stations; a source is the fallback outside another's
-  coverage or time range. The harmonics-only limitation that reference
-  stations carry **no direction** does not apply to GRIB or UTCEF data —
-  both are always vector-capable.
+  forecast wins by default, then UTCEF vector stations, then the legacy
+  harmonic stations; a source is the fallback outside another's coverage or
+  time range. Configurable by source *type* or, from the Manager webapp, as
+  a **per-dataset priority stack** (a small high-res dataset can outrank a
+  global one where they overlap). The harmonics-only limitation that
+  reference stations carry **no direction** does not apply to GRIB or UTCEF
+  data — both are always vector-capable.
 - **Signal K v1 data model**: publishes `environment.current`
   (`setTrue` rad / `drift` m/s) predicted at the vessel position.
 - **v2-style REST API** at `/signalk/v2/api/currents` (also mirrored at the
@@ -72,19 +91,26 @@ Both, deliberately:
 
 ## Data files
 
-Point the plugin at a directory containing a `HARMONIC` + `HARMONIC.IDX`
-pair (plugin config → *Harmonics Data Directory*; defaults to a `tcdata`
-subdirectory of this plugin's own data directory,
-`<server config dir>/plugin-config-data/signalk-tidal-currents/tcdata`
-— Signal K's standard per-plugin storage location).
-
-**Downloading data**: the bundled **Tidal Currents Manager** webapp
-(Signal K Admin UI → Webapps) browses the tide/current catalog and
+**The recommended way is the bundled Tidal Currents Manager webapp**
+(Signal K Admin UI → Webapps): it browses the tide/current catalog and
 downloads UTCEF, GRIB2, and harmonic datasets for your area with one tap —
-including storage checks, update detection, and per-dataset priorities.
-This replaces the former "Auto-download OpenCPN standard data" option.
+including storage checks, update detection, and per-dataset priorities, all
+into the right directories automatically. For most users that's the whole
+story; the rest of this section is for advanced or offline setups.
 
-Where to get data manually:
+The plugin reads three independent directories (all under this plugin's own
+data directory, `<server config dir>/plugin-config-data/signalk-tidal-currents/`,
+by default — Signal K's standard per-plugin storage location):
+
+- *Harmonics Data Directory* (`tcdata`) — a `HARMONIC` + `HARMONIC.IDX` pair,
+- *GRIB2 Data Directory* (`grib`) — GRIB2 current files (see below),
+- *UTCEF Data Directory* (`utcef`) — `*.utcef` / `*.utcef.gz` datasets.
+
+Files dropped into any of them by hand are picked up automatically within a
+minute — no restart needed — so you can also populate them yourself instead
+of (or alongside) the Manager.
+
+### Getting harmonic files manually (fallback)
 
 - **OpenCPN installations** ship a `tcdata` folder. Note: the files bundled
   with current OpenCPN releases contain current stations **for the Americas
@@ -148,19 +174,29 @@ Base: `/signalk/v2/api/currents` (same routes at
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /` | Dataset summary for both sources (stations, GRIB coverage/time range) |
-| `GET /stations?latitude=&longitude=&limit=` | Nearest current stations, closest first (harmonics only) |
-| `GET /stations/{id}` | Station metadata incl. flood/ebb directions and offsets |
+| `GET /` | Dataset summary across all three sources (harmonic + UTCEF stations, GRIB coverage/time range) |
+| `GET /stations?latitude=&longitude=&limit=` | Nearest current stations (harmonic + UTCEF), closest first |
+| `GET /stations?bbox=w,s,e,n&maxPoints=` | Every current station in a map viewport, thinned to `maxPoints` (stable across pan/zoom) |
+| `GET /stations/{id}` | Station metadata (harmonic or UTCEF) incl. flood/ebb directions and offsets |
 | `GET /stations/{id}/timeline?start=&end=&step=` | Set/drift series for one station (default 24 h, 10-min step) |
-| `GET /timeline?latitude=&longitude=&start=&end=&step=` | Set/drift series at a **position** — per-sample source selection (GRIB / station) |
-| `GET /vector?latitude=&longitude=&time=` | Set/drift vector at a position (GRIB preferred, station fallback) |
+| `GET /timeline?latitude=&longitude=&start=&end=&step=` | Set/drift series at a **position** — per-sample source selection (GRIB / UTCEF / station) |
+| `GET /vector?latitude=&longitude=&time=` | Set/drift vector at a position (GRIB → UTCEF → station, configurable) |
+| `GET /grid?bbox=w,s,e,n&time=&maxPoints=` | GRIB current vectors sampled over a viewport for a flow-field overlay, thinned to `maxPoints` |
 
-**Stations vs positions**: station endpoints only make sense for the
-harmonic source — GRIB data has no stations, so GRIB-backed lookups are
-purely positional (`/vector`, `/timeline`). `/vector` and `/timeline`
+**Stations vs positions**: harmonic and UTCEF data are station-based; GRIB
+data is gridded and has no stations, so GRIB-backed lookups are purely
+positional (`/vector`, `/timeline`, `/grid`). `/vector` and `/timeline`
 report which source produced each answer (`source` field; per-sample in
 `/timeline`, so a window extending past the GRIB forecast horizon degrades
-to station data sample-by-sample rather than failing).
+to the other sources sample-by-sample rather than failing).
+
+**Viewport queries** (`/stations?bbox=` and `/grid?bbox=`) return a whole
+map viewport's worth of coverage rather than a fixed nearest-N list. Both
+accept `maxPoints` to cap how many points come back, thinned on a stable
+spatial grid so a zoomed-out view (e.g. all of Europe, with hundreds of
+thousands of stations) stays responsive, and panning or zooming doesn't
+reshuffle which points appear. Ask for more (or a smaller box) to get full
+detail when zoomed in.
 
 **"Vector-capable" stations**: reference current stations in the XTide ASCII
 format only carry a signed speed (harmonic constituents in knots) — they're
@@ -173,10 +209,22 @@ therefore skipped by `/vector` and by `environment.current` publishing
 (`vectorCapable: false` in `/stations`), even though their raw signed speed
 is still available via `/stations/{id}/timeline`.
 
-`GET /stations?latitude=52.0&longitude=4.7&limit=2`:
+`GET /stations?latitude=52.0&longitude=4.7&limit=3` (harmonic and UTCEF
+stations are merged and sorted by distance):
 
 ```json
 [
+  {
+    "id": "OSCHELDE_51p900_4p100",
+    "name": "OSCHELDE grid 51.900,4.100",
+    "latitude": 51.9,
+    "longitude": 4.1,
+    "type": "harmonic",
+    "source": "utcef",
+    "constituents": 8,
+    "vectorCapable": true,
+    "distanceKm": 42.7
+  },
   {
     "id": "texel-noorderhaaks",
     "name": "Texel, Noorderhaaks",
@@ -203,6 +251,12 @@ is still available via `/stations/{id}/timeline`.
   }
 ]
 ```
+
+The first entry is a **UTCEF** station: `source: "utcef"`, always
+`vectorCapable` (full 2D harmonic constituents), and identified by
+`type: "harmonic"` with a `constituents` count rather than the XTide
+`reference`/`subordinate` distinction. The two Texel entries are
+legacy XTide harmonic stations.
 
 `GET /vector?latitude=52.0&longitude=4.7` (station fallback; with GRIB
 coverage `source` is `"grib"` and `station` is `null`):
@@ -250,17 +304,30 @@ the vector either way).
 
 ## Plugin configuration
 
+Most users won't touch these — the Tidal Currents Manager webapp handles
+data and priorities. The form exists for advanced/headless setups.
+
 | Setting | Default | Description |
 | --- | --- | --- |
 | Harmonics Data Directory | `<plugin data dir>/tcdata` | Folder with `HARMONIC` + `HARMONIC.IDX` |
-| GRIB2 Data Directory | `<plugin data dir>/grib` | Folder scanned for GRIB2 current files, independent of Harmonics Data Directory (see [GRIB2 current files](#grib2-current-files)) |
-| Prefer GRIB over stations | `true` | Use the GRIB forecast when both sources cover a position |
+| GRIB2 Data Directory | `<plugin data dir>/grib` | Folder scanned for GRIB2 current files, independent of the other directories (see [GRIB2 current files](#grib2-current-files)) |
+| UTCEF Data Directory | `<plugin data dir>/utcef` | Folder scanned for `*.utcef` / `*.utcef.gz` datasets |
+| Prefer GRIB over stations | `true` | Use the GRIB forecast when both cover a position (legacy — superseded by Source Priority when set) |
+| Source Priority | `grib2, utcef, harmonic` | Order to try the three source *types*; the webapp's reorder list is the primary way to change this |
 | Publish environment.current | `true` | Emit deltas at the vessel position |
 | Delta Update Period | `60 s` | How often to re-predict |
 | Max Station Distance | `15 km` | Don't publish from a station when none is nearby (GRIB coverage is not distance-limited) |
+| Tide/Current Catalog URL | signalk-router-data index | Catalog the webapp downloads datasets from; cached locally for offline use |
+| Catalog Refresh Interval | `24 h` | How often to re-fetch the catalog (a failed refresh keeps the cached copy) |
+| Auto-Update Check Interval | `30 min` | How often to re-download datasets you've marked "keep fresh when online" |
 
 `<plugin data dir>` is Signal K's standard per-plugin storage location:
 `<server config dir>/plugin-config-data/signalk-tidal-currents`.
+
+Beyond the source-*type* order above, the webapp also supports a
+**per-dataset priority stack** (e.g. a small high-resolution coastal model
+winning over a global one where they overlap) — set and persisted from the
+Manager's *Manage → Data priority* panel.
 
 ## Roadmap
 
@@ -270,12 +337,9 @@ the vector either way).
   bit-unpacking.
 - GRIB2 JPEG2000 (template 5.40) packing — needs a JS JPEG2000 codec.
 - Interpolation between stations; harmonic subordinate handling refinements.
-- **GRIB2 download page** — a UI (Admin UI panel or companion webapp) that
-  lets a user browse a catalog of available NOAA current GRIB2 products
-  and download a selection straight into the GRIB2 Data Directory,
-  instead of hunting for/downloading files manually. The catalog itself
-  (which NOAA products, regions, URLs) is a separate, not-yet-started
-  effort in signalk-router-data.
+- Growing the tide/current catalog (more regions/providers) the Manager
+  downloads from — maintained in
+  [signalk-router-data](https://github.com/marcelrv/signalk-router-data).
 
 ## Development
 

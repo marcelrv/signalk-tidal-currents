@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { CircleMarker, GeoJSON, MapContainer, useMapEvents } from 'react-leaflet';
-import type { LatLng, Layer } from 'leaflet';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { CircleMarker, GeoJSON, MapContainer, useMap, useMapEvents } from 'react-leaflet';
+import L, { LatLng, Layer } from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import '../../theme/leaflet-theme.css';
 
@@ -9,7 +9,7 @@ import { useTheme } from '../../theme/ThemeProvider';
 import { THEME_COLORS, ThemePalette } from '../../theme/palette';
 import { CatalogSourceType } from '../../api/types';
 import { SourceRow, datasetForRow, displayStatus, DisplayStatus, matchesFilters, rowsForSources } from '../../lib/sources';
-import { pointInGeometry } from '../../lib/geo';
+import { geometryBbox, pointInGeometry } from '../../lib/geo';
 import { STATUS_LABELS } from '../shared/StatusBadge';
 import { RegionInspector } from './RegionInspector';
 
@@ -51,6 +51,60 @@ function buildTooltip(row: SourceRow, status: DisplayStatus): HTMLElement {
   region.textContent = row.regionName;
   el.append(title, meta, region);
   return el;
+}
+
+/**
+ * "Zoom to fit all data" — a standard Leaflet bar control (so it inherits the
+ * theme styling `.leaflet-bar a` already gets, and stacks under the zoom
+ * buttons automatically). Fits the map to the bounding box of every region
+ * currently shown plus the vessel, so from a world view one tap frames
+ * exactly the data you have. Implemented imperatively via `useMap` because
+ * react-leaflet has no built-in custom-control component; the current
+ * rows/vessel are read through a ref so the control is added once, not
+ * rebuilt whenever the data changes.
+ */
+function FitAllControl({ rows, vessel }: { rows: SourceRow[]; vessel: { latitude: number; longitude: number } | null }) {
+  const map = useMap();
+  const dataRef = useRef({ rows, vessel });
+  dataRef.current = { rows, vessel };
+
+  useEffect(() => {
+    const control = new L.Control({ position: 'topleft' });
+    control.onAdd = () => {
+      const container = L.DomUtil.create('div', 'leaflet-bar');
+      const link = L.DomUtil.create('a', '', container) as HTMLAnchorElement;
+      link.href = '#';
+      link.title = 'Zoom to fit all data';
+      link.setAttribute('role', 'button');
+      link.setAttribute('aria-label', 'Zoom to fit all data');
+      link.innerHTML =
+        '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" ' +
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-top:3px">' +
+        '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M8 21H5a2 2 0 0 1-2-2v-3m18 0v3a2 2 0 0 1-2 2h-3"/></svg>';
+      L.DomEvent.disableClickPropagation(container);
+      L.DomEvent.on(link, 'click', (e) => {
+        L.DomEvent.preventDefault(e);
+        const { rows: curRows, vessel: curVessel } = dataRef.current;
+        const pts: L.LatLngExpression[] = [];
+        for (const r of curRows) {
+          const b = geometryBbox(r.geometry);
+          if (!b) continue;
+          pts.push([b.min_lat, b.min_lon], [b.max_lat, b.max_lon]);
+        }
+        if (curVessel) pts.push([curVessel.latitude, curVessel.longitude]);
+        if (pts.length === 0) return;
+        const bounds = L.latLngBounds(pts);
+        if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24] });
+      });
+      return container;
+    };
+    control.addTo(map);
+    return () => {
+      control.remove();
+    };
+  }, [map]);
+
+  return null;
 }
 
 /** Captures map clicks to open the Region Inspector (react-leaflet requires this inside <MapContainer>). */
@@ -106,13 +160,20 @@ export function SourceMap() {
   };
 
   return (
-    <div className="min-h-[320px] flex-1 overflow-hidden rounded-xl border border-border">
+    // `isolate` gives Leaflet its own stacking context (its panes use
+    // z-index up to ~700, which would otherwise paint over the app's sticky
+    // header/footer). The MapContainer is a flex-1 CHILD, not h-full —
+    // height:100% resolves to 0 when the parent's height comes from
+    // flex/min-height rather than an explicit value, which left the map
+    // invisible after the fixed h-[60vh] wrapper was replaced by the
+    // flex-column shell.
+    <div className="isolate flex min-h-[320px] flex-1 flex-col overflow-hidden rounded-xl border border-border">
       <MapContainer
         center={[20, 0]}
         zoom={2}
         minZoom={1}
         worldCopyJump
-        className="h-full w-full"
+        className="w-full min-h-0 flex-1"
         style={{ background: 'var(--color-bg)' }}
       >
         {coastline && (
@@ -146,6 +207,7 @@ export function SourceMap() {
             pathOptions={{ color: colors.accent, fillColor: colors.accent, fillOpacity: 1 }}
           />
         )}
+        <FitAllControl rows={rows} vessel={vesselPosition} />
         <ClickCapture onClick={handleMapClick} />
       </MapContainer>
       {inspecting && <RegionInspector rows={inspecting} onClose={() => setInspecting(null)} />}

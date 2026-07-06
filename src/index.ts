@@ -609,13 +609,31 @@ const openApiSpec = {
     '/': { get: { summary: 'Dataset summary (harmonics + GRIB + UTCEF sources)', responses: { '200': { description: 'OK' } } } },
     '/stations': {
       get: {
-        summary: 'Nearest current stations (harmonic + UTCEF sources)',
+        summary:
+          'Current stations (harmonic + UTCEF). Nearest-N mode (latitude+longitude) OR viewport ' +
+          'mode (bbox): in viewport mode maxPoints caps the count via stable spatial thinning — ' +
+          'ask for fewer when zoomed out, more (or a smaller bbox) for full detail.',
         parameters: [
-          { name: 'latitude', in: 'query', required: true, schema: { type: 'number' } },
-          { name: 'longitude', in: 'query', required: true, schema: { type: 'number' } },
-          { name: 'limit', in: 'query', schema: { type: 'integer', default: 10 } },
+          { name: 'latitude', in: 'query', schema: { type: 'number' }, description: 'Nearest-N mode (with longitude)' },
+          { name: 'longitude', in: 'query', schema: { type: 'number' }, description: 'Nearest-N mode (with latitude)' },
+          { name: 'bbox', in: 'query', schema: { type: 'string' }, description: 'Viewport mode: "west,south,east,north"' },
+          { name: 'maxPoints', in: 'query', schema: { type: 'integer', default: 500, maximum: 5000 }, description: 'Viewport mode: max stations returned (thinned, stable across pan/zoom). Legacy alias: limit.' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 10 }, description: 'Nearest-N mode: how many to return' },
         ],
         responses: { '200': { description: 'OK' } },
+      },
+    },
+    '/grid': {
+      get: {
+        summary:
+          'GRIB current vectors sampled over a bbox for a flow-field overlay. maxPoints caps the ' +
+          'count via a stable grid-lattice stride — same zoom-out/zoom-in density control as /stations viewport mode.',
+        parameters: [
+          { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: '"west,south,east,north"' },
+          { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
+          { name: 'maxPoints', in: 'query', schema: { type: 'integer', default: 400, maximum: 5000 } },
+        ],
+        responses: { '200': { description: 'OK' }, '503': { description: 'No GRIB field loaded' } },
       },
     },
     '/stations/{id}': {

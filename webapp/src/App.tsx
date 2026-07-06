@@ -77,7 +77,7 @@ export function App() {
             className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full bg-surface-2 px-3.5 text-sm font-medium text-accent"
           >
             <Icon name="download" className="h-4 w-4" />
-            <span className="hidden sm:inline">Download data</span>
+            <span className="hidden sm:inline">Near You</span>
           </button>
           <button
             type="button"

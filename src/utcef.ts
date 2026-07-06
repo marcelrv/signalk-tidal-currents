@@ -320,16 +320,39 @@ export function listDataFilesRecursive(dir: string, match: RegExp, maxDepth = 4)
   return out.sort();
 }
 
-/** Parse every UTCEF file in a directory (recursively — catalog downloads land in subdirs) into a merged dataset. */
-export function loadUtcefDir(dir: string): UtcefData | null {
+/**
+ * Per-file parse cache, keyed by relative path (`sig` = size+mtime, the same
+ * change signal createUtcefSource trusts for the whole directory). A reload
+ * is triggered by ANY change — including every completed catalog download —
+ * and a UTCEF file is a multi-MB JSON document; without this a boat with
+ * many regions re-JSON.parses ALL of them whenever one changes, spiking CPU
+ * and doubling peak RAM on a Cerbo GX / Pi. Parse failures are cached too,
+ * so a corrupt file is reported once per change, not once per minute.
+ * The cross-file merge (duplicate-id dedup, metadata precedence) is cheap
+ * and re-runs on every load from the cached per-file results.
+ */
+export interface UtcefFileCacheEntry {
+  sig: string;
+  parsed: ReturnType<typeof parseUtcef> | null;
+  /** Warnings emitted while parsing THIS file (feature-level issues, or the parse error itself). */
+  warnings: string[];
+}
+export type UtcefFileCache = Map<string, UtcefFileCacheEntry>;
+
+/** Parse every UTCEF file in a directory (recursively — catalog downloads land in subdirs) into a merged dataset. Pass a `cache` (owned by a long-lived source) to re-parse only files whose size/mtime changed. */
+export function loadUtcefDir(dir: string, cache?: UtcefFileCache): UtcefData | null {
   if (!fs.existsSync(dir)) return null; // directory absent — UTCEF source simply not configured
   const entries = listDataFilesRecursive(dir, UTCEF_EXT_RE);
-  if (entries.length === 0) return null;
+  if (entries.length === 0) {
+    cache?.clear();
+    return null;
+  }
 
   const warnings: string[] = [];
   const currentStations: UtcefCurrentStation[] = [];
   const files: string[] = [];
   const seenIds = new Set<string>();
+  const present = new Set<string>();
   let title: string | undefined;
   let copyright: string | undefined;
   let license: string | undefined;
@@ -341,32 +364,55 @@ export function loadUtcefDir(dir: string): UtcefData | null {
 
   for (const name of entries) {
     const full = path.join(dir, name);
+    present.add(name);
+    let sig = '';
     try {
-      const text = readUtcefFile(full);
-      const parsed = parseUtcef(text, name, warnings);
-      if (!title) title = parsed.title;
-      if (!copyright) copyright = parsed.copyright;
-      if (!license) license = parsed.license;
-      if (!licenseUrl) licenseUrl = parsed.licenseUrl;
-      if (!citationRequired) citationRequired = parsed.citationRequired;
-      if (!dataSources) dataSources = parsed.dataSources;
-      heightStationCount += parsed.heightStationCount;
-      unsupportedFeatureCount += parsed.unsupportedFeatureCount;
-      let added = 0;
-      for (const st of parsed.currentStations) {
-        if (seenIds.has(st.id)) {
-          warnings.push(`${name}: duplicate station id "${st.id}" — later occurrence ignored`);
-          continue;
-        }
-        seenIds.add(st.id);
-        st.file = name;
-        currentStations.push(st);
-        added++;
-      }
-      if (added > 0 || parsed.heightStationCount > 0) files.push(name);
-    } catch (e) {
-      warnings.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+      const st = fs.statSync(full);
+      sig = `${st.size}:${st.mtimeMs}`;
+    } catch {
+      continue; // vanished between listing and stat
     }
+
+    let entry = cache?.get(name);
+    if (!entry || entry.sig !== sig) {
+      const fileWarnings: string[] = [];
+      let parsed: ReturnType<typeof parseUtcef> | null = null;
+      try {
+        parsed = parseUtcef(readUtcefFile(full), name, fileWarnings);
+      } catch (e) {
+        fileWarnings.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      entry = { sig, parsed, warnings: fileWarnings };
+      cache?.set(name, entry);
+    }
+
+    warnings.push(...entry.warnings);
+    const parsed = entry.parsed;
+    if (!parsed) continue;
+    if (!title) title = parsed.title;
+    if (!copyright) copyright = parsed.copyright;
+    if (!license) license = parsed.license;
+    if (!licenseUrl) licenseUrl = parsed.licenseUrl;
+    if (!citationRequired) citationRequired = parsed.citationRequired;
+    if (!dataSources) dataSources = parsed.dataSources;
+    heightStationCount += parsed.heightStationCount;
+    unsupportedFeatureCount += parsed.unsupportedFeatureCount;
+    let added = 0;
+    for (const st of parsed.currentStations) {
+      if (seenIds.has(st.id)) {
+        warnings.push(`${name}: duplicate station id "${st.id}" — later occurrence ignored`);
+        continue;
+      }
+      seenIds.add(st.id);
+      st.file = name;
+      currentStations.push(st);
+      added++;
+    }
+    if (added > 0 || parsed.heightStationCount > 0) files.push(name);
+  }
+  // Deleted files must not pin their parsed stations in memory forever.
+  if (cache) {
+    for (const key of [...cache.keys()]) if (!present.has(key)) cache.delete(key);
   }
 
   return {
@@ -518,6 +564,8 @@ export function createUtcefSource(dir: string, checkIntervalMs = 60_000): UtcefS
   let signature = '';
   let lastCheck = -Infinity;
   let error: string | null = null;
+  // Survives across reloads: only files whose size/mtime changed get re-parsed.
+  const fileCache: UtcefFileCache = new Map();
 
   const currentSignature = (): string => {
     try {
@@ -541,7 +589,7 @@ export function createUtcefSource(dir: string, checkIntervalMs = 60_000): UtcefS
         if (sig !== signature) {
           signature = sig;
           try {
-            data = loadUtcefDir(dir);
+            data = loadUtcefDir(dir, fileCache);
             error = null;
           } catch (e) {
             data = null;

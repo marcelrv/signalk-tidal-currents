@@ -319,3 +319,33 @@ test('GET /timeline 404s when nothing covers the window', () => {
   });
   assert.equal(r.code, 404);
 });
+
+test('loadGribDir per-file cache: unchanged files reuse decoded slots, changed files re-decode, deleted evicted', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-cache-'));
+  fs.writeFileSync(path.join(dir, 'a.grb2'), encodeGrib2File([gridField(2, 0, 1.0), gridField(3, 0, 0.0)]));
+  fs.writeFileSync(path.join(dir, 'b.grb2'), encodeGrib2File([gridField(2, 2, 2.0), gridField(3, 2, 0.0)]));
+
+  const cache = new Map();
+  const first = loadGribDir(dir, cache)!;
+  assert.equal(first.slots.length, 2);
+  const aSlotsFirst = first.slotsByFile['a.grb2'];
+
+  // Nothing changed: the decoded slot ARRAYS must be reused, not rebuilt.
+  const second = loadGribDir(dir, cache)!;
+  assert.equal(second.slotsByFile['a.grb2'], aSlotsFirst);
+
+  // Touch b into the future: only b re-decodes; a's arrays survive.
+  const future = new Date(Date.now() + 5_000);
+  fs.utimesSync(path.join(dir, 'b.grb2'), future, future);
+  const bSlotsBefore = second.slotsByFile['b.grb2'];
+  const third = loadGribDir(dir, cache)!;
+  assert.equal(third.slotsByFile['a.grb2'], aSlotsFirst);
+  assert.notEqual(third.slotsByFile['b.grb2'], bSlotsBefore);
+
+  // Delete b: cache entry evicted, merged data shrinks.
+  fs.unlinkSync(path.join(dir, 'b.grb2'));
+  const fourth = loadGribDir(dir, cache)!;
+  assert.equal(fourth.slots.length, 1);
+  assert.equal(cache.has('b.grb2'), false);
+  assert.equal(cache.has('a.grb2'), true);
+});

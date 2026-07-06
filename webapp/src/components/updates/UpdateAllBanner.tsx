@@ -30,10 +30,18 @@ export function UpdateAllBanner() {
 
   if (updatable.length === 0) return null;
 
+  // Every entry here is an ALREADY-INSTALLED dataset that's gone stale, so
+  // its previous download size (dataset.sizeBytes, from the manifest) is a
+  // real same-region estimate for the re-download — used in preference to
+  // the catalog's declared size, which is null for forecast/nowcast
+  // (template) sources and would otherwise leave the whole total "unknown"
+  // (the observed "0 B + N unknown size" case). Falls back to the catalog
+  // size only if a manifest size is somehow missing. Matches the backend
+  // auto-update sweep, which estimates the same way.
   let knownTotal = 0;
   let unknownCount = 0;
-  for (const { source } of updatable) {
-    const size = totalSizeBytes(source!);
+  for (const { dataset, source } of updatable) {
+    const size = dataset.sizeBytes > 0 ? dataset.sizeBytes : totalSizeBytes(source!);
     if (size === null) unknownCount++;
     else knownTotal += size;
   }
@@ -65,7 +73,9 @@ export function UpdateAllBanner() {
     begin();
   };
 
-  const sizeLabel = `${formatBytes(knownTotal)}${unknownCount > 0 ? ` + ${unknownCount} unknown size` : ''}`;
+  // "~" because forecast re-downloads are estimated from the prior cycle's
+  // size — the new cycle's bytes aren't known until fetched.
+  const sizeLabel = `~${formatBytes(knownTotal)}${unknownCount > 0 ? ` + ${unknownCount} unknown` : ''}`;
 
   return (
     <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-xl border border-warn/30 bg-warn/10 px-3 py-1.5">

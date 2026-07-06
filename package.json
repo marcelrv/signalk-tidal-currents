@@ -1,7 +1,7 @@
 {
   "name": "signalk-tidal-currents",
   "version": "0.2.0",
-    "description": "Tidal current predictions from harmonic, GRIB2, and UTCEF data sources",
+    "description": "Tidal current predictions from GRIB2, UTCEF and harmonic data sources",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -35,11 +35,15 @@
     "displayName": "Tidal Currents",
     "appIcon": "icon.svg",
     "screenshots": [
+      "./img/screenshot-list.png",
+      "./img/screenshot-list-dark.png",
+      "./img/screenshot-near-you.png",
+      "./img/screenshot-map.png",
       "./img/screenshot-config.jpg"
     ],
     "webapp": {
       "name": "Tidal Currents Manager",
-      "description": "Download Manager for tidal-current data (UTCEF, GRIB2, harmonic)",
+      "description": "Download Manager for tidal-current data (GRIB2, UTCEF, harmonic)",
       "location": "/plugins/signalk-tidal-currents/"
     }
   },

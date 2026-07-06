@@ -57,7 +57,9 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   bilinear in space (NaN corners dropped + weights renormalized for
   coastlines) and linear in time (±3 h clamp slack at the range edges).
   `createGribSource(dir)` re-stats the dir at most 1×/min and reloads on
-  file-set change.
+  file-set change, re-decoding only files whose size/mtime changed (per-file
+  parse cache — a full re-decode of every file on each change froze small
+  ARM boxes once many regions were installed).
 - `src/astro.ts` — dependency-free astronomical engine for UTCEF. UTCEF
   carries only amplitude + Greenwich phase; this derives ω (catalog
   speeds), V₀ (Greenwich equilibrium arg from the mean-longitude
@@ -75,7 +77,7 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   alias. Rejects unknown schema **major** versions. `utcefVectorAt` prefers
   a station whose `representative_area` polygon contains the point, else
   nearest within `maxKm`. `createUtcefSource(dir)` mirrors the GRIB source's
-  1×/min reload.
+  1×/min reload and per-file parse cache.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).
@@ -86,15 +88,23 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   (`/stations`, `/stations/:id[/timeline]`) serve **both** harmonics and
   UTCEF stations. `speedKn` is signed for legacy station samples, a
   magnitude for UTCEF and GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
-  `?latitude=&longitude=` form) returns **every** current station inside
-  a viewport, capped at `limit` (default/max 500) — no distance sort,
-  since there's no single reference point. `/grid?bbox=…` is the gridded
+  `?latitude=&longitude=` form) returns the current stations inside a
+  viewport, thinned to `maxPoints` (default 500, max 5000; legacy alias
+  `limit`) via `thinByCellLadder()` — a stable spatial cell ladder
+  (`CELL_LADDER_DEG`, fine→coarse) that keeps ONE representative (nearest
+  the cell centre) per occupied cell at the finest level whose occupancy
+  fits the budget. Cells are aligned to the **global origin**, not the
+  bbox, so which stations survive depends only on where they are — panning
+  reveals/hides from one stable set, zooming re-grids like a tile pyramid.
+  A zoomed-out client passes a small `maxPoints` (else Europe = millions of
+  arrows); zoomed-in passes more, or a small bbox where everything fits and
+  nothing is thinned. This replaced the old first-500-in-array-order
+  truncation (arbitrary, reshuffled on pan). `/grid?bbox=…` is the gridded
   equivalent for GRIB coverage (`gribGridSamples()` in `gribcurrents.ts`):
   samples are chosen from the source grid's own fixed (i, j) index
   lattice at a stride targeting `maxPoints` (never finer than native
-  resolution) — **not** at bbox-relative offsets, so a given physical
-  point always lands at the same lat/lon and panning/zooming a map
-  doesn't reshuffle the arrows' positions. Both `/stations?bbox=` and
+  resolution) — same stable-across-pan/zoom philosophy, applied to the
+  regular lattice instead of irregular stations. Both `/stations?bbox=` and
   `/grid?bbox=` exist so a map can show full-viewport current coverage
   instead of a fixed nearest-N station list.
 - `src/index.ts` — plugin entry. Publishes `environment.current` deltas
