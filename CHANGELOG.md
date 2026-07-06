@@ -24,6 +24,22 @@
   `/stations`, `/stations/:id`, `/stations/:id/timeline`, `/vector` and
   `/timeline` endpoints all serve UTCEF stations; `/` reports a `utcef`
   coverage summary.
+- GRIB2 downloads now land under a per-region subfolder (e.g.
+  `grib/west_atl/…`) instead of flat in the GRIB directory, so a boat with
+  several installed regions can actually browse/manage them apart.
+
+### Changed
+
+- **Breaking**: the three independent *Harmonics/GRIB2/UTCEF Data
+  Directory* settings are replaced by a single **Data Directory** setting.
+  All three file kinds are now found by searching that one directory
+  recursively — the Tidal Currents Manager's own `harmonic/`/`grib/`/
+  `utcef/` subfolders (further split by region for GRIB2/UTCEF) are just
+  its own tidiness convention, not a structure anything requires, so a
+  file dropped in by hand works in any layout, including a copied/symlinked
+  external OpenCPN `tcdata` folder. Existing installs: reconfigure to a
+  single directory and re-download (or move) any previously-installed
+  data; there is no automatic migration.
 
 ## 0.2.0 — 2026-07-03
 

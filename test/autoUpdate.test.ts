@@ -15,9 +15,7 @@ import { DownloadEngine, DownloadJob } from '../dist/downloads.js';
 
 function tmpDirs() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'signalk-tidal-currents-autoupdate-'));
-  const dirs = { harmonic: path.join(root, 'tcdata'), grib2: path.join(root, 'grib'), utcef: path.join(root, 'utcef') };
-  for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true });
-  return { root, dirs, manifestPath: path.join(root, 'install-manifest.json') };
+  return { root, manifestPath: path.join(root, 'install-manifest.json') };
 }
 
 function fakeCatalogClient(sources: CatalogSource[]): CatalogClient {
@@ -47,7 +45,7 @@ function mkSource(id: string, sha256: string): CatalogSource {
 
 function mkInstall(overrides: Partial<ManifestInstall> & Pick<ManifestInstall, 'id' | 'catalogSourceId'>): ManifestInstall {
   return {
-    type: 'harmonic', files: ['f.dat'], dir: 'harmonic', sha256: 'old-hash',
+    type: 'harmonic', files: ['f.dat'], sha256: 'old-hash',
     size_bytes: 100, downloaded_at: new Date().toISOString(), autoUpdate: true,
     ...overrides,
   } as ManifestInstall;
@@ -71,18 +69,18 @@ class FakeDownloadEngine implements DownloadEngine {
   onAnyDone() { return () => {}; }
 }
 
-function baseDeps(root: string, dirs: AutoUpdateDeps['dirs'], manifestPath: string, catalog: CatalogClient, downloads: DownloadEngine): AutoUpdateDeps {
-  return { catalog, downloads, manifestPath, dirs, managerDir: root };
+function baseDeps(root: string, manifestPath: string, catalog: CatalogClient, downloads: DownloadEngine): AutoUpdateDeps {
+  return { catalog, downloads, manifestPath, dataDir: root };
 }
 
 test('starts an enabled + stale (sha256 mismatch) install, ignores a disabled one and a fresh one', async () => {
-  const { root, dirs, manifestPath } = tmpDirs();
-  fs.writeFileSync(path.join(dirs.harmonic, 'f.dat'), 'x');
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
 
   const stale = mkInstall({ id: 'stale', catalogSourceId: 'stale', sha256: 'old-hash' });
   const disabled = mkInstall({ id: 'disabled', catalogSourceId: 'disabled', sha256: 'old-hash', autoUpdate: false });
   const fresh = mkInstall({ id: 'fresh', catalogSourceId: 'fresh', sha256: 'current-hash' });
-  fs.writeFileSync(path.join(dirs.harmonic, 'f2.dat'), 'x');
+  fs.writeFileSync(path.join(root, 'f2.dat'), 'x');
   disabled.files = ['f.dat'];
   fresh.files = ['f.dat'];
 
@@ -91,15 +89,15 @@ test('starts an enabled + stale (sha256 mismatch) install, ignores a disabled on
 
   const catalog = fakeCatalogClient([mkSource('stale', 'new-hash'), mkSource('disabled', 'new-hash'), mkSource('fresh', 'current-hash')]);
   const downloads = new FakeDownloadEngine();
-  const result = await runAutoUpdateSweep(baseDeps(root, dirs, manifestPath, catalog, downloads));
+  const result = await runAutoUpdateSweep(baseDeps(root, manifestPath, catalog, downloads));
 
   assert.deepEqual(result.started, ['stale']);
   assert.deepEqual(downloads.started, ['stale']);
 });
 
 test('skips a candidate whose source already has a job queued/active', async () => {
-  const { root, dirs, manifestPath } = tmpDirs();
-  fs.writeFileSync(path.join(dirs.harmonic, 'f.dat'), 'x');
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
   const stale = mkInstall({ id: 'stale', catalogSourceId: 'stale', sha256: 'old-hash' });
   writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [stale] });
 
@@ -107,14 +105,14 @@ test('skips a candidate whose source already has a job queued/active', async () 
   const downloads = new FakeDownloadEngine();
   downloads.jobs.push({ id: 'existing', catalogSourceId: 'stale', state: 'active', bytes: 0, totalBytes: null });
 
-  const result = await runAutoUpdateSweep(baseDeps(root, dirs, manifestPath, catalog, downloads));
+  const result = await runAutoUpdateSweep(baseDeps(root, manifestPath, catalog, downloads));
   assert.deepEqual(result.started, []);
   assert.deepEqual(result.skippedInFlight, ['stale']);
 });
 
 test('start() failure for one candidate (e.g. source removed) does not abort the rest of the sweep', async () => {
-  const { root, dirs, manifestPath } = tmpDirs();
-  fs.writeFileSync(path.join(dirs.harmonic, 'f.dat'), 'x');
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
   const a = mkInstall({ id: 'a', catalogSourceId: 'a', sha256: 'old-hash' });
   const b = mkInstall({ id: 'b', catalogSourceId: 'b', sha256: 'old-hash' });
   writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [a, b] });
@@ -123,13 +121,13 @@ test('start() failure for one candidate (e.g. source removed) does not abort the
   const downloads = new FakeDownloadEngine();
   downloads.throwFor.add('a');
 
-  const result = await runAutoUpdateSweep(baseDeps(root, dirs, manifestPath, catalog, downloads));
+  const result = await runAutoUpdateSweep(baseDeps(root, manifestPath, catalog, downloads));
   assert.deepEqual(result.started, ['b']);
 });
 
 test('skips a candidate that would push disk usage past 90% full', async () => {
-  const { root, dirs, manifestPath } = tmpDirs();
-  fs.writeFileSync(path.join(dirs.harmonic, 'f.dat'), 'x');
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
   const stale = mkInstall({ id: 'stale', catalogSourceId: 'stale', sha256: 'old-hash', size_bytes: 50 });
   writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [stale] });
 
@@ -141,7 +139,7 @@ test('skips a candidate that would push disk usage past 90% full', async () => {
   // would push used-after to 99/100 = 99%, over the 90% threshold.
   (fs.promises as any).statfs = async () => ({ bsize: 1, blocks: 100, bfree: 51 });
   try {
-    const result = await runAutoUpdateSweep(baseDeps(root, dirs, manifestPath, catalog, downloads));
+    const result = await runAutoUpdateSweep(baseDeps(root, manifestPath, catalog, downloads));
     assert.deepEqual(result.started, []);
     assert.deepEqual(result.skippedDiskFull, ['stale']);
   } finally {
@@ -150,13 +148,13 @@ test('skips a candidate that would push disk usage past 90% full', async () => {
 });
 
 test('no candidates when nothing is stale or nothing has autoUpdate enabled', async () => {
-  const { root, dirs, manifestPath } = tmpDirs();
-  fs.writeFileSync(path.join(dirs.harmonic, 'f.dat'), 'x');
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
   const fresh = mkInstall({ id: 'fresh', catalogSourceId: 'fresh', sha256: 'current-hash' });
   writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [fresh] });
 
   const catalog = fakeCatalogClient([mkSource('fresh', 'current-hash')]);
   const downloads = new FakeDownloadEngine();
-  const result = await runAutoUpdateSweep(baseDeps(root, dirs, manifestPath, catalog, downloads));
+  const result = await runAutoUpdateSweep(baseDeps(root, manifestPath, catalog, downloads));
   assert.deepEqual(result.started, []);
 });

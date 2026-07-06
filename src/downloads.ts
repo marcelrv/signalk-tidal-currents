@@ -25,7 +25,7 @@ import {
   TemplateCatalogFile,
   isTemplateFile,
 } from './catalogTypes.js';
-import { ManifestDir, ManifestInstall, readManifest, upsertInstall, writeManifestAtomic } from './manifest.js';
+import { ManifestInstall, readManifest, upsertInstall, writeManifestAtomic } from './manifest.js';
 
 export type DownloadJobState = 'queued' | 'active' | 'done' | 'error';
 
@@ -49,14 +49,9 @@ export interface FileSelector {
   filename?: string;
 }
 
-export interface DownloadEngineDirs {
-  harmonic: string;
-  grib2: string;
-  utcef: string;
-}
-
 export interface DownloadEngineOptions {
-  dirs: DownloadEngineDirs;
+  /** The plugin's single configured Data Directory — every download lands somewhere under this one root. */
+  dataDir: string;
   manifestPath: string;
   catalog: CatalogClient;
   /** Used to derive a fallback base URL when a static file entry omits `url` (observed real-world catalog gap). */
@@ -84,10 +79,19 @@ export interface DownloadEngine {
 /** Progress-only updates are throttled to at most once per this many ms per job — state transitions always emit immediately regardless. */
 const PROGRESS_EMIT_THROTTLE_MS = 200;
 
-function dirAndTagForType(type: CatalogSourceType, dirs: DownloadEngineDirs): { dir: string; tag: ManifestDir } {
-  if (type === 'grib2') return { dir: dirs.grib2, tag: 'grib' };
-  if (type === 'utcef') return { dir: dirs.utcef, tag: 'utcef' };
-  return { dir: dirs.harmonic, tag: 'harmonic' };
+/**
+ * Subfolder the download engine files a source's TYPE under, within the
+ * single configured Data Directory — its own tidiness convention (so a boat
+ * with several GRIB2 regions and a pile of UTCEF datasets can still browse
+ * them apart), not a structure anything else requires: the readers
+ * (createGribSource/createUtcefSource/loadHarmonicsDir) all scan the whole
+ * Data Directory recursively, so a manually-dropped file works from any
+ * subpath, including outside these three folders entirely.
+ */
+function subdirForType(type: CatalogSourceType): string {
+  if (type === 'grib2') return 'grib';
+  if (type === 'utcef') return 'utcef';
+  return 'harmonic';
 }
 
 /** Resolves the base URL to prefix a bare filename with, when a file entry has no `url` of its own. */
@@ -249,16 +253,12 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     emitter.emit(`job:${job.id}`, { ...job });
   }
 
-  function targetDirFor(type: CatalogSourceType): { dir: string; tag: ManifestDir } {
-    return dirAndTagForType(type, opts.dirs);
-  }
-
   async function runJob(job: DownloadJob): Promise<void> {
     const document = opts.catalog.get().document;
     const source = document?.sources.find((s) => s.id === job.catalogSourceId);
     if (!source) throw new Error(`catalog source "${job.catalogSourceId}" no longer in the cached catalog`);
 
-    const { dir, tag } = targetDirFor(source.type);
+    const subdir = subdirForType(source.type);
     const controller = abortControllers.get(job.id)!;
 
     const staticFiles = source.files.filter((f): f is StaticCatalogFile => !isTemplateFile(f));
@@ -272,7 +272,12 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       for (const file of staticFiles) {
         const url = resolveStaticUrl(file, opts.catalogUrl);
         if (!url) throw new Error(`file "${file.filename}" has no url and none could be derived`);
-        const target = path.join(dir, file.filename);
+        // file.filename may itself carry a catalog-supplied region path
+        // (e.g. "regions/europe/netherlands.utcef") — always forward-slash
+        // joined here regardless of platform, same reasoning as regionDir
+        // below.
+        const relName = `${subdir}/${file.filename}`;
+        const target = path.join(opts.dataDir, relName);
         // `total` is the SAME constant Content-Length on every chunk callback
         // (see downloadOne) — only fold it into job.totalBytes once per file,
         // or it inflates by (chunk count × file size) and the progress
@@ -293,7 +298,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         // No integrity hash provided by the catalog for this file — skip
         // verification rather than failing (covers the observed real-world
         // catalog gap where some static utcef entries omit both url/sha256).
-        names.push(file.filename);
+        names.push(relName);
         sizeBytes += result.size;
         // Record the hash only when there's exactly one file AND the catalog
         // actually declared one to verify against — a locally-computed hash
@@ -305,7 +310,6 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         catalogSourceId: source.id,
         type: source.type,
         files: names,
-        dir: tag,
         sha256,
         size_bytes: sizeBytes,
         downloaded_at: new Date().toISOString(),
@@ -339,10 +343,23 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     // on the SAME file — each region silently overwriting the previous one
     // while the manifest kept claiming all of them were installed.
     const regionTag = `${templateFile.region_id}_${templateFile.type}`.replace(/[^A-Za-z0-9._-]+/g, '-');
+    // Files land under a per-region subfolder (region_id, sanitized) rather
+    // than flat in the type directory — with several regions installed
+    // (a boat cruising both US coasts, say), a flat GRIB directory becomes a
+    // pile of same-looking filenames with no way to browse "what do I have
+    // for the Pacific". Forecast and nowcast share the folder (only the
+    // filename, via regionTag above, tells them apart) so both show up
+    // together for that region. Always joined with a literal '/' — this
+    // becomes both the on-disk path (via path.join below, OS-normalized) and
+    // the manifest's `files` entry, which must match listDataFilesRecursive's
+    // forward-slash-joined keys (used to restrict per-dataset lookups to
+    // this install's own files) on every platform, not just POSIX.
+    const regionDir = templateFile.region_id.replace(/[^A-Za-z0-9._-]+/g, '-');
     for (const hour of templateFile.forecast_hours) {
       const url = fillTemplate(templateFile.url_template, ymd, hh, hour);
       const filename = `${source.id}_${regionTag}_${ymd}${hh}_f${pad3(hour)}${path.extname(new URL(url).pathname) || '.grb2'}`;
-      const target = path.join(dir, filename);
+      const relName = `${subdir}/${regionDir}/${filename}`;
+      const target = path.join(opts.dataDir, relName);
       // Same fix as the static-file branch above: `total` repeats on every
       // chunk, only count it once per forecast-hour file.
       let totalCounted = false;
@@ -354,7 +371,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         }
         notify(job, true);
       }, controller.signal);
-      names.push(filename);
+      names.push(relName);
       sizeBytes += result.size;
     }
     const install: ManifestInstall = {
@@ -366,7 +383,6 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       catalogSourceId: source.id,
       type: source.type,
       files: names,
-      dir: tag,
       size_bytes: sizeBytes,
       downloaded_at: new Date().toISOString(),
       cycle: iso,

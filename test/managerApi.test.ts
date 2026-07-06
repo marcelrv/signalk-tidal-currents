@@ -44,9 +44,8 @@ function makeHarness() {
 
 function tmpDirs() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'signalk-tidal-currents-managerapi-'));
-  const dirs = { harmonic: path.join(root, 'tcdata'), grib2: path.join(root, 'grib'), utcef: path.join(root, 'utcef') };
-  for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true });
-  return { root, dirs, manifestPath: path.join(root, 'install-manifest.json') };
+  for (const sub of ['harmonic', 'grib', 'utcef']) fs.mkdirSync(path.join(root, sub), { recursive: true });
+  return { root, manifestPath: path.join(root, 'install-manifest.json') };
 }
 
 function fakeCatalogClient(sources: CatalogSource[] = [], opts: { refreshFails?: boolean } = {}): CatalogClient {
@@ -81,16 +80,15 @@ function fakeDownloadEngine(): DownloadEngine {
   };
 }
 
-function baseMgr(overrides: Partial<ManagerState> = {}): { mgr: ManagerState; dirs: ReturnType<typeof tmpDirs>['dirs']; manifestPath: string } {
-  const { dirs, manifestPath, root } = tmpDirs();
+function baseMgr(overrides: Partial<ManagerState> = {}): { mgr: ManagerState; dataDir: string; manifestPath: string } {
+  const { root, manifestPath } = tmpDirs();
   let priority = [...DEFAULT_PRIORITY];
   let datasetStack: string[] = [];
   const mgr: ManagerState = {
     catalog: fakeCatalogClient(),
     downloads: fakeDownloadEngine(),
     manifestPath,
-    dirs,
-    managerDir: root,
+    dataDir: root,
     getPriority: () => priority,
     setPriority: (order) => { priority = order; },
     getDatasetStack: () => datasetStack,
@@ -99,7 +97,7 @@ function baseMgr(overrides: Partial<ManagerState> = {}): { mgr: ManagerState; di
     getVesselPosition: () => null,
     ...overrides,
   };
-  return { mgr, dirs, manifestPath };
+  return { mgr, dataDir: root, manifestPath };
 }
 
 test('GET /catalog returns the current catalog state shape', async () => {
@@ -127,17 +125,17 @@ test('POST /catalog/refresh returns 502 with the cached copy on failure', async 
 });
 
 test('GET /datasets merges manifest installs, orphan files, and UTCEF license metadata', async () => {
-  const { mgr, dirs, manifestPath } = baseMgr({
+  const { mgr, dataDir, manifestPath } = baseMgr({
     apiState: {
       data: null, error: null,
-      utcef: { get: () => ({ dir: dirs.utcef, files: ['nl.utcef'], currentStations: [], heightStationCount: 0, unsupportedFeatureCount: 0, warnings: [], license: 'CC-BY-4.0', licenseUrl: 'https://x/license', citationRequired: 'cite me', copyright: '(c) test' } as any), error: null },
+      utcef: { get: () => ({ dir: path.join(dataDir, 'utcef'), files: ['nl.utcef'], currentStations: [], heightStationCount: 0, unsupportedFeatureCount: 0, warnings: [], license: 'CC-BY-4.0', licenseUrl: 'https://x/license', citationRequired: 'cite me', copyright: '(c) test' } as any), error: null },
     } as any,
   });
-  fs.writeFileSync(path.join(dirs.utcef, 'nl.utcef'), 'dummy');
-  fs.writeFileSync(path.join(dirs.harmonic, 'HARMONIC'), 'legacy'); // orphan — not in manifest
+  fs.writeFileSync(path.join(dataDir, 'utcef', 'nl.utcef'), 'dummy');
+  fs.writeFileSync(path.join(dataDir, 'harmonic', 'HARMONIC'), 'legacy'); // orphan — not in manifest
   const manifest: InstallManifest = { manifest_version: 1, installs: [] };
   writeManifestAtomic(manifestPath, upsertInstall(manifest, {
-    id: 'nl-utcef', catalogSourceId: 'nl-utcef', type: 'utcef', files: ['nl.utcef'], dir: 'utcef',
+    id: 'nl-utcef', catalogSourceId: 'nl-utcef', type: 'utcef', files: ['utcef/nl.utcef'],
     size_bytes: 5, downloaded_at: new Date().toISOString(),
   }));
 
@@ -149,13 +147,33 @@ test('GET /datasets merges manifest installs, orphan files, and UTCEF license me
   assert.ok(installed, JSON.stringify(body));
   assert.equal(installed.license, 'CC-BY-4.0');
   assert.equal(installed.citationRequired, 'cite me');
-  const orphan = body.find((d) => d.id === 'orphan:harmonic:HARMONIC');
+  const orphan = body.find((d) => d.id === 'orphan:harmonic:harmonic/HARMONIC');
   assert.ok(orphan, JSON.stringify(body));
   assert.equal(orphan.catalogSourceId, null);
 });
 
+test('GET /datasets finds a manually-dropped file in ANY folder structure under Data Directory, not just harmonic/grib/utcef', async () => {
+  // The download engine's own harmonic/grib/utcef split (plus per-region
+  // subfolders for GRIB2/UTCEF) is purely its own tidiness convention — nothing
+  // requires a user's own files to follow it. A GRIB2 file dropped in some
+  // unrelated nested folder (e.g. copied in from an old backup) must still
+  // surface as an orphan dataset.
+  const { mgr, dataDir } = baseMgr();
+  const customDir = path.join(dataDir, 'my-own-backup', '2025-currents');
+  fs.mkdirSync(customDir, { recursive: true });
+  fs.writeFileSync(path.join(customDir, 'saildocs.grb2'), 'grib-bytes');
+
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const res = await call('GET', '/datasets');
+  const body = res.body as any[];
+  const orphan = body.find((d) => d.id === 'orphan:grib:my-own-backup/2025-currents/saildocs.grb2');
+  assert.ok(orphan, JSON.stringify(body));
+  assert.equal(orphan.type, 'grib2');
+});
+
 test('GET /datasets exposes expiry countdown fields for an expiry-method install nearing its max age', async () => {
-  const { mgr, dirs, manifestPath } = baseMgr();
+  const { mgr, dataDir, manifestPath } = baseMgr();
   const maxAgeHours = 24;
   const ageHours = 21.6; // 10% of maxAgeHours remaining
   const cycleMs = Date.now() - ageHours * 3600_000;
@@ -170,9 +188,9 @@ test('GET /datasets exposes expiry countdown fields for an expiry-method install
     get: () => ({ status: 'cached', document: { catalog_schema_version: '1.0.0', version: 1, generated: '', source_count: 1, sources: [source] }, fetchedAt: new Date().toISOString(), error: null, sourceUrl: '', warnings: [] }),
     refresh: async () => mgr.catalog.get(),
   };
-  fs.writeFileSync(path.join(dirs.grib2, 'f.grb2'), 'x');
+  fs.writeFileSync(path.join(dataDir, 'grib', 'f.grb2'), 'x');
   writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'grib-forecast', catalogSourceId: 'grib-forecast', type: 'grib2', files: ['f.grb2'], dir: 'grib',
+    id: 'grib-forecast', catalogSourceId: 'grib-forecast', type: 'grib2', files: ['grib/f.grb2'],
     size_bytes: 1, downloaded_at: new Date().toISOString(), cycle: new Date(cycleMs).toISOString(),
   }));
 
@@ -189,7 +207,7 @@ test('GET /datasets exposes expiry countdown fields for an expiry-method install
 });
 
 test('GET /datasets reports a negative remainingHours once past max_age_hours, status stays update-available', async () => {
-  const { mgr, dirs, manifestPath } = baseMgr();
+  const { mgr, dataDir, manifestPath } = baseMgr();
   const maxAgeHours = 24;
   const cycleMs = Date.now() - 30 * 3600_000; // 6h past expiry
   const source: CatalogSource = {
@@ -203,9 +221,9 @@ test('GET /datasets reports a negative remainingHours once past max_age_hours, s
     get: () => ({ status: 'cached', document: { catalog_schema_version: '1.0.0', version: 1, generated: '', source_count: 1, sources: [source] }, fetchedAt: new Date().toISOString(), error: null, sourceUrl: '', warnings: [] }),
     refresh: async () => mgr.catalog.get(),
   };
-  fs.writeFileSync(path.join(dirs.grib2, 'f.grb2'), 'x');
+  fs.writeFileSync(path.join(dataDir, 'grib', 'f.grb2'), 'x');
   writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'grib-forecast', catalogSourceId: 'grib-forecast', type: 'grib2', files: ['f.grb2'], dir: 'grib',
+    id: 'grib-forecast', catalogSourceId: 'grib-forecast', type: 'grib2', files: ['grib/f.grb2'],
     size_bytes: 1, downloaded_at: new Date().toISOString(), cycle: new Date(cycleMs).toISOString(),
   }));
 
@@ -227,17 +245,17 @@ test('DELETE /datasets/:id refuses an orphan id with a path-traversal filename',
 });
 
 test('DELETE /datasets/:id deletes a real install and its files, updates the manifest', async () => {
-  const { mgr, dirs, manifestPath } = baseMgr();
-  fs.writeFileSync(path.join(dirs.grib2, 'f.grb2'), 'x');
+  const { mgr, dataDir, manifestPath } = baseMgr();
+  fs.writeFileSync(path.join(dataDir, 'grib', 'f.grb2'), 'x');
   writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'grib-install', catalogSourceId: 'grib-install', type: 'grib2', files: ['f.grb2'], dir: 'grib',
+    id: 'grib-install', catalogSourceId: 'grib-install', type: 'grib2', files: ['grib/f.grb2'],
     size_bytes: 1, downloaded_at: new Date().toISOString(),
   }));
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
   const res = await call('DELETE', '/datasets/:id', { params: { id: 'grib-install' } });
   assert.equal(res.statusCode, 200);
-  assert.ok(!fs.existsSync(path.join(dirs.grib2, 'f.grb2')));
+  assert.ok(!fs.existsSync(path.join(dataDir, 'grib', 'f.grb2')));
 });
 
 test('DELETE /datasets/:id returns 404 for an unknown id', async () => {
@@ -251,7 +269,7 @@ test('DELETE /datasets/:id returns 404 for an unknown id', async () => {
 test('PUT /datasets/:id/auto-update enables the flag, persists across a re-read', async () => {
   const { mgr, manifestPath } = baseMgr();
   writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'grib-install', catalogSourceId: 'grib-install', type: 'grib2', files: [], dir: 'grib',
+    id: 'grib-install', catalogSourceId: 'grib-install', type: 'grib2', files: [],
     size_bytes: 1, downloaded_at: new Date().toISOString(),
   }));
   const { router, call } = makeHarness();
@@ -305,9 +323,9 @@ test('PUT /priority validates the order, 400 on an invalid permutation', async (
 test('GET/PUT /priority dataset stack: persisted order first, unranked installs appended in type order', async () => {
   const { mgr, manifestPath } = baseMgr();
   let manifest: InstallManifest = { manifest_version: 1, installs: [] };
-  for (const [id, type, dir] of [['a-grib', 'grib2', 'grib'], ['b-utcef', 'utcef', 'utcef'], ['c-utcef', 'utcef', 'utcef']] as const) {
+  for (const [id, type] of [['a-grib', 'grib2'], ['b-utcef', 'utcef'], ['c-utcef', 'utcef']] as const) {
     manifest = upsertInstall(manifest, {
-      id, catalogSourceId: id, type, files: [`${id}.dat`], dir,
+      id, catalogSourceId: id, type, files: [`${id}.dat`],
       size_bytes: 1, downloaded_at: new Date().toISOString(),
     });
   }

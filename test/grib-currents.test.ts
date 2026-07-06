@@ -12,6 +12,8 @@ import { registerRoutes, resolveVector, ApiState } from '../dist/api.js';
 import {
   createGribSource,
   gribVectorAt,
+  gribGridSamples,
+  gribSummary,
   loadGribDir,
   GRIB_TIME_SLACK_MS,
 } from '../dist/gribcurrents.js';
@@ -348,4 +350,58 @@ test('loadGribDir per-file cache: unchanged files reuse decoded slots, changed f
   assert.equal(fourth.slots.length, 1);
   assert.equal(cache.has('b.grb2'), false);
   assert.equal(cache.has('a.grb2'), true);
+});
+
+// A grid in a different part of the world (mirrors having downloaded, say,
+// both a US-East-Coast region and a Pacific region — separate GRIB grids).
+function remoteGridField(param: number, forecastHours: number, value: number): EncodeField {
+  return {
+    param,
+    refTime: T0,
+    forecastHours,
+    la1: 30.0,
+    lo1: -75.0, // US East Coast, far from the 4.9-5.5E fixture grid
+    dLat: 0.1,
+    dLon: 0.1,
+    ni: 7,
+    nj: 7,
+    values: new Array(49).fill(value),
+  };
+}
+
+test('gribGridSamples: samples every region, not just slots[0] grid', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-multiregion-'));
+  // File a sorts first, so its grid is slots[0].grid. The bug sampled only
+  // that grid, so a viewport over file b's region returned no arrows.
+  fs.writeFileSync(path.join(dir, 'a.grb2'), encodeGrib2File([gridField(2, 0, 1.0), gridField(3, 0, 0.0)]));
+  // SAME valid time (T0) as region A — reproduces the real NOAA RTOFS case
+  // where every region shares one cycle's forecast times, so loadGribDir's
+  // same-time dedup collapses the merged `slots` down to just one region
+  // (here b.grb2 sorts last and wins). The fix must still find region A via
+  // slotsByFile rather than the collapsed `slots`.
+  fs.writeFileSync(
+    path.join(dir, 'b.grb2'),
+    encodeGrib2File([remoteGridField(2, 0, 1.0), remoteGridField(3, 0, 0.0)]),
+  );
+  const data = loadGribDir(dir)!;
+  // Precondition: the merged list really did collapse to a single region.
+  assert.equal(data.slots.length, 1);
+
+  // Viewport over region B (US East Coast) must yield arrows.
+  const east = gribGridSamples(data, { west: -74.8, south: 30.1, east: -74.2, north: 30.5 }, T0, 50);
+  assert.ok(east.length > 0, 'expected samples in the second region');
+  assert.ok(east.every((p) => p.longitude < 0 && p.latitude >= 30 && p.latitude <= 30.6));
+
+  // Viewport over region A (North Sea) still works.
+  const west = gribGridSamples(data, { west: 5.0, south: 53.0, east: 5.4, north: 53.4 }, T0, 50);
+  assert.ok(west.length > 0, 'expected samples in the first region');
+  assert.ok(west.every((p) => p.longitude > 4 && p.longitude < 6));
+
+  // Summary reports both regions and a union envelope spanning them.
+  const summary = gribSummary(data) as {
+    regions: { lonWest: number; lonEast: number }[];
+    boundingBox: { lonWest: number; lonEast: number; latMin: number; latMax: number };
+  };
+  assert.equal(summary.regions.length, 2);
+  assert.ok(summary.boundingBox.lonWest <= -75 && summary.boundingBox.lonEast >= 5);
 });

@@ -341,19 +341,40 @@ export interface GridSample {
  * pyramid. Points with no coverage (land, outside the grid, outside the
  * time slack) are omitted, so the result can be smaller than `maxPoints`.
  */
-export function gribGridSamples(
-  data: GribCurrentsData,
-  bbox: { west: number; south: number; east: number; north: number },
-  timeMs: number,
-  maxPoints = 400,
-): GridSample[] {
-  if (data.slots.length === 0) return [];
-  const grid = data.slots[0].grid;
+/**
+ * The distinct grid geometries loaded — one per downloaded region — each with
+ * the set of files on that grid. Different regions (e.g. US East Coast vs. US
+ * West Coast) are separate GRIB grids with their own origin/extent, so anything
+ * that walks a lattice must cover each of them.
+ *
+ * Derived from `slotsByFile`, NOT the merged `slots`: every NOAA RTOFS region
+ * from one cycle carries the SAME forecast valid-times, so the same-time dedup
+ * in loadGribDir collapses `slots` down to whichever region's file sorts last,
+ * erasing every other region's grid from the merged list. The `files` set lets
+ * callers restrict `gribVectorAt` to a region's own (un-deduped) slots, exactly
+ * as resolveVector's per-dataset probe does.
+ */
+function gridGroups(data: GribCurrentsData): { grid: Grib2Grid; files: Set<string> }[] {
+  const groups: { grid: Grib2Grid; files: Set<string> }[] = [];
+  for (const [file, slots] of Object.entries(data.slotsByFile)) {
+    if (slots.length === 0) continue;
+    const grid = slots[0].grid;
+    let g = groups.find((x) => sameGrid(x.grid, grid));
+    if (!g) {
+      g = { grid, files: new Set() };
+      groups.push(g);
+    }
+    g.files.add(file);
+  }
+  return groups;
+}
 
-  const lonIndex = (lon: number): number => {
-    const fx = (((lon - grid.lon0) % 360) + 360) % 360;
-    return fx / grid.di;
-  };
+/** Integer (i, j) index window of a grid's own lattice covering `bbox`, or null when the grid and the bbox are disjoint. */
+function gridBboxWindow(
+  grid: Grib2Grid,
+  bbox: { west: number; south: number; east: number; north: number },
+): { iMin: number; iMax: number; jMin: number; jMax: number } | null {
+  const lonIndex = (lon: number): number => ((((lon - grid.lon0) % 360) + 360) % 360) / grid.di;
   let iMinF = lonIndex(bbox.west);
   let iMaxF = lonIndex(bbox.east);
   if (iMaxF < iMinF) iMaxF += 360 / grid.di; // bbox straddles the grid's lon0 wrap point
@@ -361,33 +382,60 @@ export function gribGridSamples(
   const iMax = Math.min(grid.ni - 1, Math.ceil(iMaxF));
   const jMin = Math.max(0, Math.floor((bbox.south - grid.lat0) / grid.dj));
   const jMax = Math.min(grid.nj - 1, Math.ceil((bbox.north - grid.lat0) / grid.dj));
-  if (iMax < iMin || jMax < jMin) return [];
+  if (iMax < iMin || jMax < jMin) return null;
+  return { iMin, iMax, jMin, jMax };
+}
 
-  const iCount = iMax - iMin + 1;
-  const jCount = jMax - jMin + 1;
-  const stride = Math.max(1, Math.ceil(Math.sqrt((iCount * jCount) / maxPoints)));
-  // Snap the start to a multiple of stride so the chosen indices are the
-  // same regardless of where iMin/jMin happen to fall for this viewport.
-  const iStart = Math.ceil(iMin / stride) * stride;
-  const jStart = Math.ceil(jMin / stride) * stride;
+export function gribGridSamples(
+  data: GribCurrentsData,
+  bbox: { west: number; south: number; east: number; north: number },
+  timeMs: number,
+  maxPoints = 400,
+): GridSample[] {
+  // Each downloaded region is its own grid geometry. Sample every region
+  // whose lattice overlaps the viewport — not just the merged grid — or a
+  // viewport over any region the same-time dedup dropped from `slots` (e.g.
+  // the US East Coast, shadowed by the Pacific region) returns no arrows
+  // even though per-point lookups there succeed.
+  const windows = gridGroups(data)
+    .map((g) => ({ ...g, win: gridBboxWindow(g.grid, bbox) }))
+    .filter((w): w is typeof w & { win: NonNullable<typeof w.win> } => w.win !== null);
+  if (windows.length === 0) return [];
+
+  // Split the point budget across overlapping regions so the total stays
+  // near maxPoints (regions are mostly disjoint, so usually there is one).
+  const perGrid = Math.max(1, Math.floor(maxPoints / windows.length));
 
   const points: GridSample[] = [];
-  for (let j = jStart; j <= jMax; j += stride) {
-    const lat = grid.lat0 + j * grid.dj;
-    for (let i = iStart; i <= iMax; i += stride) {
-      const lonRaw = grid.lon0 + i * grid.di;
-      const lon = ((lonRaw + 180) % 360 + 360) % 360 - 180;
-      const sample = gribVectorAt(data, lat, lon, timeMs);
-      if (sample && sample.u !== null && sample.v !== null) {
-        points.push({
-          latitude: Math.round(lat * 1e4) / 1e4,
-          longitude: Math.round(lon * 1e4) / 1e4,
-          speedKn: sample.speedKn,
-          direction: sample.direction ?? 0,
-          u: sample.u,
-          v: sample.v,
-        });
-        if (points.length >= maxPoints) return points;
+  for (const { grid, files, win } of windows) {
+    const { iMin, iMax, jMin, jMax } = win;
+    const iCount = iMax - iMin + 1;
+    const jCount = jMax - jMin + 1;
+    const stride = Math.max(1, Math.ceil(Math.sqrt((iCount * jCount) / perGrid)));
+    // Snap the start to a multiple of stride so the chosen indices are the
+    // same regardless of where iMin/jMin happen to fall for this viewport.
+    const iStart = Math.ceil(iMin / stride) * stride;
+    const jStart = Math.ceil(jMin / stride) * stride;
+
+    for (let j = jStart; j <= jMax; j += stride) {
+      const lat = grid.lat0 + j * grid.dj;
+      for (let i = iStart; i <= iMax; i += stride) {
+        const lonRaw = grid.lon0 + i * grid.di;
+        const lon = ((lonRaw + 180) % 360 + 360) % 360 - 180;
+        // Restrict to this region's own files so the dedup that dropped it
+        // from the merged `slots` doesn't also blank it here.
+        const sample = gribVectorAt(data, lat, lon, timeMs, files);
+        if (sample && sample.u !== null && sample.v !== null) {
+          points.push({
+            latitude: Math.round(lat * 1e4) / 1e4,
+            longitude: Math.round(lon * 1e4) / 1e4,
+            speedKn: sample.speedKn,
+            direction: sample.direction ?? 0,
+            u: sample.u,
+            v: sample.v,
+          });
+          if (points.length >= maxPoints) return points;
+        }
       }
     }
   }
@@ -399,10 +447,22 @@ export function gribSummary(data: GribCurrentsData): Record<string, unknown> {
   if (data.slots.length === 0) {
     return { dir: data.dir, files: data.files, fields: 0, warnings: data.warnings };
   }
-  const g = data.slots[0].grid;
-  const lonWest = ((g.lon0 + 180) % 360 + 360) % 360 - 180;
-  const lonEastRaw = g.lon0 + (g.ni - 1) * g.di;
-  const lonEast = ((lonEastRaw + 180) % 360 + 360) % 360 - 180;
+  // One entry per downloaded region (each is its own grid). The old summary
+  // reported only slots[0]'s grid, so a boat with several regions saw the
+  // coverage of just one of them (e.g. the Pacific box while the US East
+  // Coast was loaded but invisible).
+  const regions = gridGroups(data).map(({ grid: g }) => {
+    const lonWest = ((g.lon0 + 180) % 360 + 360) % 360 - 180;
+    const lonEastRaw = g.lon0 + (g.ni - 1) * g.di;
+    const lonEast = ((lonEastRaw + 180) % 360 + 360) % 360 - 180;
+    return {
+      latMin: Math.round(Math.min(g.lat0, g.lat0 + (g.nj - 1) * g.dj) * 1e4) / 1e4,
+      latMax: Math.round(Math.max(g.lat0, g.lat0 + (g.nj - 1) * g.dj) * 1e4) / 1e4,
+      lonWest: Math.round(lonWest * 1e4) / 1e4,
+      lonEast: Math.round(lonEast * 1e4) / 1e4,
+      resolutionDeg: Math.round(g.di * 1e4) / 1e4,
+    };
+  });
   return {
     dir: data.dir,
     files: data.files,
@@ -411,13 +471,17 @@ export function gribSummary(data: GribCurrentsData): Record<string, unknown> {
       start: new Date(data.slots[0].time).toISOString(),
       end: new Date(data.slots[data.slots.length - 1].time).toISOString(),
     },
+    // Union envelope across all regions (informational — a caller needing
+    // exact per-region coverage, or handling antimeridian-straddling grids,
+    // should use `regions`). Longitude union is a plain min/max in [-180, 180].
     boundingBox: {
-      latMin: Math.round(Math.min(g.lat0, g.lat0 + (g.nj - 1) * g.dj) * 1e4) / 1e4,
-      latMax: Math.round(Math.max(g.lat0, g.lat0 + (g.nj - 1) * g.dj) * 1e4) / 1e4,
-      lonWest: Math.round(lonWest * 1e4) / 1e4,
-      lonEast: Math.round(lonEast * 1e4) / 1e4,
+      latMin: Math.min(...regions.map((r) => r.latMin)),
+      latMax: Math.max(...regions.map((r) => r.latMax)),
+      lonWest: Math.min(...regions.map((r) => r.lonWest)),
+      lonEast: Math.max(...regions.map((r) => r.lonEast)),
     },
-    resolutionDeg: Math.round(g.di * 1e4) / 1e4,
+    regions,
+    resolutionDeg: Math.min(...regions.map((r) => r.resolutionDeg)),
     warnings: data.warnings,
   };
 }

@@ -16,10 +16,13 @@ import { CatalogClient } from './catalog.js';
 import { CatalogSourceType } from './catalogTypes.js';
 import { computeInstallStatus } from './datasetStatus.js';
 import { DownloadEngine, FileSelector } from './downloads.js';
-import { ManifestDir, readManifest, removeInstall, upsertInstall, writeManifestAtomic } from './manifest.js';
+import { readManifest, removeInstall, upsertInstall, writeManifestAtomic } from './manifest.js';
 import { DEFAULT_PRIORITY, SourceType, isValidDatasetStack, isValidPriorityOrder, resolveDatasetStack } from './priority.js';
-import { StorageDirs, cleanupCandidates, statStorage } from './storage.js';
+import { cleanupCandidates, statStorage } from './storage.js';
 import { listDataFilesRecursive } from './utcef.js';
+
+/** Orphan-scan classification tag — same three labels the download engine's own subfolder convention uses, kept only for the `orphan:<tag>:<path>` id shape and the UI's type icon; not used to resolve a path (there's only one configured directory now). */
+export type OrphanTag = 'harmonic' | 'grib' | 'utcef';
 
 interface MReq {
   params: Record<string, string>;
@@ -51,18 +54,12 @@ interface SseRes {
   on(event: 'close', cb: () => void): void;
 }
 
-export interface ManagerDirs {
-  harmonic: string;
-  grib2: string;
-  utcef: string;
-}
-
 export interface ManagerState {
   catalog: CatalogClient;
   downloads: DownloadEngine;
   manifestPath: string;
-  dirs: ManagerDirs;
-  managerDir: string;
+  /** The plugin's single configured Data Directory — every install's `files` are relative to this. */
+  dataDir: string;
   getPriority(): SourceType[];
   setPriority(order: SourceType[]): void;
   /** Persisted per-dataset stack (PRD §5.3 Phase 3) — raw install ids as saved, NOT the resolved full stack. */
@@ -74,19 +71,11 @@ export interface ManagerState {
   getVesselPosition(): { lat: number; lon: number } | null;
 }
 
-function dirForTag(tag: ManifestDir, dirs: ManagerDirs): string {
-  if (tag === 'grib') return dirs.grib2;
-  if (tag === 'utcef') return dirs.utcef;
-  return dirs.harmonic;
-}
-
-/** Defense against path traversal: the resolved path must land inside one of the three managed dirs. */
-function isWithinManagedDirs(fullPath: string, dirs: ManagerDirs): boolean {
+/** Defense against path traversal: the resolved path must land inside the managed Data Directory. */
+function isWithinManagedDir(fullPath: string, dataDir: string): boolean {
   const resolved = path.resolve(fullPath);
-  return [dirs.harmonic, dirs.grib2, dirs.utcef].some((d) => {
-    const base = path.resolve(d);
-    return resolved === base || resolved.startsWith(base + path.sep);
-  });
+  const base = path.resolve(dataDir);
+  return resolved === base || resolved.startsWith(base + path.sep);
 }
 
 interface DatasetEntry {
@@ -95,7 +84,6 @@ interface DatasetEntry {
   type: CatalogSourceType;
   name: string;
   files: string[];
-  dir: ManifestDir;
   sizeBytes: number;
   downloadedAt: string | null;
   cycle?: string;
@@ -126,8 +114,7 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
   const utcefData = mgr.apiState.utcef?.get();
 
   return manifest.installs.map((install) => {
-    const dirPath = dirForTag(install.dir, mgr.dirs);
-    const filesExist = install.files.every((f) => fs.existsSync(path.join(dirPath, f)));
+    const filesExist = install.files.every((f) => fs.existsSync(path.join(mgr.dataDir, f)));
     const source = catalogDoc?.sources.find((s) => s.id === install.catalogSourceId);
 
     const { status, ...expiry } = computeInstallStatus(install, source, filesExist);
@@ -138,7 +125,6 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
       type: install.type,
       name: source?.name ?? install.catalogSourceId,
       files: install.files,
-      dir: install.dir,
       sizeBytes: install.size_bytes,
       downloadedAt: install.downloaded_at,
       cycle: install.cycle,
@@ -160,38 +146,42 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
   });
 }
 
-/** Legacy/manually-dropped files not tracked by the manifest (e.g. the auto-downloaded OpenCPN pair). */
+/**
+ * Legacy/manually-dropped files not tracked by the manifest (e.g. the
+ * auto-downloaded OpenCPN pair). All three patterns scan the SAME single
+ * Data Directory, recursively — there's no per-type directory to scope to
+ * anymore, and a manually-dropped file works from any subpath, not just the
+ * download engine's own `harmonic`/`grib`/`utcef` convention.
+ */
 function orphanDatasets(mgr: ManagerState): DatasetEntry[] {
   const manifest = readManifest(mgr.manifestPath);
-  const referenced = new Set(manifest.installs.flatMap((i) => i.files.map((f) => `${i.dir}:${f}`)));
+  const referenced = new Set(manifest.installs.flatMap((i) => i.files));
   const results: DatasetEntry[] = [];
 
-  const scan = (tag: ManifestDir, dirPath: string, pattern: RegExp, type: CatalogSourceType) => {
-    // Recursive (except the flat legacy harmonic pair) — catalog filenames
-    // carry subdir paths, so untracked leftovers can sit in subdirs too.
-    let names: string[] = [];
+  const scan = (tag: OrphanTag, pattern: RegExp, type: CatalogSourceType) => {
+    let names: string[];
     try {
-      names = tag === 'harmonic' ? fs.readdirSync(dirPath).filter((f) => pattern.test(f)) : listDataFilesRecursive(dirPath, pattern);
+      names = listDataFilesRecursive(mgr.dataDir, pattern);
     } catch {
       return;
     }
     for (const f of names) {
-      if (referenced.has(`${tag}:${f}`)) continue;
+      if (referenced.has(f)) continue;
       let sizeBytes: number;
       try {
-        sizeBytes = fs.statSync(path.join(dirPath, f)).size;
+        sizeBytes = fs.statSync(path.join(mgr.dataDir, f)).size;
       } catch {
         continue;
       }
       results.push({
         id: `orphan:${tag}:${f}`, catalogSourceId: null, type, name: f,
-        files: [f], dir: tag, sizeBytes, downloadedAt: null, status: 'active', autoUpdate: false,
+        files: [f], sizeBytes, downloadedAt: null, status: 'active', autoUpdate: false,
       });
     }
   };
-  scan('harmonic', mgr.dirs.harmonic, /^HARMONIC(\.IDX)?$|^HARMONICS_NO_US(\.IDX)?$/i, 'harmonic');
-  scan('grib', mgr.dirs.grib2, /\.(grb2|grib2|grb|grib)$/i, 'grib2');
-  scan('utcef', mgr.dirs.utcef, /\.utcef(\.gz)?$/i, 'utcef');
+  scan('harmonic', /^HARMONIC(\.IDX)?$|^HARMONICS_NO_US(\.IDX)?$/i, 'harmonic');
+  scan('grib', /\.(grb2|grib2|grb|grib)$/i, 'grib2');
+  scan('utcef', /\.utcef(\.gz)?$/i, 'utcef');
   return results;
 }
 
@@ -218,10 +208,9 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     const manifest = readManifest(mgr.manifestPath);
     const install = manifest.installs.find((i) => i.id === id);
     if (install) {
-      const dirPath = dirForTag(install.dir, mgr.dirs);
-      const targets = install.files.map((f) => path.join(dirPath, f));
-      if (targets.some((t) => !isWithinManagedDirs(t, mgr.dirs))) {
-        res.status(400).json({ error: 'refused: install references a path outside the managed directories' });
+      const targets = install.files.map((f) => path.join(mgr.dataDir, f));
+      if (targets.some((t) => !isWithinManagedDir(t, mgr.dataDir))) {
+        res.status(400).json({ error: 'refused: install references a path outside the managed directory' });
         return;
       }
       for (const t of targets) {
@@ -234,19 +223,19 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
 
     const orphanMatch = /^orphan:(harmonic|grib|utcef):(.+)$/.exec(id);
     if (orphanMatch) {
-      const [, tag, filename] = orphanMatch;
+      const [, , filename] = orphanMatch; // tag is no longer needed to resolve a path — one shared Data Directory now
       // The filename comes from the URL param. Forward-slash subpaths are
       // legitimate (catalog downloads land in subdirs, and the orphan scan
       // reports them that way) — but reject backslashes, parent traversal,
       // and absolute paths before it ever reaches path.join.
-      // isWithinManagedDirs below re-checks the resolved result regardless.
+      // isWithinManagedDir below re-checks the resolved result regardless.
       if (filename.includes('\\') || filename.startsWith('/') || filename.split('/').includes('..')) {
         res.status(400).json({ error: 'refused: invalid filename' });
         return;
       }
-      const target = path.join(dirForTag(tag as ManifestDir, mgr.dirs), filename);
-      if (!isWithinManagedDirs(target, mgr.dirs)) {
-        res.status(400).json({ error: 'refused: path outside the managed directories' });
+      const target = path.join(mgr.dataDir, filename);
+      if (!isWithinManagedDir(target, mgr.dataDir)) {
+        res.status(400).json({ error: 'refused: path outside the managed directory' });
         return;
       }
       try {
@@ -284,8 +273,7 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
   });
 
   router.get('/storage', async (_req, res) => {
-    const dirs: StorageDirs = { dataDir: mgr.dirs.harmonic, gribDir: mgr.dirs.grib2, utcefDir: mgr.dirs.utcef, managerDir: mgr.managerDir };
-    res.json(await statStorage(dirs));
+    res.json(await statStorage(mgr.dataDir));
   });
 
   router.get('/cleanup-candidates', (req, res) => {

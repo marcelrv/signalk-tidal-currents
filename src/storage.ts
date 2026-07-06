@@ -23,16 +23,8 @@ export interface StorageStats {
   usedByPluginBytes: number;
 }
 
-/**
- * Recursively sums file sizes under `dir`, skipping any subdirectory whose
- * resolved path is in `exclude` (including `dir` itself) — used so walking
- * `managerDir` doesn't double-count `dataDir`/`gribDir`/`utcefDir` when they
- * are (as by default) subdirectories of it; those three are summed
- * separately by the caller so they're still counted when configured OUTSIDE
- * managerDir (e.g. an external OpenCPN folder).
- */
-function dirSizeBytes(dir: string, exclude: ReadonlySet<string> = new Set()): number {
-  if (exclude.has(path.resolve(dir))) return 0;
+/** Recursively sums file sizes under `dir`. */
+function dirSizeBytes(dir: string): number {
   let total = 0;
   let entries: fs.Dirent[];
   try {
@@ -43,7 +35,7 @@ function dirSizeBytes(dir: string, exclude: ReadonlySet<string> = new Set()): nu
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      total += dirSizeBytes(full, exclude);
+      total += dirSizeBytes(full);
     } else if (entry.isFile()) {
       try {
         total += fs.statSync(full).size;
@@ -55,23 +47,15 @@ function dirSizeBytes(dir: string, exclude: ReadonlySet<string> = new Set()): nu
   return total;
 }
 
-export interface StorageDirs {
-  dataDir: string;
-  gribDir: string;
-  utcefDir: string;
-  managerDir: string;
-}
-
-export async function statStorage(dirs: StorageDirs): Promise<StorageStats> {
-  // managerDir defaults to the PARENT of dataDir/gribDir/utcefDir, so walking
-  // it naively would double-count them; exclude those three from the
-  // managerDir walk and sum each of them separately instead (which also
-  // correctly counts them when a user points one outside managerDir, e.g.
-  // an external OpenCPN folder for dataDir).
-  const contentDirs = [dirs.dataDir, dirs.gribDir, dirs.utcefDir];
-  const exclude = new Set(contentDirs.map((d) => path.resolve(d)));
-  const usedByPluginBytes =
-    dirSizeBytes(dirs.managerDir, exclude) + contentDirs.reduce((sum, d) => sum + dirSizeBytes(d), 0);
+/**
+ * `dataDir` is the plugin's single configured Data Directory — manifest/
+ * catalog bookkeeping and all downloaded/manual data live under it, so one
+ * walk covers everything (no more double-count dance between separate type
+ * directories and their parent, back when those were independently
+ * configurable).
+ */
+export async function statStorage(dataDir: string): Promise<StorageStats> {
+  const usedByPluginBytes = dirSizeBytes(dataDir);
 
   let totalBytes: number | null = null;
   let freeBytes: number | null = null;
@@ -80,7 +64,7 @@ export async function statStorage(dirs: StorageDirs): Promise<StorageStats> {
     // releases (some Pi/Cerbo GX installs) may not have it.
     const statfs = (fs.promises as unknown as { statfs?: (p: string) => Promise<{ bsize: number; blocks: number; bfree: number }> }).statfs;
     if (statfs) {
-      const s = await statfs(dirs.managerDir);
+      const s = await statfs(dataDir);
       totalBytes = s.bsize * s.blocks;
       freeBytes = s.bsize * s.bfree;
     }
@@ -88,7 +72,7 @@ export async function statStorage(dirs: StorageDirs): Promise<StorageStats> {
     // degrade to usedByPluginBytes-only
   }
 
-  return { path: dirs.managerDir, totalBytes, freeBytes, usedByPluginBytes };
+  return { path: dataDir, totalBytes, freeBytes, usedByPluginBytes };
 }
 
 export interface CleanupCandidate {

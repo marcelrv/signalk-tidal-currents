@@ -95,20 +95,25 @@ Both, deliberately:
 (Signal K Admin UI → Webapps): it browses the tide/current catalog and
 downloads UTCEF, GRIB2, and harmonic datasets for your area with one tap —
 including storage checks, update detection, and per-dataset priorities, all
-into the right directories automatically. For most users that's the whole
+into a single Data Directory automatically. For most users that's the whole
 story; the rest of this section is for advanced or offline setups.
 
-The plugin reads three independent directories (all under this plugin's own
-data directory, `<server config dir>/plugin-config-data/signalk-tidal-currents/`,
-by default — Signal K's standard per-plugin storage location):
+The plugin reads **one Data Directory** (`<server config dir>/plugin-config-data/
+signalk-tidal-currents/` by default — Signal K's standard per-plugin storage
+location), searched recursively for:
 
-- *Harmonics Data Directory* (`tcdata`) — a `HARMONIC` + `HARMONIC.IDX` pair,
-- *GRIB2 Data Directory* (`grib`) — GRIB2 current files (see below),
-- *UTCEF Data Directory* (`utcef`) — `*.utcef` / `*.utcef.gz` datasets.
+- a `HARMONIC` + `HARMONIC.IDX` pair (anywhere in the tree — not just the top level),
+- GRIB2 current files (see below),
+- UTCEF (`*.utcef` / `*.utcef.gz`) datasets.
 
-Files dropped into any of them by hand are picked up automatically within a
-minute — no restart needed — so you can also populate them yourself instead
-of (or alongside) the Manager.
+The Manager webapp organizes its own downloads into `harmonic/`, `grib/`,
+`utcef/` subfolders under the Data Directory (GRIB2 and UTCEF further split
+into a subfolder per region) purely for browsability — that layout is not
+required by anything that reads the data. Files dropped in by hand are
+picked up automatically within a minute, no restart needed, **in any folder
+structure you like**: flat at the top level, mirrored from an existing
+OpenCPN `tcdata` folder (copy or symlink it in), or organized however makes
+sense to you.
 
 ### Getting harmonic files manually (fallback)
 
@@ -137,13 +142,9 @@ of (or alongside) the Manager.
 ### GRIB2 current files
 
 Drop GRIB2 files (`*.grb2`, `*.grib2`, `*.grb`, `*.grib`) containing
-current fields into the GRIB directory (plugin config → *GRIB2 Data
-Directory*; defaults to a `grib` subdirectory of this plugin's own data
-directory — independent of the Harmonics Data Directory setting, so
-pointing the latter at an external OpenCPN folder doesn't relocate the
-GRIB2 default there too). The directory is re-scanned about once a
-minute, so downloading a fresh forecast file into it takes effect without
-a restart.
+current fields anywhere under the Data Directory (plugin config →
+*Data Directory*). It's re-scanned about once a minute, so downloading a
+fresh forecast file in takes effect without a restart.
 
 What the plugin looks for inside the files:
 
@@ -309,9 +310,7 @@ data and priorities. The form exists for advanced/headless setups.
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Harmonics Data Directory | `<plugin data dir>/tcdata` | Folder with `HARMONIC` + `HARMONIC.IDX` |
-| GRIB2 Data Directory | `<plugin data dir>/grib` | Folder scanned for GRIB2 current files, independent of the other directories (see [GRIB2 current files](#grib2-current-files)) |
-| UTCEF Data Directory | `<plugin data dir>/utcef` | Folder scanned for `*.utcef` / `*.utcef.gz` datasets |
+| Data Directory | `<plugin data dir>` | Searched recursively for a `HARMONIC` + `HARMONIC.IDX` pair, GRIB2 files (see [GRIB2 current files](#grib2-current-files)), and UTCEF datasets — any folder structure underneath it works |
 | Prefer GRIB over stations | `true` | Use the GRIB forecast when both cover a position (legacy — superseded by Source Priority when set) |
 | Source Priority | `grib2, utcef, harmonic` | Order to try the three source *types*; the webapp's reorder list is the primary way to change this |
 | Publish environment.current | `true` | Emit deltas at the vessel position |

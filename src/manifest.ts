@@ -4,11 +4,7 @@
 /**
  * Local install manifest (PRD §8) — the source of truth for update
  * detection: which catalog source produced which files on disk, with which
- * hash/cycle. Lives at `<managerDir>/install-manifest.json`.
- *
- * `dir` is a symbolic tag ('harmonic'|'grib'|'utcef'), not an absolute path —
- * it's resolved against the LIVE configured directories at read time, so a
- * config change or Docker volume remount doesn't orphan the manifest.
+ * hash/cycle. Lives at `<dataDir>/install-manifest.json`.
  */
 
 import * as crypto from 'crypto';
@@ -19,16 +15,23 @@ import { CatalogSourceType } from './catalogTypes.js';
 
 export const MANIFEST_VERSION = 1;
 
-export type ManifestDir = 'harmonic' | 'grib' | 'utcef';
-
 export interface ManifestInstall {
   /** Stable id for this install: usually catalogSourceId, or `${catalogSourceId}:${region_id}` for a template multi-file install. */
   id: string;
   catalogSourceId: string;
   type: CatalogSourceType;
-  /** Filenames only, relative to the resolved `dir`. */
+  /**
+   * Paths relative to the plugin's single configured Data Directory,
+   * forward-slash joined regardless of platform — not bare filenames. The
+   * download engine organizes its own downloads into `harmonic/`, `grib/`,
+   * `utcef/` subfolders (further split by region for GRIB2/UTCEF) purely as
+   * its own convention; nothing reads `files` as implying that structure, so
+   * a manually-dropped file anywhere under Data Directory works the same.
+   * Must match `listDataFilesRecursive`'s relative-path format exactly, since
+   * per-dataset priority (PRD §5.3 Phase 3) matches lookups against these
+   * strings.
+   */
   files: string[];
-  dir: ManifestDir;
   /** Absent for template/expiry-type installs (no single hash covers multiple forecast-hour files). */
   sha256?: string;
   size_bytes: number;

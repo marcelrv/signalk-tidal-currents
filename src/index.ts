@@ -51,8 +51,6 @@ const DEFAULT_CATALOG_URL = 'https://raw.githubusercontent.com/marcelrv/signalk-
 
 interface Config {
   dataDir: string;
-  gribDir: string;
-  utcefDir: string;
   preferGrib: boolean;
   publishDelta: boolean;
   updateSeconds: number;
@@ -65,8 +63,6 @@ interface Config {
 
 const DEFAULTS: Config = {
   dataDir: '',
-  gribDir: '',
-  utcefDir: '',
   preferGrib: true,
   publishDelta: true,
   updateSeconds: 60,
@@ -79,24 +75,15 @@ const DEFAULTS: Config = {
 
 // Deliberately loose server typing: the plugin only touches a small,
 // long-stable subset of the ServerAPI surface.
-// Plugin's own storage root (Signal K's standard per-plugin data dir).
-// Harmonics and GRIB2 each get their own subdir under it by default —
-// independently, so overriding one setting doesn't drag the other's
-// default along with it (e.g. pointing dataDir at an external OpenCPN
-// folder must not relocate the GRIB2 default into that folder too).
+// Plugin's own storage root (Signal K's standard per-plugin data dir) — the
+// single Data Directory everything lives under: harmonics, GRIB2, UTCEF
+// (each in their own subfolder, purely the download engine's own tidiness
+// convention — not required by anything that reads them), plus the
+// manager's own bookkeeping (catalog cache, install manifest, priority
+// override) at the root alongside them.
 /* eslint-disable @typescript-eslint/no-explicit-any */
-function defaultDirs(app: any): { dataDir: string; gribDir: string; utcefDir: string; managerDir: string } {
-  const pluginRoot = app.getDataDirPath ? app.getDataDirPath() : '.';
-  return {
-    dataDir: path.join(pluginRoot, 'tcdata'),
-    gribDir: path.join(pluginRoot, 'grib'),
-    utcefDir: path.join(pluginRoot, 'utcef'),
-    // The manager's own files (catalog cache, install manifest, priority
-    // override) live at the plugin root itself — deliberately independent of
-    // dataDir/gribDir/utcefDir, which a user may redirect elsewhere (e.g. an
-    // external OpenCPN folder) without dragging the manager state along.
-    managerDir: pluginRoot,
-  };
+function defaultDataDir(app: any): string {
+  return app.getDataDirPath ? app.getDataDirPath() : '.';
 }
 
 /** Shared by the delta-publish loop and ManagerState.getVesselPosition — the one place that reads/validates navigation.position off the server API. */
@@ -134,8 +121,7 @@ function pluginConstructor(app: any) {
       onAnyDone: () => () => {},
     },
     manifestPath: '',
-    dirs: { harmonic: '', grib2: '', utcef: '' },
-    managerDir: '',
+    dataDir: '',
     getPriority: () => DEFAULT_PRIORITY,
     setPriority: () => { /* not started yet */ },
     getDatasetStack: () => [],
@@ -154,36 +140,23 @@ function pluginConstructor(app: any) {
       // Prefilled with the actual resolved default path (not an empty
       // sentinel) so the admin UI form shows it and a user can just click
       // Save without having to know or type a path.
-      const defaults = defaultDirs(app);
+      const defaultDir = defaultDataDir(app);
       return {
         type: 'object',
         properties: {
           dataDir: {
             type: 'string',
-            title: 'Harmonics Data Directory',
+            title: 'Data Directory',
             description:
-              'Directory containing a HARMONIC + HARMONIC.IDX pair (e.g. an OpenCPN tcdata folder).',
-            default: defaults.dataDir,
-          },
-          gribDir: {
-            type: 'string',
-            title: 'GRIB2 Data Directory',
-            description:
-              'Directory scanned for GRIB2 files (*.grb2, *.grib2, *.grb, *.grib) with gridded ' +
-              'current fields (u/v components, oceanographic discipline). New/updated files are ' +
-              'picked up automatically within a minute (independent of the Harmonics Data ' +
-              'Directory setting).',
-            default: defaults.gribDir,
-          },
-          utcefDir: {
-            type: 'string',
-            title: 'UTCEF Data Directory',
-            description:
-              'Directory scanned for UTCEF files (*.utcef, *.utcef.gz) with harmonic current ' +
-              'stations (harmonic_constituents_currents). These are full 2D vectors, so every ' +
-              'UTCEF current station gives a real set/drift direction. New/updated files are ' +
-              'picked up automatically within a minute (independent of the other directories).',
-            default: defaults.utcefDir,
+              'Single directory for all tidal-current data: a HARMONIC + HARMONIC.IDX pair, GRIB2 ' +
+              'files (*.grb2, *.grib2, *.grb, *.grib), and UTCEF files (*.utcef, *.utcef.gz) are all ' +
+              'found anywhere under this directory, searched recursively. The Tidal Currents Manager ' +
+              'webapp organizes its own downloads into harmonic/grib/utcef subfolders (further split ' +
+              'by region for GRIB2/UTCEF) purely for browsability — nothing requires that structure, ' +
+              'so files you drop in yourself (e.g. from Saildocs, or an existing OpenCPN tcdata ' +
+              'folder copied/symlinked in) work in any layout. New/updated files are picked up ' +
+              'automatically within a minute, no restart needed.',
+            default: defaultDir,
           },
           preferGrib: {
             type: 'boolean',
@@ -258,40 +231,31 @@ function pluginConstructor(app: any) {
 
     start(options: Partial<Config>) {
       const config: Config = { ...DEFAULTS, ...options };
-      const defaults = defaultDirs(app);
-      const dir = config.dataDir && config.dataDir.trim() !== '' ? config.dataDir : defaults.dataDir;
-      const gribDir =
-        config.gribDir && config.gribDir.trim() !== '' ? config.gribDir : defaults.gribDir;
-      const utcefDir =
-        config.utcefDir && config.utcefDir.trim() !== '' ? config.utcefDir : defaults.utcefDir;
-      const managerDir = defaults.managerDir;
+      const dataDir = config.dataDir && config.dataDir.trim() !== '' ? config.dataDir : defaultDataDir(app);
 
-      // Create both directories (default or user-specified) if missing, so
+      // Create the directory (default or user-specified) if missing, so
       // saving the config is enough — no manual mkdir before dropping in a
-      // HARMONIC pair or GRIB2 files. Mode 0o777 (not 0o666): a directory
-      // needs its execute/search bit for others to traverse into it or open
-      // files inside by path, not just the read/write bits — omitting x
-      // would make the directory unusable to any other account despite
-      // "permissions" nominally being set. Runs on every start(), not just
-      // first creation, so a directory that ended up owned/restricted by a
-      // different account (e.g. a server run as root vs. a non-root Docker
-      // user) self-heals instead of failing with EACCES on next use.
-      // mkdirSync's mode is subject to the process umask, so chmod
-      // afterwards to force it exactly. On Windows, POSIX mode bits mostly
-      // don't apply (chmod there only toggles the read-only attribute) —
-      // harmless no-op, not an error, so wrapped the same as any other
-      // filesystem access here.
-      for (const d of [dir, gribDir, utcefDir, managerDir]) {
-        try {
-          fs.mkdirSync(d, { recursive: true, mode: 0o777 });
-          fs.chmodSync(d, 0o777);
-        } catch (e) {
-          console.warn(`[${PLUGIN_ID}] could not create/chmod directory ${d}: ${e}`);
-        }
+      // HARMONIC pair, GRIB2, or UTCEF files. Mode 0o777 (not 0o666): a
+      // directory needs its execute/search bit for others to traverse into
+      // it or open files inside by path, not just the read/write bits —
+      // omitting x would make the directory unusable to any other account
+      // despite "permissions" nominally being set. Runs on every start(),
+      // not just first creation, so a directory that ended up
+      // owned/restricted by a different account (e.g. a server run as root
+      // vs. a non-root Docker user) self-heals instead of failing with
+      // EACCES on next use. mkdirSync's mode is subject to the process
+      // umask, so chmod afterwards to force it exactly. On Windows, POSIX
+      // mode bits mostly don't apply (chmod there only toggles the
+      // read-only attribute) — harmless no-op, not an error.
+      try {
+        fs.mkdirSync(dataDir, { recursive: true, mode: 0o777 });
+        fs.chmodSync(dataDir, 0o777);
+      } catch (e) {
+        console.warn(`[${PLUGIN_ID}] could not create/chmod directory ${dataDir}: ${e}`);
       }
 
-      state.grib = createGribSource(gribDir);
-      state.utcef = createUtcefSource(utcefDir);
+      state.grib = createGribSource(dataDir);
+      state.utcef = createUtcefSource(dataDir);
       state.preferGrib = config.preferGrib;
 
       // Tidal Currents Manager (PRD docs/PRD-tidal-currents-manager.md, Phase
@@ -299,7 +263,7 @@ function pluginConstructor(app: any) {
       // priority.json (written by the webapp's reorder list) takes
       // precedence over the plain config form's sourcePriority, which is
       // just the initial/admin-form fallback.
-      const priorityOverride = loadPriorityOverride(managerDir);
+      const priorityOverride = loadPriorityOverride(dataDir);
       let currentPriority: SourceType[] =
         priorityOverride.order ?? (isValidPriorityOrder(config.sourcePriority) ? config.sourcePriority : DEFAULT_PRIORITY);
       // Per-dataset stack (PRD §5.3 Phase 3) — persisted install ids, top wins.
@@ -308,11 +272,11 @@ function pluginConstructor(app: any) {
 
       const catalogClient = createCatalogClient({
         url: config.catalogUrl && config.catalogUrl.trim() !== '' ? config.catalogUrl : DEFAULT_CATALOG_URL,
-        cacheFile: path.join(managerDir, 'catalog-cache.json'),
+        cacheFile: path.join(dataDir, 'catalog-cache.json'),
       });
-      const manifestPath = path.join(managerDir, 'install-manifest.json');
+      const manifestPath = path.join(dataDir, 'install-manifest.json');
       const downloadEngine = createDownloadEngine({
-        dirs: { harmonic: dir, grib2: gribDir, utcef: utcefDir },
+        dataDir,
         manifestPath,
         catalog: catalogClient,
         catalogUrl: config.catalogUrl && config.catalogUrl.trim() !== '' ? config.catalogUrl : DEFAULT_CATALOG_URL,
@@ -333,8 +297,7 @@ function pluginConstructor(app: any) {
         state.utcef?.invalidate();
         updateStatus();
       });
-      mgr.dirs = { harmonic: dir, grib2: gribDir, utcef: utcefDir };
-      mgr.managerDir = managerDir;
+      mgr.dataDir = dataDir;
 
       // Memoized per-dataset rank for resolveVector (PRD §5.3 Phase 3). It
       // runs per timeline SAMPLE, so the manifest/dirs can't be re-read per
@@ -364,16 +327,16 @@ function pluginConstructor(app: any) {
           } catch {
             // no manifest yet — keep the sentinel stamp
           }
-          const gribFiles = listDataFilesRecursive(gribDir, GRIB_EXT_RE);
-          const utcefFiles = listDataFilesRecursive(utcefDir, UTCEF_EXT_RE);
+          const gribFiles = listDataFilesRecursive(dataDir, GRIB_EXT_RE);
+          const utcefFiles = listDataFilesRecursive(dataDir, UTCEF_EXT_RE);
           stamp += `|${gribFiles.join(',')}|${utcefFiles.join(',')}|${currentDatasets.join(',')}|${currentPriority.join(',')}`;
           if (stamp !== rankStamp) {
             rankStamp = stamp;
             const installs = readManifest(manifestPath).installs;
-            const referenced = new Set(installs.flatMap((i) => i.files.map((f) => `${i.dir}:${f}`)));
+            const referenced = new Set(installs.flatMap((i) => i.files));
             const orphans = [
-              ...gribFiles.filter((f) => !referenced.has(`grib:${f}`)).map((f) => ({ id: `orphan:grib:${f}`, type: 'grib2' as const, files: [f] })),
-              ...utcefFiles.filter((f) => !referenced.has(`utcef:${f}`)).map((f) => ({ id: `orphan:utcef:${f}`, type: 'utcef' as const, files: [f] })),
+              ...gribFiles.filter((f) => !referenced.has(f)).map((f) => ({ id: `orphan:grib:${f}`, type: 'grib2' as const, files: [f] })),
+              ...utcefFiles.filter((f) => !referenced.has(f)).map((f) => ({ id: `orphan:utcef:${f}`, type: 'utcef' as const, files: [f] })),
             ];
             // Installs before orphans: resolveDatasetStack's type sort is
             // stable, so within a type, manifest installs keep outranking
@@ -388,13 +351,13 @@ function pluginConstructor(app: any) {
       mgr.setPriority = (order) => {
         currentPriority = order;
         state.sourcePriority = order;
-        savePriorityOverrideAtomic(managerDir, order, currentDatasets);
+        savePriorityOverrideAtomic(dataDir, order, currentDatasets);
         invalidateRank();
       };
       mgr.getDatasetStack = () => currentDatasets;
       mgr.setDatasetStack = (ids) => {
         currentDatasets = ids;
-        savePriorityOverrideAtomic(managerDir, currentPriority, ids);
+        savePriorityOverrideAtomic(dataDir, currentPriority, ids);
         invalidateRank();
       };
 
@@ -453,15 +416,15 @@ function pluginConstructor(app: any) {
           app.setPluginStatus(`Loaded ${parts.join(' + ')}`);
         } else {
           app.setPluginError(
-            `No current data: ${state.error ?? 'no harmonics pair'}, no GRIB2 files in ${gribDir}, ` +
-              `and no UTCEF files in ${utcefDir}`,
+            `No current data: ${state.error ?? 'no harmonics pair'}, no GRIB2 files, and no UTCEF ` +
+              `files found under ${dataDir}`,
           );
         }
       };
 
       const attemptLoad = (): boolean => {
         try {
-          const data: HarmonicsData = loadHarmonicsDir(dir);
+          const data: HarmonicsData = loadHarmonicsDir(dataDir);
           state.data = data;
           state.error = null;
           updateStatus();

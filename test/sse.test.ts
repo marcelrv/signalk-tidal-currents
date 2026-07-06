@@ -25,9 +25,7 @@ import { CatalogDocument, CatalogSource } from '../dist/catalogTypes.js';
 
 function tmpDirs() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'signalk-tidal-currents-sse-'));
-  const dirs = { harmonic: path.join(root, 'tcdata'), grib2: path.join(root, 'grib'), utcef: path.join(root, 'utcef') };
-  for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true });
-  return { root, dirs, manifestPath: path.join(root, 'install-manifest.json') };
+  return { root, manifestPath: path.join(root, 'install-manifest.json') };
 }
 
 function region() {
@@ -109,13 +107,12 @@ function createRealRouter(): { router: ManagerRouterLike; server: http.Server } 
 }
 
 function baseMgr(overrides: Partial<ManagerState>): ManagerState {
-  const { dirs, manifestPath, root } = tmpDirs();
+  const { manifestPath, root } = tmpDirs();
   return {
     catalog: fakeCatalogClient([]),
-    downloads: createDownloadEngine({ dirs, manifestPath, catalog: fakeCatalogClient([]), catalogUrl: 'https://example.org/catalog.json' }),
+    downloads: createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([]), catalogUrl: 'https://example.org/catalog.json' }),
     manifestPath,
-    dirs,
-    managerDir: root,
+    dataDir: root,
     getPriority: () => DEFAULT_PRIORITY,
     setPriority: () => {},
     getDatasetStack: () => [],
@@ -139,15 +136,15 @@ test('SSE: a quick job yields at least one data frame and the connection self-cl
   });
   const port1 = await listen(contentServer);
   try {
-    const { dirs, manifestPath } = tmpDirs();
+    const { root, manifestPath } = tmpDirs();
     const source: CatalogSource = {
       id: 'quick', source: 'test', type: 'harmonic', name: 'Quick', description: '',
       contributor: 'Test', url: `http://127.0.0.1:${port1}`, tags: [], region: region(),
       update_check: { method: 'sha256', last_checked: new Date().toISOString() },
       files: [{ filename: 'HARMONIC', url: `http://127.0.0.1:${port1}/f`, size_bytes: 5 }],
     };
-    const downloads = createDownloadEngine({ dirs, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
-    const mgr = baseMgr({ downloads, dirs, manifestPath });
+    const downloads = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
+    const mgr = baseMgr({ downloads, dataDir: root, manifestPath });
     const { router, server } = createRealRouter();
     registerManagerRoutes(router, mgr);
     const port2 = await listen(server);
@@ -201,15 +198,15 @@ test('SSE: an aborted client connection does not crash the server (indirect: ser
   });
   const port1 = await listen(contentServer);
   try {
-    const { dirs, manifestPath } = tmpDirs();
+    const { root, manifestPath } = tmpDirs();
     const source: CatalogSource = {
       id: 'slow', source: 'test', type: 'harmonic', name: 'Slow', description: '',
       contributor: 'Test', url: `http://127.0.0.1:${port1}`, tags: [], region: region(),
       update_check: { method: 'sha256', last_checked: new Date().toISOString() },
       files: [{ filename: 'HARMONIC', url: `http://127.0.0.1:${port1}/f`, size_bytes: 30 }],
     };
-    const downloads = createDownloadEngine({ dirs, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
-    const mgr = baseMgr({ downloads, dirs, manifestPath });
+    const downloads = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
+    const mgr = baseMgr({ downloads, dataDir: root, manifestPath });
     const { router, server } = createRealRouter();
     registerManagerRoutes(router, mgr);
     const port2 = await listen(server);

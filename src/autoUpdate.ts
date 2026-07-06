@@ -23,8 +23,8 @@ import * as path from 'path';
 import { CatalogClient } from './catalog.js';
 import { computeInstallStatus } from './datasetStatus.js';
 import { DownloadEngine } from './downloads.js';
-import { ManifestDir, ManifestInstall, readManifest } from './manifest.js';
-import { StorageDirs, statStorage } from './storage.js';
+import { ManifestInstall, readManifest } from './manifest.js';
+import { statStorage } from './storage.js';
 
 const DISK_FULL_THRESHOLD = 0.9;
 
@@ -32,8 +32,8 @@ export interface AutoUpdateDeps {
   catalog: CatalogClient;
   downloads: DownloadEngine;
   manifestPath: string;
-  dirs: { harmonic: string; grib2: string; utcef: string };
-  managerDir: string;
+  /** The plugin's single configured Data Directory. */
+  dataDir: string;
 }
 
 export interface AutoUpdateResult {
@@ -44,15 +44,8 @@ export interface AutoUpdateResult {
   skippedDiskFull: string[];
 }
 
-function dirForTag(tag: ManifestDir, dirs: AutoUpdateDeps['dirs']): string {
-  if (tag === 'grib') return dirs.grib2;
-  if (tag === 'utcef') return dirs.utcef;
-  return dirs.harmonic;
-}
-
-function filesExist(install: ManifestInstall, dirs: AutoUpdateDeps['dirs']): boolean {
-  const dirPath = dirForTag(install.dir, dirs);
-  return install.files.every((f) => fs.existsSync(path.join(dirPath, f)));
+function filesExist(install: ManifestInstall, dataDir: string): boolean {
+  return install.files.every((f) => fs.existsSync(path.join(dataDir, f)));
 }
 
 export async function runAutoUpdateSweep(deps: AutoUpdateDeps): Promise<AutoUpdateResult> {
@@ -63,7 +56,7 @@ export async function runAutoUpdateSweep(deps: AutoUpdateDeps): Promise<AutoUpda
   const candidates = manifest.installs.filter((install) => {
     if (!install.autoUpdate) return false;
     const source = catalogDoc?.sources.find((s) => s.id === install.catalogSourceId);
-    const status = computeInstallStatus(install, source, filesExist(install, deps.dirs));
+    const status = computeInstallStatus(install, source, filesExist(install, deps.dataDir));
     return status.status === 'update-available';
   });
   if (candidates.length === 0) return result;
@@ -75,8 +68,7 @@ export async function runAutoUpdateSweep(deps: AutoUpdateDeps): Promise<AutoUpda
       .map((j) => j.catalogSourceId),
   );
 
-  const dirs: StorageDirs = { dataDir: deps.dirs.harmonic, gribDir: deps.dirs.grib2, utcefDir: deps.dirs.utcef, managerDir: deps.managerDir };
-  const storage = await statStorage(dirs);
+  const storage = await statStorage(deps.dataDir);
   let projectedUsedBytes = storage.totalBytes !== null && storage.freeBytes !== null ? storage.totalBytes - storage.freeBytes : null;
 
   for (const install of candidates) {

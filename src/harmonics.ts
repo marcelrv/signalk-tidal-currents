@@ -444,28 +444,37 @@ export function findStationHarmonics(
 }
 
 /**
- * Locate a harmonic data/index pair in a directory: any `<base>.IDX` file
- * (case-insensitive) with a matching `<base>` data file — covers both the
- * classic `HARMONIC`/`HARMONIC.IDX` naming and OpenCPN's
- * `HARMONICS_NO_US`/`HARMONICS_NO_US.IDX`. Prefers `HARMONIC` when several
- * pairs exist.
+ * Locate a harmonic data/index pair anywhere under a directory (recursive,
+ * bounded depth — the pair may sit at the root, in the download engine's own
+ * `harmonic/` subfolder convention, or wherever a user manually dropped it):
+ * any `<base>.IDX` file (case-insensitive) with a matching `<base>` data file
+ * in the SAME folder — covers both the classic `HARMONIC`/`HARMONIC.IDX`
+ * naming and OpenCPN's `HARMONICS_NO_US`/`HARMONICS_NO_US.IDX`. Prefers
+ * `HARMONIC` when several pairs exist.
  */
-export function findHarmonicFiles(dir: string): { harmonic: string; idx: string } | null {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return null;
-  }
+export function findHarmonicFiles(dir: string, maxDepth = 4): { harmonic: string; idx: string } | null {
   const pairs: Array<{ harmonic: string; idx: string }> = [];
-  for (const f of entries) {
-    if (!f.toLowerCase().endsWith('.idx')) continue;
-    const base = f.slice(0, -4);
-    const data = entries.find((e) => e === base || e.toLowerCase() === base.toLowerCase());
-    if (data && data.toLowerCase() !== f.toLowerCase()) {
-      pairs.push({ harmonic: path.join(dir, data), idx: path.join(dir, f) });
+  const walk = (current: string, depth: number): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
     }
-  }
+    const names = entries.map((e) => e.name);
+    for (const f of names) {
+      if (!f.toLowerCase().endsWith('.idx')) continue;
+      const base = f.slice(0, -4);
+      const data = names.find((e) => e === base || e.toLowerCase() === base.toLowerCase());
+      if (data && data.toLowerCase() !== f.toLowerCase()) {
+        pairs.push({ harmonic: path.join(current, data), idx: path.join(current, f) });
+      }
+    }
+    if (depth < maxDepth) {
+      for (const e of entries) if (e.isDirectory()) walk(path.join(current, e.name), depth + 1);
+    }
+  };
+  walk(dir, 0);
   if (pairs.length === 0) return null;
   pairs.sort((a, b) => {
     const pa = path.basename(a.harmonic).toLowerCase() === 'harmonic' ? 0 : 1;

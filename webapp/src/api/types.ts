@@ -87,15 +87,12 @@ export interface CatalogState {
   warnings: string[];
 }
 
-export type ManifestDir = 'harmonic' | 'grib' | 'utcef';
-
 export interface DatasetEntry {
   id: string;
   catalogSourceId: string | null;
   type: CatalogSourceType;
   name: string;
   files: string[];
-  dir: ManifestDir;
   sizeBytes: number;
   downloadedAt: string | null;
   cycle?: string;

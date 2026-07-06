@@ -3,10 +3,12 @@
 
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadHarmonicsDir, meridianToSeconds, slugify } from '../dist/harmonics.js';
+import { findHarmonicFiles, loadHarmonicsDir, meridianToSeconds, slugify } from '../dist/harmonics.js';
 import {
   currentSampleAt,
   currentSpeedAt,
@@ -133,4 +135,23 @@ test('utility functions', () => {
   assert.equal(meridianToSeconds('-3:30'), -12600);
   assert.equal(meridianToSeconds('+1:00'), 3600);
   assert.equal(slugify('Doove Balg, Courants (heure Fr)'), 'doove-balg-courants-heure-fr');
+});
+
+test('findHarmonicFiles: locates a pair nested arbitrarily deep, not just at the directory root', () => {
+  // The plugin now points every reader at ONE shared Data Directory rather
+  // than a dedicated per-type folder — a harmonic pair may sit in the
+  // download engine's own harmonic/ convention, or wherever a user copied
+  // an existing OpenCPN tcdata folder in. Either way it must still be found.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'signalk-tidal-currents-harmonics-nested-'));
+  const nested = path.join(root, 'some', 'random', 'path');
+  fs.mkdirSync(nested, { recursive: true });
+  fs.cpSync(path.join(FIXTURES, 'HARMONIC'), path.join(nested, 'HARMONIC'));
+  fs.cpSync(path.join(FIXTURES, 'HARMONIC.IDX'), path.join(nested, 'HARMONIC.IDX'));
+
+  const found = findHarmonicFiles(root);
+  assert.ok(found);
+  assert.equal(found!.harmonic, path.join(nested, 'HARMONIC'));
+
+  const nestedData = loadHarmonicsDir(root);
+  assert.equal(nestedData.records.size, data.records.size);
 });
