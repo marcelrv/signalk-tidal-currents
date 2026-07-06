@@ -70,7 +70,7 @@ export function SourceListRow({
         </span>
       </button>
       {!compact && dataset && <DeleteDatasetButton id={dataset.id} name={row.name} sizeBytes={dataset.sizeBytes} />}
-      <DownloadButton source={row.source} regionId={row.regionId} fileType={row.fileType} status={status} />
+      <DownloadButton source={row.source} regionId={row.regionId} fileType={row.fileType} variant={row.variant} status={status} />
     </li>
   );
 }

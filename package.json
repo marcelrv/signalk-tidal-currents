@@ -1,7 +1,7 @@
 {
   "name": "signalk-tidal-currents",
   "version": "0.2.0",
-    "description": "Tidal current predictions from GRIB2, UTCEF and harmonic data sources",
+  "description": "Tidal current predictions from GRIB2, UTCEF and harmonic data sources",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -72,5 +72,8 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "basic-ftp": "^6.0.1"
   }
 }

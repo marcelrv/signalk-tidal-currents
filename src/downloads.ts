@@ -16,6 +16,8 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { Client as FtpClient } from 'basic-ftp';
+
 import { CatalogClient } from './catalog.js';
 import {
   CatalogFile,
@@ -114,15 +116,27 @@ function pad3(n: number): string {
 
 /** Chooses the forecast cycle (YYYYMMDD + HH) to download: `update_check.latest_cycle` when known, else the latest `cycle_hours` entry not after the current UTC hour. */
 function chooseCycle(file: TemplateCatalogFile, latestCycle: string | undefined): { ymd: string; hh: string; iso: string } {
-  if (latestCycle) {
-    const d = new Date(latestCycle);
-    return { ymd: d.toISOString().slice(0, 10).replace(/-/g, ''), hh: d.toISOString().slice(11, 13), iso: latestCycle };
-  }
-  const now = new Date();
   const hours = [...file.cycle_hours].map((h) => parseInt(h, 10)).filter((h) => Number.isFinite(h)).sort((a, b) => a - b);
-  const nowHH = now.getUTCHours();
-  let chosen = [...hours].reverse().find((h) => h <= nowHH);
-  let day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const now = new Date();
+  // The catalog's latest_cycle is the most recent cycle the source knows about
+  // across all its files. If the latest cycle hour is valid for this file,
+  // use it. Otherwise fall back to the current time (e.g. BSH publishes analysis
+  // at 00Z but forecast-day files only at 12Z; at 00Z the latest_cycle is 00Z
+  // but we want today's 12Z file if it has already been published).
+  let upperBound: Date;
+  if (latestCycle && hours.length > 0) {
+    const d = new Date(latestCycle);
+    if (hours.includes(d.getUTCHours())) {
+      upperBound = d;
+    } else {
+      upperBound = now;
+    }
+  } else {
+    upperBound = now;
+  }
+  const boundHH = upperBound.getUTCHours();
+  let chosen = [...hours].reverse().find((h) => h <= boundHH);
+  let day = new Date(Date.UTC(upperBound.getUTCFullYear(), upperBound.getUTCMonth(), upperBound.getUTCDate()));
   if (chosen === undefined) {
     // Every cycle today is still in the future — use yesterday's latest cycle.
     chosen = hours[hours.length - 1];
@@ -198,6 +212,63 @@ async function writeChunk(stream: fs.WriteStream, chunk: Uint8Array): Promise<vo
   await new Promise<void>((resolve) => stream.once('drain', () => resolve()));
 }
 
+/** Streams one FTP URL into `<target>.part`, then hashes and renames it into place on success. */
+async function downloadOneFtp(
+  url: string,
+  target: string,
+  onProgress: (deltaBytes: number, totalBytes: number | null) => void,
+  signal: AbortSignal,
+): Promise<{ sha256: string; size: number }> {
+  const parsed = new URL(url);
+  const client = new FtpClient();
+  client.ftp.verbose = false;
+
+  const partPath = `${target}.part`;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const out = fs.createWriteStream(partPath);
+
+  let lastOverall = 0;
+  client.trackProgress((info) => {
+    const delta = info.bytesOverall - lastOverall;
+    if (delta > 0) {
+      onProgress(delta, null);
+      lastOverall = info.bytesOverall;
+    }
+  });
+
+  const cleanup = () => {
+    try { client.close(); } catch { /* ignore */ }
+    try { out.destroy(); } catch { /* ignore */ }
+  };
+  signal.addEventListener('abort', cleanup, { once: true });
+
+  try {
+    await client.access({
+      host: parsed.hostname,
+      port: parsed.port ? parseInt(parsed.port, 10) : 21,
+      user: parsed.username || 'anonymous',
+      password: parsed.password || 'anonymous@',
+      secure: false,
+    });
+    await client.downloadTo(out, parsed.pathname);
+    await new Promise<void>((resolve) => out.end(resolve));
+  } catch (e) {
+    cleanup();
+    try { fs.unlinkSync(partPath); } catch { /* best effort */ }
+    throw e;
+  } finally {
+    signal.removeEventListener('abort', cleanup);
+    cleanup();
+  }
+
+  fs.renameSync(partPath, target);
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of fs.createReadStream(target)) {
+    hash.update(chunk);
+  }
+  return { sha256: hash.digest('hex'), size: fs.statSync(target).size };
+}
+
 /** Streams one URL into `<target>.part`, hashing incrementally; renames into place on success. */
 async function downloadOne(
   url: string,
@@ -205,6 +276,9 @@ async function downloadOne(
   onProgress: (deltaBytes: number, totalBytes: number | null) => void,
   signal: AbortSignal,
 ): Promise<{ sha256: string; size: number }> {
+  if (url.startsWith('ftp://')) {
+    return downloadOneFtp(url, target, onProgress, signal);
+  }
   const resp = await fetch(url, { signal });
   if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status} fetching ${url}`);
   const totalBytes = (() => {
