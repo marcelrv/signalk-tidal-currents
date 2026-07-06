@@ -29,13 +29,15 @@ export function totalSizeBytes(source: CatalogSource): number | null {
  * happens to be first in the catalog's file list.
  */
 export interface SourceRow {
-  /** Unique across all rows: `source.id`, or `${source.id}:${region_id}:${fileType}` for a per-region row. */
+  /** Unique across all rows: `source.id`, or `${source.id}:${region_id}:${fileType}${:variant}` for a per-region row. */
   key: string;
   source: CatalogSource;
   /** Set only for a per-region row — pass straight through as the download selector's region_id. */
   regionId?: string;
   /** Set only for a per-region row. A region can carry BOTH a forecast and a nowcast file under the SAME region_id (observed in the real NOAA catalog) — region_id alone doesn't uniquely identify a row/download, this does. */
   fileType?: 'forecast' | 'nowcast';
+  /** Set when region_id + fileType alone still resolve to more than one file (e.g. BSH's +24h/+48h/+72h forecast-day files). */
+  variant?: string;
   name: string;
   regionName: string;
   geometry: GeoJsonGeometry;
@@ -46,11 +48,12 @@ export function rowsForSource(source: CatalogSource): SourceRow[] {
   const templateFiles = source.files.filter(isTemplateFile);
   if (templateFiles.length > 1) {
     return templateFiles.map((f) => ({
-      key: `${source.id}:${f.region_id}:${f.type}`,
+      key: `${source.id}:${f.region_id}:${f.type}${f.variant ? `:${f.variant}` : ''}`,
       source,
       regionId: f.region_id,
       fileType: f.type,
-      name: `${source.name} — ${f.name} (${f.type})`,
+      variant: f.variant,
+      name: `${source.name} — ${f.name}${f.variant ? ` (${f.variant})` : ` (${f.type})`}`,
       regionName: f.name,
       geometry: f.boundary_geometry,
       sizeBytes: null, // catalog never gives forecast files a size up front
@@ -74,10 +77,11 @@ export function rowsForSources(sources: CatalogSource[]): SourceRow[] {
   return sources.flatMap(rowsForSource);
 }
 
-/** `sourceId` + `regionId` (+ `fileType`, when a region has both a forecast and nowcast file) together, for keying per-download-job state — a source can have several downloads in flight at once, each needing its own key. */
-export function downloadKeyFor(sourceId: string, regionId?: string, fileType?: 'forecast' | 'nowcast'): string {
+/** `sourceId` + `regionId` (+ `fileType`, + `variant`) together, for keying per-download-job state — a source can have several downloads in flight at once, each needing its own key. */
+export function downloadKeyFor(sourceId: string, regionId?: string, fileType?: 'forecast' | 'nowcast', variant?: string): string {
   if (!regionId) return sourceId;
-  return fileType ? `${sourceId}:${regionId}:${fileType}` : `${sourceId}:${regionId}`;
+  const base = fileType ? `${sourceId}:${regionId}:${fileType}` : `${sourceId}:${regionId}`;
+  return variant ? `${base}:${variant}` : base;
 }
 
 export function datasetForRow(datasets: DatasetEntry[], row: SourceRow): DatasetEntry | undefined {
@@ -85,7 +89,8 @@ export function datasetForRow(datasets: DatasetEntry[], row: SourceRow): Dataset
     (d) =>
       d.catalogSourceId === row.source.id &&
       (row.regionId === undefined || d.regionId === row.regionId) &&
-      (row.fileType === undefined || d.fileType === row.fileType),
+      (row.fileType === undefined || d.fileType === row.fileType) &&
+      (row.variant === undefined || d.variant === row.variant),
   );
 }
 
@@ -95,7 +100,8 @@ export function rowForDataset(rows: SourceRow[], dataset: DatasetEntry): SourceR
     (r) =>
       r.source.id === dataset.catalogSourceId &&
       (dataset.regionId === undefined || r.regionId === dataset.regionId) &&
-      (dataset.fileType === undefined || r.fileType === dataset.fileType),
+      (dataset.fileType === undefined || r.fileType === dataset.fileType) &&
+      (dataset.variant === undefined || r.variant === dataset.variant),
   );
 }
 
@@ -151,7 +157,7 @@ export function datasetCoverageAreaSqDeg(dataset: DatasetEntry, sources: Catalog
   if (dataset.regionId) {
     const file = source.files
       .filter(isTemplateFile)
-      .find((f) => f.region_id === dataset.regionId && (dataset.fileType === undefined || f.type === dataset.fileType));
+      .find((f) => f.region_id === dataset.regionId && (dataset.fileType === undefined || f.type === dataset.fileType) && (dataset.variant === undefined || f.variant === dataset.variant));
     if (file) {
       const bbox = geometryBbox(file.boundary_geometry);
       if (bbox) return bboxAreaSqDeg(bbox);

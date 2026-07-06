@@ -84,7 +84,7 @@ export async function runAutoUpdateSweep(deps: AutoUpdateDeps): Promise<AutoUpda
       }
     }
     try {
-      deps.downloads.start(install.catalogSourceId, { region_id: install.regionId, type: install.fileType });
+      deps.downloads.start(install.catalogSourceId, { region_id: install.regionId, type: install.fileType, variant: install.variant });
       result.started.push(install.id);
       if (projectedUsedBytes !== null) projectedUsedBytes += install.size_bytes;
     } catch {

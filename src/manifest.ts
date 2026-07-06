@@ -42,6 +42,8 @@ export interface ManifestInstall {
   regionId?: string;
   /** Present for template installs — a region can carry BOTH a `forecast` and a `nowcast` file under the same region_id (observed in the real NOAA catalog), so region_id alone doesn't uniquely identify which one this install is. */
   fileType?: 'forecast' | 'nowcast';
+  /** Present for template installs where region_id + fileType still doesn't uniquely identify the file (e.g. BSH's separate +24h/+48h/+72h forecast-day files, all "forecast" under the same region_id). */
+  variant?: string;
   /** Opt-in "keep fresh when online" (PRD §5.5 Phase 2) — absent/false by default. Only meaningful for manifest-tracked installs (not orphans), since it drives `runAutoUpdateSweep`'s re-download decision. */
   autoUpdate?: boolean;
 }

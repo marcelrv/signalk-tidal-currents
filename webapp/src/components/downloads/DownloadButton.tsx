@@ -14,20 +14,23 @@ export function DownloadButton({
   source,
   regionId,
   fileType,
+  variant,
   status,
 }: {
   source: CatalogSource;
-  /** Present when this button represents one region of a multi-region source — passed through as the download selector. */
+  /** Present when this button represents one region of a multi-region source — passed through as the download selector's region_id. */
   regionId?: string;
   /** Present when that region has both a forecast and a nowcast file (real NOAA catalog shape) — region_id alone wouldn't uniquely select one. */
   fileType?: 'forecast' | 'nowcast';
+  /** Present when region_id + fileType alone still resolve to more than one file (e.g. BSH's +24h/+48h/+72h forecast-day files). */
+  variant?: string;
   status: DisplayStatus;
 }) {
   const startDownload = useAppStore((s) => s.startDownload);
   const pollDownload = useAppStore((s) => s.pollDownload);
   const downloads = useAppStore((s) => s.downloads);
   const storage = useAppStore((s) => s.storage);
-  const jobId = useAppStore((s) => s.jobIdBySource[downloadKeyFor(source.id, regionId, fileType)]) ?? null;
+  const jobId = useAppStore((s) => s.jobIdBySource[downloadKeyFor(source.id, regionId, fileType, variant)]) ?? null;
   const [confirmingOverfull, setConfirmingOverfull] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const job = jobId ? downloads[jobId] : undefined;
@@ -44,7 +47,7 @@ export function DownloadButton({
   const begin = async () => {
     setError(null);
     try {
-      await startDownload(source.id, regionId ? { region_id: regionId, type: fileType } : undefined);
+      await startDownload(source.id, regionId ? { region_id: regionId, type: fileType, variant } : undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

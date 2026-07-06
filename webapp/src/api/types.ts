@@ -41,6 +41,8 @@ export interface TemplateCatalogFile {
   description: string;
   boundary_geometry: GeoJsonGeometry;
   type: 'forecast' | 'nowcast';
+  /** Disambiguates when region_id + type alone still resolve to more than one file (e.g. BSH's separate +24h/+48h/+72h forecast-day files). */
+  variant?: string;
   url_template: string;
   forecast_hours: number[];
   cycle_hours: string[];
@@ -99,6 +101,8 @@ export interface DatasetEntry {
   regionId?: string;
   /** A region can carry both a forecast and a nowcast file (real NOAA catalog shape) — region_id alone doesn't uniquely re-select the same one. */
   fileType?: 'forecast' | 'nowcast';
+  /** Present when region_id + fileType still doesn't uniquely identify the file (e.g. BSH's +24h/+48h/+72h forecast-day files). */
+  variant?: string;
   status: 'active' | 'update-available' | 'error';
   updateCheckMethod?: 'sha256' | 'expiry';
   expiresAt?: string;

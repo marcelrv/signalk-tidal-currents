@@ -43,7 +43,7 @@ export const api = {
   getCleanupCandidates: (maxDistanceNm?: number) =>
     request<CleanupCandidatesResponse>(`/cleanup-candidates${maxDistanceNm !== undefined ? `?maxDistanceNm=${maxDistanceNm}` : ''}`),
 
-  startDownload: (sourceId: string, selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; filename?: string }) =>
+  startDownload: (sourceId: string, selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; variant?: string; filename?: string }) =>
     request<DownloadJob>('/downloads', { method: 'POST', body: JSON.stringify({ sourceId, ...selector }) }),
   getDownload: (id: string) => request<DownloadJob>(`/downloads/${encodeURIComponent(id)}`),
   listDownloads: () => request<DownloadJob[]>('/downloads'),

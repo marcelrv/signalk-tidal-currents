@@ -91,6 +91,8 @@ interface DatasetEntry {
   regionId?: string;
   /** Present for template installs — a region can carry both a forecast and a nowcast file, so region_id alone doesn't uniquely re-select the same one. */
   fileType?: 'forecast' | 'nowcast';
+  /** Present for template installs where region_id + fileType still doesn't uniquely identify the file (e.g. BSH's +24h/+48h/+72h forecast-day files). */
+  variant?: string;
   status: 'active' | 'update-available' | 'error';
   /** Present only for expiry-method (grib2 forecast) installs — the countdown fields for PRD §5.5's "expires in 14h" display. */
   updateCheckMethod?: 'sha256' | 'expiry';
@@ -130,6 +132,7 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
       cycle: install.cycle,
       regionId: install.regionId,
       fileType: install.fileType,
+      variant: install.variant,
       status,
       ...expiry,
       autoUpdate: install.autoUpdate ?? false,
@@ -285,12 +288,12 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
   });
 
   router.post('/downloads', (req, res) => {
-    const body = (req.body ?? {}) as { sourceId?: string; region_id?: string; type?: 'forecast' | 'nowcast'; filename?: string };
+    const body = (req.body ?? {}) as { sourceId?: string; region_id?: string; type?: 'forecast' | 'nowcast'; variant?: string; filename?: string };
     if (!body.sourceId) {
       res.status(400).json({ error: 'sourceId is required' });
       return;
     }
-    const selector: FileSelector = { region_id: body.region_id, type: body.type, filename: body.filename };
+    const selector: FileSelector = { region_id: body.region_id, type: body.type, variant: body.variant, filename: body.filename };
     try {
       const job = mgr.downloads.start(body.sourceId, selector);
       res.json(job);

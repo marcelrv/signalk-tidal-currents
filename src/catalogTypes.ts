@@ -69,6 +69,16 @@ export interface TemplateCatalogFile {
   description: string;
   boundary_geometry: GeoJsonGeometry;
   type: 'forecast' | 'nowcast';
+  /**
+   * Disambiguates multiple files that would otherwise share `region_id` +
+   * `type` (catalog schema, spec §3.3) — a source should bundle every
+   * forecast horizon it publishes into ONE file (`forecast_hours: [24, 48,
+   * 72]`) whenever possible, and omit this. Only set when the upstream data
+   * genuinely can't be bundled (e.g. BSH publishes each forecast day as a
+   * separate file with its own cycle availability), one entry per horizon,
+   * same region_id/type, distinct `variant` (e.g. "+24h"/"+48h"/"+72h").
+   */
+  variant?: string;
   /** Contains {YYYYMMDD}, {HH}, {hour:03d} placeholders. */
   url_template: string;
   forecast_hours: number[];

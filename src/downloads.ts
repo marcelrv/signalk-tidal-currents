@@ -46,6 +46,8 @@ export interface FileSelector {
   region_id?: string;
   /** Disambiguates when a region has BOTH a forecast and a nowcast template file (observed in the real NOAA catalog — same region_id, two products). */
   type?: 'forecast' | 'nowcast';
+  /** Disambiguates when region_id + type alone still resolve to more than one file (e.g. BSH's separate +24h/+48h/+72h forecast-day files, all type "forecast" under the same region_id). */
+  variant?: string;
   filename?: string;
 }
 
@@ -146,7 +148,11 @@ function fillTemplate(template: string, ymd: string, hh: string, forecastHour: n
  * whenever a source has more than one; some real catalog regions (observed
  * in NOAA's) additionally carry BOTH a `forecast` and a `nowcast` file under
  * the SAME `region_id` — those need `type` too, or `region_id` alone still
- * resolves to more than one file.
+ * resolves to more than one file. A few sources (BSH) go one step further:
+ * multiple files share BOTH `region_id` AND `type` (e.g. three separate
+ * +24h/+48h/+72h forecast-day files, all "forecast") because their upstream
+ * cycle availability can't be bundled into one templated file — those need
+ * `variant` too.
  */
 function pickFile(source: CatalogSource, selector?: FileSelector): CatalogFile {
   const templateFiles = source.files.filter(isTemplateFile);
@@ -158,14 +164,24 @@ function pickFile(source: CatalogSource, selector?: FileSelector): CatalogFile {
   if (selector?.region_id) {
     let matches = templateFiles.filter((f) => f.region_id === selector.region_id);
     if (selector.type) matches = matches.filter((f) => f.type === selector.type);
+    if (selector.variant !== undefined) matches = matches.filter((f) => f.variant === selector.variant);
     if (matches.length === 0) {
       throw new Error(
-        `no template file for region "${selector.region_id}"${selector.type ? ` (${selector.type})` : ''} in source "${source.id}"`,
+        `no template file for region "${selector.region_id}"${selector.type ? ` (${selector.type})` : ''}` +
+          `${selector.variant ? ` variant "${selector.variant}"` : ''} in source "${source.id}"`,
       );
     }
     if (matches.length > 1) {
+      // Report whichever field is actually still ambiguous: if every match
+      // shares the same type, the leftover ambiguity is by variant (the BSH
+      // case), not type (the NOAA forecast/nowcast case) — naming the wrong
+      // field would repeat "(forecast, forecast, forecast)" instead of
+      // telling the caller what selector would actually resolve it.
+      const byVariant = matches.every((f) => f.type === matches[0].type);
+      const field = byVariant ? 'variant' : 'type';
+      const values = byVariant ? matches.map((f) => f.variant ?? '(none)') : matches.map((f) => f.type);
       throw new Error(
-        `region "${selector.region_id}" in source "${source.id}" has multiple types (${matches.map((f) => f.type).join(', ')}) — a type selector is required`,
+        `region "${selector.region_id}" in source "${source.id}" has multiple ${field}s (${values.join(', ')}) — a ${field} selector is required`,
       );
     }
     return matches[0];
@@ -329,7 +345,11 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     const templateFiles = source.files.filter(isTemplateFile);
     const selector = selectors.get(job.id);
     const templateFile = selector?.region_id
-      ? templateFiles.find((f) => f.region_id === selector.region_id && (!selector.type || f.type === selector.type))
+      ? templateFiles.find((f) =>
+          f.region_id === selector.region_id &&
+          (!selector.type || f.type === selector.type) &&
+          (selector.variant === undefined || f.variant === selector.variant),
+        )
       : templateFiles[0];
     if (!templateFile) {
       throw new Error(`no template file for region "${selector?.region_id}"${selector?.type ? ` (${selector.type})` : ''} in source "${source.id}"`);
@@ -378,8 +398,12 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       // Some real catalog regions carry BOTH a forecast and a nowcast file
       // under the SAME region_id (observed in the NOAA catalog) — the id
       // must include the file's own `type` too, or downloading one would
-      // silently clobber the other's manifest entry.
-      id: `${source.id}:${templateFile.region_id}:${templateFile.type}`,
+      // silently clobber the other's manifest entry. A few sources go one
+      // step further: multiple files share BOTH region_id AND type (e.g.
+      // BSH's +24h/+48h/+72h forecast-day files, all "forecast") and need
+      // `variant` in the id as well, or downloading day+1 then day+2 would
+      // silently overwrite each other's manifest entry.
+      id: `${source.id}:${templateFile.region_id}:${templateFile.type}${templateFile.variant ? `:${templateFile.variant}` : ''}`,
       catalogSourceId: source.id,
       type: source.type,
       files: names,
@@ -388,6 +412,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       cycle: iso,
       regionId: templateFile.region_id,
       fileType: templateFile.type,
+      variant: templateFile.variant,
     };
     const manifest = readManifest(opts.manifestPath);
     writeManifestAtomic(opts.manifestPath, upsertInstall(manifest, install));

@@ -353,6 +353,70 @@ test('a region with BOTH a forecast and a nowcast file (real NOAA shape): region
   );
 });
 
+test('a region with THREE forecast files sharing region_id + type, distinguished by variant: variant disambiguates, all three installs coexist', async () => {
+  const requestedPaths: string[] = [];
+  await withServer(
+    (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('x')); },
+    async (baseUrl) => {
+      const { root, manifestPath } = tmpDirs();
+      // chooseCycle extracts the hour directly from latest_cycle without
+      // filtering by cycle_hours — set 12Z so all three files (+24h at 00/12Z,
+      // +48h/+72h at 12Z) resolve to the same valid cycle hour.
+      const cycleIso = '2026-07-03T12:00:00Z';
+      const source: CatalogSource = {
+        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
+        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 12, latest_cycle: cycleIso },
+        files: [
+          {
+            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'forecast', variant: '+24h', url_template: `${baseUrl}/24h/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+            forecast_hours: [24], cycle_hours: ['00', '12'],
+          },
+          {
+            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'forecast', variant: '+48h', url_template: `${baseUrl}/48h/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+            forecast_hours: [48], cycle_hours: ['12'],
+          },
+          {
+            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'forecast', variant: '+72h', url_template: `${baseUrl}/72h/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+            forecast_hours: [72], cycle_hours: ['12'],
+          },
+        ],
+      };
+      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      // region_id + type alone still resolves to 3 files — must be rejected
+      assert.throws(() => engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast' }), /multiple variants/);
+
+      const job24 = engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast', variant: '+24h' });
+      await waitFor(() => engine.get(job24.id)!.state === 'done' || engine.get(job24.id)!.state === 'error');
+      assert.equal(engine.get(job24.id)!.state, 'done', engine.get(job24.id)!.error);
+
+      const job48 = engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast', variant: '+48h' });
+      await waitFor(() => engine.get(job48.id)!.state === 'done' || engine.get(job48.id)!.state === 'error');
+      assert.equal(engine.get(job48.id)!.state, 'done', engine.get(job48.id)!.error);
+
+      const job72 = engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast', variant: '+72h' });
+      await waitFor(() => engine.get(job72.id)!.state === 'done' || engine.get(job72.id)!.state === 'error');
+      assert.equal(engine.get(job72.id)!.state, 'done', engine.get(job72.id)!.error);
+
+      assert.deepEqual(requestedPaths.sort(), ['/24h/20260703/12/f024.grb2', '/48h/20260703/12/f048.grb2', '/72h/20260703/12/f072.grb2']);
+
+      const manifest = readManifest(manifestPath);
+      // All three installs must coexist, not clobber each other.
+      assert.equal(manifest.installs.length, 3);
+      const ids = manifest.installs.map((i) => i.id).sort();
+      assert.deepEqual(ids, [
+        'bsh_currents:north_sea:forecast:+24h',
+        'bsh_currents:north_sea:forecast:+48h',
+        'bsh_currents:north_sea:forecast:+72h',
+      ]);
+    },
+  );
+});
+
 test('multi-file static source (e.g. a HARMONIC + .IDX pair): no selector required, both files download', async () => {
   await withServer(
     (req, res) => { res.writeHead(200); res.end(Buffer.from('x')); },

@@ -57,7 +57,7 @@ export interface AppState {
   downloads: Record<string, DownloadJob>;
   /** Keyed by downloadKeyFor(sourceId, regionId) — lets ANY component (a row's own button, or a bulk "Update All" action) find and render the right progress for a source/region it didn't necessarily start itself. */
   jobIdBySource: Record<string, string>;
-  startDownload: (sourceId: string, selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; filename?: string }) => Promise<string>;
+  startDownload: (sourceId: string, selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; variant?: string; filename?: string }) => Promise<string>;
   pollDownload: (id: string) => Promise<void>;
   /** Pure setter shared by the SSE hook and the polling fallback — one place that writes job state into the store. */
   setDownloadJob: (job: DownloadJob) => void;
@@ -162,7 +162,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   jobIdBySource: {},
   startDownload: async (sourceId, selector) => {
     const job = await api.startDownload(sourceId, selector);
-    const key = downloadKeyFor(sourceId, selector?.region_id, selector?.type);
+    const key = downloadKeyFor(sourceId, selector?.region_id, selector?.type, selector?.variant);
     set((s) => ({
       downloads: { ...s.downloads, [job.id]: job },
       jobIdBySource: { ...s.jobIdBySource, [key]: job.id },

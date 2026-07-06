@@ -51,7 +51,7 @@ export function FirstRunWizard() {
   const install = async () => {
     setInstalling(true);
     try {
-      await Promise.all(selectedRows.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType } : undefined)));
+      await Promise.all(selectedRows.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined)));
       dismissWizard();
       setView('list');
     } finally {

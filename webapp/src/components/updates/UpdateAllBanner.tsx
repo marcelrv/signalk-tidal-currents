@@ -51,7 +51,7 @@ export function UpdateAllBanner() {
     try {
       await Promise.all(
         updatable.map(({ dataset }) =>
-          startDownload(dataset.catalogSourceId!, dataset.regionId ? { region_id: dataset.regionId, type: dataset.fileType } : undefined),
+          startDownload(dataset.catalogSourceId!, dataset.regionId ? { region_id: dataset.regionId, type: dataset.fileType, variant: dataset.variant } : undefined),
         ),
       );
     } finally {
