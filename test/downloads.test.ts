@@ -189,7 +189,9 @@ test('template file: exact {YYYYMMDD}/{HH}/{hour:03d} substitution, all forecast
     (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('grib-bytes')); },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
-      const cycleIso = '2026-07-03T00:00:00Z';
+      const now = new Date();
+      const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)).toISOString();
+      const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
       const source: CatalogSource = {
         id: 'grib-template', source: 'noaa', type: 'grib2', name: 'Forecast', description: '',
         contributor: 'NOAA', url: baseUrl, tags: [], region: region(),
@@ -205,7 +207,7 @@ test('template file: exact {YYYYMMDD}/{HH}/{hour:03d} substitution, all forecast
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
       const final = engine.get(job.id)!;
       assert.equal(final.state, 'done', final.error);
-      assert.deepEqual(requestedPaths.sort(), ['/20260703/00/f024.grb2', '/20260703/00/f048.grb2']);
+      assert.deepEqual(requestedPaths.sort(), [`/${ymd}/00/f024.grb2`, `/${ymd}/00/f048.grb2`]);
       const manifest = readManifest(manifestPath);
       assert.equal(manifest.installs.length, 1);
       assert.equal(manifest.installs[0].id, 'grib-template:nw-europe:forecast');
@@ -274,7 +276,9 @@ test('multi-region template source: region_id selector picks the RIGHT region, n
     (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('grib-bytes')); },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
-      const cycleIso = '2026-07-03T00:00:00Z';
+      const now = new Date();
+      const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)).toISOString();
+      const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
       const mkTemplate = (regionId: string) => ({
         region_id: regionId, name: regionId, description: '', boundary_geometry: region().boundary_geometry,
         type: 'forecast' as const, url_template: `${baseUrl}/${regionId}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
@@ -296,7 +300,7 @@ test('multi-region template source: region_id selector picks the RIGHT region, n
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
       const final = engine.get(job.id)!;
       assert.equal(final.state, 'done', final.error);
-      assert.deepEqual(requestedPaths, ['/caribbean/20260703/00/f024.grb2']);
+      assert.deepEqual(requestedPaths, [`/caribbean/${ymd}/00/f024.grb2`]);
       const manifest = readManifest(manifestPath);
       assert.equal(manifest.installs.length, 1);
       assert.equal(manifest.installs[0].regionId, 'caribbean');
@@ -311,7 +315,9 @@ test('a region with BOTH a forecast and a nowcast file (real NOAA shape): region
     (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('x')); },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
-      const cycleIso = '2026-07-03T00:00:00Z';
+      const now = new Date();
+      const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)).toISOString();
+      const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
       const source: CatalogSource = {
         id: 'noaa_rtofs', source: 'noaa', type: 'grib2', name: 'NOAA RTOFS', description: '',
         contributor: 'NOAA', url: baseUrl, tags: [], region: region(),
@@ -343,7 +349,7 @@ test('a region with BOTH a forecast and a nowcast file (real NOAA shape): region
       await waitFor(() => engine.get(nowcastJob.id)!.state === 'done' || engine.get(nowcastJob.id)!.state === 'error');
       assert.equal(engine.get(nowcastJob.id)!.state, 'done', engine.get(nowcastJob.id)!.error);
 
-      assert.deepEqual(requestedPaths.sort(), ['/forecast/20260703/00/f024.grb2', '/nowcast/20260703/00/n024.grb2']);
+      assert.deepEqual(requestedPaths.sort(), [`/forecast/${ymd}/00/f024.grb2`, `/nowcast/${ymd}/00/n024.grb2`]);
       const manifest = readManifest(manifestPath);
       // Both installs must coexist, not clobber each other.
       assert.equal(manifest.installs.length, 2);
@@ -362,7 +368,9 @@ test('a region with THREE forecast files sharing region_id + type, distinguished
       // chooseCycle extracts the hour directly from latest_cycle without
       // filtering by cycle_hours — set 12Z so all three files (+24h at 00/12Z,
       // +48h/+72h at 12Z) resolve to the same valid cycle hour.
-      const cycleIso = '2026-07-03T12:00:00Z';
+      const now = new Date();
+      const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0)).toISOString();
+      const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
       const source: CatalogSource = {
         id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
         contributor: 'BSH', url: baseUrl, tags: [], region: region(),
@@ -402,7 +410,7 @@ test('a region with THREE forecast files sharing region_id + type, distinguished
       await waitFor(() => engine.get(job72.id)!.state === 'done' || engine.get(job72.id)!.state === 'error');
       assert.equal(engine.get(job72.id)!.state, 'done', engine.get(job72.id)!.error);
 
-      assert.deepEqual(requestedPaths.sort(), ['/24h/20260703/12/f024.grb2', '/48h/20260703/12/f048.grb2', '/72h/20260703/12/f072.grb2']);
+      assert.deepEqual(requestedPaths.sort(), [`/24h/${ymd}/12/f024.grb2`, `/48h/${ymd}/12/f048.grb2`, `/72h/${ymd}/12/f072.grb2`]);
 
       const manifest = readManifest(manifestPath);
       // All three installs must coexist, not clobber each other.
