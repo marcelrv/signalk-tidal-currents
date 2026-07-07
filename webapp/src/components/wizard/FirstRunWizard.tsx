@@ -35,42 +35,35 @@ export function FirstRunWizard() {
   const candidates = useMemo(() => {
     if (!position || !catalog?.document) return [];
     const all = rowsForSources(catalog.document.sources);
-    const covering = coveringRows(all, position.latitude, position.longitude);
-    // Exclude rows that already have an active or update-available dataset installed.
-    return covering
-      .filter((row) => {
-        const d = datasetForRow(datasets, row);
-        return !d || d.status === 'error';
-      })
-      .map((row) => {
-        // For template/forecast rows with no catalog-declared size, use the
-        // downloaded size from the manifest when available (user previously
-        // downloaded and deleted/error'd the dataset).
-        let size = row.sizeBytes;
-        if (size === null) {
-          const d = datasetForRow(datasets, row);
-          if (d) size = d.sizeBytes;
-        }
-        return { ...row, sizeBytes: size };
-      });
-  }, [position, catalog, datasets]);
+    return coveringRows(all, position.latitude, position.longitude);
+  }, [position, catalog]);
 
-  // Default-select every covering row — "single install action" per PRD;
-  // the user can still deselect individual ones.
+  // Default-select only rows that are NOT already installed.
+  const notInstalled = useMemo(() => {
+    return candidates.filter((row) => {
+      const d = datasetForRow(datasets, row);
+      return !d || d.status === 'error';
+    });
+  }, [candidates, datasets]);
+
   useEffect(() => {
-    setSelected(new Set(candidates.map((c) => c.key)));
-  }, [candidates]);
+    setSelected(new Set(notInstalled.map((c) => c.key)));
+  }, [notInstalled]);
 
   if (!wizard.open) return null;
 
-  const selectedRows = candidates.filter((c) => selected.has(c.key));
-  const totalBytes = selectedRows.reduce((sum, c) => sum + (c.sizeBytes ?? 0), 0);
-  const anyUnknownSize = selectedRows.some((c) => c.sizeBytes === null);
+  const newDownloads = notInstalled.filter((c) => selected.has(c.key));
+  const totalBytes = newDownloads.reduce((sum, c) => {
+    const d = datasetForRow(datasets, c);
+    return sum + ((d ? d.sizeBytes : c.sizeBytes) ?? 0);
+  }, 0);
+  const anyUnknownSize = newDownloads.some((c) => c.sizeBytes === null);
+  const hasNewDownloads = newDownloads.length > 0;
 
   const install = async () => {
     setInstalling(true);
     try {
-      await Promise.all(selectedRows.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined)));
+      await Promise.all(newDownloads.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined)));
       dismissWizard();
       setView('list');
     } finally {
@@ -136,30 +129,36 @@ export function FirstRunWizard() {
             {position.latitude.toFixed(2)}, {position.longitude.toFixed(2)}:
           </p>
           <ul className="flex flex-col gap-2">
-            {candidates.map((row) => (
-              <li key={row.key}>
-                <WizardSourceCard
-                  row={row}
-                  checked={selected.has(row.key)}
-                  onToggle={() => {
-                    const next = new Set(selected);
-                    if (next.has(row.key)) next.delete(row.key);
-                    else next.add(row.key);
-                    setSelected(next);
-                  }}
-                />
-              </li>
-            ))}
+            {candidates.map((row) => {
+              const d = datasetForRow(datasets, row);
+              return (
+                <li key={row.key}>
+                  <WizardSourceCard
+                    row={row}
+                    dataset={d ?? null}
+                    checked={selected.has(row.key)}
+                    onToggle={() => {
+                      const next = new Set(selected);
+                      if (next.has(row.key)) next.delete(row.key);
+                      else next.add(row.key);
+                      setSelected(next);
+                    }}
+                  />
+                </li>
+              );
+            })}
           </ul>
           <button
             type="button"
-            disabled={selected.size === 0 || installing}
+            disabled={newDownloads.length === 0 || installing}
             onClick={install}
             className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
           >
             {installing
               ? 'Starting…'
-              : `Install selected (~${formatBytes(totalBytes)}${anyUnknownSize ? '+' : ''})`}
+              : hasNewDownloads
+                ? `Install selected (~${formatBytes(totalBytes)}${anyUnknownSize ? '+' : ''})`
+                : 'Close'}
           </button>
         </div>
       )}
