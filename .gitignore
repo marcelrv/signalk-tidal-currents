@@ -17,6 +17,9 @@ tcdata/
 # integration-test data cache (downloaded from the OpenCPN repo on demand)
 test/data-opencpn/
 
+# Large GRIB2 test fixtures (downloaded on demand)
+*.grb2
+
 # Local project notes
 AGENTS.local.md
 .claude/settings.local.json

@@ -115,7 +115,7 @@ function pad3(n: number): string {
 }
 
 /** Chooses the forecast cycle (YYYYMMDD + HH) to download: `update_check.latest_cycle` when known, else the latest `cycle_hours` entry not after the current UTC hour. */
-function chooseCycle(file: TemplateCatalogFile, latestCycle: string | undefined): { ymd: string; hh: string; iso: string } {
+function chooseCycle(file: TemplateCatalogFile, latestCycle: string | undefined, maxAgeHours?: number): { ymd: string; hh: string; iso: string } {
   const hours = [...file.cycle_hours].map((h) => parseInt(h, 10)).filter((h) => Number.isFinite(h)).sort((a, b) => a - b);
   const now = new Date();
   // The catalog's latest_cycle is the most recent cycle the source knows about
@@ -123,11 +123,16 @@ function chooseCycle(file: TemplateCatalogFile, latestCycle: string | undefined)
   // use it. Otherwise fall back to the current time (e.g. BSH publishes analysis
   // at 00Z but forecast-day files only at 12Z; at 00Z the latest_cycle is 00Z
   // but we want today's 12Z file if it has already been published).
+  //
+  // When maxAgeHours is known and latest_cycle + maxAgeHours is already past,
+  // the catalog snapshot is stale — the current file is expired and a newer
+  // cycle should be available. Fall back to now as the upper bound so the
+  // next cycle can be discovered.
   let upperBound: Date;
   if (latestCycle && hours.length > 0) {
     const d = new Date(latestCycle);
     if (hours.includes(d.getUTCHours())) {
-      upperBound = d;
+      upperBound = (maxAgeHours !== undefined && Date.now() - d.getTime() > maxAgeHours * 3600_000) ? now : d;
     } else {
       upperBound = now;
     }
@@ -428,7 +433,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     if (!templateFile) {
       throw new Error(`no template file for region "${selector?.region_id}"${selector?.type ? ` (${selector.type})` : ''} in source "${source.id}"`);
     }
-    const { ymd, hh, iso } = chooseCycle(templateFile, source.update_check.latest_cycle);
+    const { ymd, hh, iso } = chooseCycle(templateFile, source.update_check.latest_cycle, source.update_check.max_age_hours);
     const names: string[] = [];
     let sizeBytes = 0;
     // The region (and forecast/nowcast type) MUST be part of the filename:

@@ -210,7 +210,7 @@ test('template file: exact {YYYYMMDD}/{HH}/{hour:03d} substitution, all forecast
       assert.equal(manifest.installs.length, 1);
       assert.equal(manifest.installs[0].id, 'grib-template:nw-europe:forecast');
       assert.equal(manifest.installs[0].files.length, 2);
-      assert.equal(manifest.installs[0].cycle, cycleIso);
+      assert.equal(Date.parse(manifest.installs[0].cycle!), Date.parse(cycleIso));
       assert.equal(manifest.installs[0].sha256, undefined);
       assert.equal(manifest.installs[0].regionId, 'nw-europe');
       assert.equal(manifest.installs[0].fileType, 'forecast');

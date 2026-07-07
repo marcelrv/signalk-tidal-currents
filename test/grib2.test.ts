@@ -98,7 +98,7 @@ test('multi-message files parse every message', () => {
   assert.equal(fields[1].paramNumber, 3);
 });
 
-test('unsupported data representation template is skipped, not fatal', () => {
+test('template 5.40 is accepted and invalid JPEG2000 data is skipped', () => {
   const msg = wrapMessage([
     makeSection1(T0),
     makeSection3(2, 2, 53, 5, 0.1, 0.1),
@@ -113,7 +113,7 @@ test('unsupported data representation template is skipped, not fatal', () => {
   const { fields, skipped } = parseGrib2(msg);
   assert.equal(fields.length, 0);
   assert.equal(skipped.length, 1);
-  assert.ok(skipped[0].includes('5.40'), skipped[0]);
+  assert.ok(skipped[0].includes('JPX') || skipped[0].includes('JPEG'), skipped[0]);
 });
 
 // ── complex packing (templates 5.2 / 5.3) ──────────────────────────────
@@ -266,4 +266,38 @@ test('sampleGrid: NaN corners are dropped and weights renormalized', () => {
   // all four corners missing → null
   vals[1] = vals[3] = vals[4] = NaN;
   assert.equal(sampleGrid(grid, vals, 53.05, 5.05), null);
+});
+
+// ── JPEG2000 / template 5.40 integration with a real BSH file ──────────
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const BSH_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'fixtures',
+  'bsh_nowcast.grb2',
+);
+
+test('real BSH GRIB2 file with JPEG2000 (template 5.40) decodes to sensible values', { skip: !fs.existsSync(BSH_FIXTURE) ? 'fixture file not present — download from BSH FTP' : false }, () => {
+  const buf = fs.readFileSync(BSH_FIXTURE);
+  const { fields, skipped } = parseGrib2(buf);
+  assert.deepEqual(skipped, []);
+  assert.ok(fields.length > 0);
+  // Should have u/v component pairs at multiple forecast hours.
+  const uFields = fields.filter((f) => f.paramNumber === 2);
+  const vFields = fields.filter((f) => f.paramNumber === 3);
+  assert.ok(uFields.length > 0);
+  assert.equal(uFields.length, vFields.length);
+  // Verify grid metadata.
+  const f = fields[0];
+  assert.equal(f.paramCategory, 1);
+  assert.ok(f.grid.ni > 10 && f.grid.nj > 10);
+  // Verify decoded values are in a plausible range (m/s).
+  const nonNaN = f.values.filter((v) => !Number.isNaN(v));
+  assert.ok(nonNaN.length > 0);
+  for (const v of nonNaN) {
+    assert.ok(v > -10 && v < 10, `velocity ${v} out of plausible range`);
+  }
 });

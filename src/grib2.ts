@@ -60,6 +60,8 @@ export interface Grib2ParseResult {
   skipped: string[];
 }
 
+import { decodeJpeg2000Codestream } from './jpx/index.js';
+
 // ── binary helpers ─────────────────────────────────────────────────────
 
 function u16(b: Uint8Array, o: number): number {
@@ -116,7 +118,7 @@ class BitReader {
 // ── section state carried across a message ─────────────────────────────
 
 interface DataRepr {
-  template: number; // 0, 2 or 3
+  template: number; // 0, 2, 3 or 40
   numDataPoints: number;
   refValue: number; // R
   binScale: number; // E
@@ -134,6 +136,9 @@ interface DataRepr {
   // spatial differencing (5.3):
   sdOrder: number;
   sdExtraOctets: number;
+  // JPEG2000 (5.40):
+  originalType: number; // 0=floating point, 1=integer
+  compressionType: number; // 0=lossless, 1=lossy
 }
 
 interface ProductInfo {
@@ -244,13 +249,13 @@ function parseProduct(sec: Uint8Array, refTime: number): ProductInfo {
   return { template, paramCategory, paramNumber, validTime, surfaceType, surfaceValue };
 }
 
-/** Section 5 — data representation templates 5.0, 5.2, 5.3. */
+/** Section 5 — data representation templates 5.0, 5.2, 5.3, 5.40. */
 function parseDataRepr(sec: Uint8Array): DataRepr {
   const template = u16(sec, 9);
-  if (template !== 0 && template !== 2 && template !== 3) {
+  if (template !== 0 && template !== 2 && template !== 3 && template !== 40) {
     throw new Error(
       `data representation template 5.${template} not supported ` +
-        '(only 5.0 simple and 5.2/5.3 complex packing; 5.40/5.41 JPEG/PNG need a codec)',
+        '(only 5.0 simple, 5.2/5.3 complex packing, and 5.40 JPEG2000)',
     );
   }
   const repr: DataRepr = {
@@ -270,6 +275,8 @@ function parseDataRepr(sec: Uint8Array): DataRepr {
     bitsScaledLengths: 0,
     sdOrder: 0,
     sdExtraOctets: 0,
+    originalType: 0,
+    compressionType: 0,
   };
   if (template === 2 || template === 3) {
     repr.missingMgmt = sec[22];
@@ -292,6 +299,10 @@ function parseDataRepr(sec: Uint8Array): DataRepr {
         throw new Error(`spatial differencing order ${repr.sdOrder} not supported`);
       }
     }
+  }
+  if (template === 40) {
+    repr.originalType = sec[20]; // 0=floating point, 1=integer
+    repr.compressionType = sec[21]; // 0=lossless, 1=lossy
   }
   return repr;
 }
@@ -393,6 +404,19 @@ function unpackComplex(data: Uint8Array, repr: DataRepr): Array<number | null> {
 }
 
 /**
+ * Template 7.40 — decode JPEG2000 codestream using pure-JS JPX decoder.
+ */
+function unpackJpeg2000(data: Uint8Array, _repr: DataRepr): Array<number | null> {
+  const items = decodeJpeg2000Codestream(data);
+  const n = items.length;
+  const out: Array<number | null> = new Array(n);
+  for (let k = 0; k < n; k++) {
+    out[k] = items[k];
+  }
+  return out;
+}
+
+/**
  * Decode section 7 into grid-ordered physical values (in scan order),
  * expanding through the bitmap. NaN = missing.
  */
@@ -403,7 +427,10 @@ function decodeValues(
   gridPoints: number,
 ): Float64Array {
   const packed = dataSec.subarray(5);
-  const xs = repr.template === 0 ? unpackSimple(packed, repr) : unpackComplex(packed, repr);
+  let xs: Array<number | null>;
+  if (repr.template === 0) xs = unpackSimple(packed, repr);
+  else if (repr.template === 40) xs = unpackJpeg2000(packed, repr);
+  else xs = unpackComplex(packed, repr);
   const scale = Math.pow(2, repr.binScale) / Math.pow(10, repr.decScale);
   const base = repr.refValue / Math.pow(10, repr.decScale);
   const toValue = (x: number | null): number => (x === null ? NaN : base + x * scale);
