@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { useAppStore } from '../../store/useAppStore';
 import { coveringRows } from '../../lib/wizard';
-import { rowsForSources } from '../../lib/sources';
+import { datasetForRow, rowsForSources } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
 import { WizardSourceCard } from './WizardSourceCard';
@@ -20,6 +20,7 @@ export function FirstRunWizard() {
   const dismissWizard = useAppStore((s) => s.dismissWizard);
   const catalog = useAppStore((s) => s.catalog);
   const vesselPosition = useAppStore((s) => s.vesselPosition);
+  const datasets = useAppStore((s) => s.datasets);
   const startDownload = useAppStore((s) => s.startDownload);
   const setView = useAppStore((s) => s.setView);
 
@@ -33,8 +34,26 @@ export function FirstRunWizard() {
 
   const candidates = useMemo(() => {
     if (!position || !catalog?.document) return [];
-    return coveringRows(rowsForSources(catalog.document.sources), position.latitude, position.longitude);
-  }, [position, catalog]);
+    const all = rowsForSources(catalog.document.sources);
+    const covering = coveringRows(all, position.latitude, position.longitude);
+    // Exclude rows that already have an active or update-available dataset installed.
+    return covering
+      .filter((row) => {
+        const d = datasetForRow(datasets, row);
+        return !d || d.status === 'error';
+      })
+      .map((row) => {
+        // For template/forecast rows with no catalog-declared size, use the
+        // downloaded size from the manifest when available (user previously
+        // downloaded and deleted/error'd the dataset).
+        let size = row.sizeBytes;
+        if (size === null) {
+          const d = datasetForRow(datasets, row);
+          if (d) size = d.sizeBytes;
+        }
+        return { ...row, sizeBytes: size };
+      });
+  }, [position, catalog, datasets]);
 
   // Default-select every covering row — "single install action" per PRD;
   // the user can still deselect individual ones.

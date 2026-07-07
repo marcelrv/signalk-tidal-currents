@@ -22,7 +22,7 @@ export function WizardSourceCard({
         </div>
         <div className="truncate text-sm text-muted">{row.regionName}</div>
       </div>
-      <span className="text-sm text-muted">{row.sizeBytes === null ? '~size unknown (forecast data)' : formatBytes(row.sizeBytes)}</span>
+      <span className="text-sm text-muted">{row.sizeBytes === null ? '~size unknown' : formatBytes(row.sizeBytes)}</span>
     </label>
   );
 }
