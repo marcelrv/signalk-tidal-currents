@@ -38,6 +38,14 @@ function unwrapRingLongitudes(ring: number[][]): number[][] {
 /** Ray-casting point-in-polygon over one ring ([lon,lat] pairs, GeoJSON order). */
 function pointInRing(ring: number[][], lat: number, lon: number): boolean {
   if (ring.length === 0) return false;
+  // A ring covering the full 360° longitude range (e.g. the global OpenCPN
+  // harmonic dataset: [[-180,-90],[180,-90],[180,90],[-180,90],...]) contains
+  // every point — the standard ray-casting check below collapses such a ring
+  // to a degenerate line during unwrapping, producing wrong results.
+  let minLon = Infinity, maxLon = -Infinity;
+  for (const [l] of ring) { if (l < minLon) minLon = l; if (l > maxLon) maxLon = l; }
+  if (maxLon - minLon >= 360) return true;
+
   const unwrapped = unwrapRingLongitudes(ring);
   const ref = unwrapped[0][0];
   let queryLon = lon;
