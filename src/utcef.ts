@@ -134,6 +134,10 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
   const currentStations: UtcefCurrentStation[] = [];
   let heightStationCount = 0;
   let unsupportedFeatureCount = 0;
+  // Unknown constituents are aggregated to ONE warning per name per file: a
+  // whole-file property (e.g. every NOAA station carries S4/S6) would
+  // otherwise emit thousands of per-station repeats.
+  const unknownConstituents = new Map<string, number>();
 
   for (const f of features) {
     const props = f?.properties ?? {};
@@ -173,9 +177,7 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
     const constituents: CurrentConstituent[] = [];
     for (const [cname, raw] of Object.entries<any>(hc)) {
       if (!isKnownConstituent(cname)) {
-        warnings.push(
-          `${sourceLabel}: station "${id}" references unknown constituent "${cname}" — skipped`,
-        );
+        unknownConstituents.set(cname, (unknownConstituents.get(cname) ?? 0) + 1);
         continue;
       }
       constituents.push({
@@ -208,6 +210,12 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
       constituents,
       representativeArea: area,
     });
+  }
+
+  for (const [cname, count] of unknownConstituents) {
+    warnings.push(
+      `${sourceLabel}: ${count} station(s) reference unknown constituent "${cname}" — skipped`,
+    );
   }
 
   const dataSources: UtcefDataSource[] | undefined = Array.isArray(meta.data_sources)

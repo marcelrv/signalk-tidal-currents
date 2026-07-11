@@ -295,6 +295,33 @@ test('warns on an unknown constituent but keeps the known ones', () => {
   assert.ok(data.warnings.some((w) => /XX9/.test(w)));
 });
 
+test('unknown constituents warn once per name per file, not per station', () => {
+  const dir = tmpDir();
+  const station = (id: string) => ({
+    type: 'Feature',
+    id,
+    geometry: { type: 'Point', coordinates: [4, 52] },
+    properties: {
+      prediction_method: 'harmonic_constituents_currents',
+      data_unit_speed: 'meters_per_second',
+      harmonic_constituents: {
+        M2: { u_amplitude: 0.5, u_phase_g: 100, v_amplitude: 0.1, v_phase_g: 200 },
+        XX9: { u_amplitude: 0.5, u_phase_g: 0, v_amplitude: 0, v_phase_g: 0 },
+      },
+    },
+  });
+  const doc = {
+    metadata: { schema_version: '1.1.0' },
+    dataset: { type: 'FeatureCollection', features: [station('A'), station('B'), station('C')] },
+  };
+  fs.writeFileSync(path.join(dir, 'dedup.utcef'), JSON.stringify(doc));
+  const data = loadUtcefDir(dir)!;
+  assert.equal(data.currentStations.length, 3);
+  const xx9 = data.warnings.filter((w) => /XX9/.test(w));
+  assert.equal(xx9.length, 1, data.warnings.join('; '));
+  assert.ok(/3 station/.test(xx9[0]), xx9[0]);
+});
+
 test('reads gzip-compressed .utcef.gz files (legacy, detected by magic bytes)', () => {
   const dir = tmpDir();
   const gz = zlib.gzipSync(Buffer.from(JSON.stringify(referenceDoc())));

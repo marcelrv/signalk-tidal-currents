@@ -92,7 +92,10 @@ type NodalFamily =
   | 'J1'
   | 'M2'
   | 'K2'
-  | 'M2^2'; // shallow-water compound of two M2 terms (M4, MN4)
+  | 'M2^n' // Mⁿ overtide of M2 (M3, M4, MN4, M6, M8): f = f(M2)^(T15/2), u = (T15/2)·u(M2)
+  | 'M2·K1' // MK3 compound: f = f(M2)·f(K1), u = u(M2) + u(K1)
+  | 'M2²·K1' // 2MK3 compound: f = f(M2)²·f(K1), u = 2·u(M2) − u(K1)
+  | 'M2⁻¹'; // S2−M2 style compounds (2SM2, MSF): f = f(M2), u = −u(M2)
 
 interface ConstituentDef {
   speed: number; // catalog angular speed, °/hr (for reporting + validation)
@@ -129,7 +132,9 @@ export const CONSTITUENTS: Record<string, ConstituentDef> = {
   '2N2': C(27.8953548, 2, -4,  2,  2,  0,   0, 'M2'),
   L2:  C(29.5284789, 2, -1,  2, -1,  0,  180, 'M2'),
   T2:  C(29.9589333, 2,  0, -1,  0,  1,    0, 'none'),
+  R2:  C(30.0410667, 2,  0,  1,  0, -1,  180, 'none'),
   LAMBDA2: C(29.4556253, 2, -1,  0,  1,  0, 180, 'M2'),
+  '2SM2': C(31.0158958, 2,  2, -2,  0,  0,   0, 'M2⁻¹'),
   // Diurnal
   K1:  C(15.0410686, 1,  0,  1,  0,  0,   90, 'K1'),
   O1:  C(13.9430356, 1, -2,  1,  0,  0,  -90, 'O1'),
@@ -143,11 +148,23 @@ export const CONSTITUENTS: Record<string, ConstituentDef> = {
   MM:  C(0.5443747, 0,  1,  0, -1,  0,    0, 'Mm'),
   MF:  C(1.0980331, 0,  2,  0,  0,  0,    0, 'Mf'),
   SSA: C(0.0821373, 0,  0,  2,  0,  0,    0, 'none'),
+  SA:  C(0.0410686, 0,  0,  1,  0,  0,    0, 'none'),
+  MSF: C(1.0158958, 0,  2, -2,  0,  0,    0, 'M2⁻¹'), // S2−M2 compound
   // Shallow-water / overtides
-  M4:  C(57.9682084, 4, -4,  4,  0,  0,    0, 'M2^2'),
+  M3:  C(43.4761563, 3, -3,  3,  0,  0,    0, 'M2^n'),
+  MK3: C(44.0251729, 3, -2,  3,  0,  0,   90, 'M2·K1'),
+  '2MK3': C(42.9271398, 3, -4,  3,  0,  0, -90, 'M2²·K1'),
+  M4:  C(57.9682084, 4, -4,  4,  0,  0,    0, 'M2^n'),
   MS4: C(58.9841042, 4, -2,  2,  0,  0,    0, 'M2'),
-  MN4: C(57.4238337, 4, -5,  4,  1,  0,    0, 'M2^2'),
-  M6:  C(86.9523127, 6, -6,  6,  0,  0,    0, 'M2^2'), // f≈f(M2)^3; approximated below
+  MN4: C(57.4238337, 4, -5,  4,  1,  0,    0, 'M2^n'),
+  S4:  C(60.0000000, 4,  0,  0,  0,  0,    0, 'none'),
+  M6:  C(86.9523127, 6, -6,  6,  0,  0,    0, 'M2^n'),
+  S6:  C(90.0000000, 6,  0,  0,  0,  0,    0, 'none'),
+  M8:  C(115.9364166, 8, -8,  8,  0,  0,   0, 'M2^n'),
+  // Deliberately absent: M1 and OO1 (the NOS standard set's remaining pair).
+  // Their nodal corrections need Schureman's full I/ξ/ν obliquity theory (no
+  // reliable short cosine-in-N series), and their amplitudes at NOAA current
+  // stations are ~1-3 cm/s — below the error already accepted elsewhere.
 };
 
 /** Greenwich equilibrium argument V₀ (deg, 0–360) for a constituent at a UTC time. */
@@ -213,12 +230,31 @@ function computeNodeFactors(def: ConstituentDef, a: AstroArgs): { f: number; u: 
         f: 1.0241 + 0.2863 * cN + 0.0083 * c2N - 0.0015 * c3N,
         u: -17.74 * sN + 0.68 * s2N - 0.04 * s3N,
       };
-    case 'M2^2': {
+    case 'M2^n': {
       const fM2 = 1.0004 - 0.0373 * cN + 0.0002 * c2N;
       const uM2 = -2.14 * sN;
-      // M4/MN4 = M2², M6 = M2³ — power follows the T15 harmonic order.
+      // M3/M4/MN4/M6/M8 = M2^(T15/2) — power follows the harmonic order
+      // (Schureman: f(Mⁿ) = f(M2)^(n/2), u(Mⁿ) = (n/2)·u(M2)).
       const order = def.combo.T15 / 2;
       return { f: Math.pow(fM2, order), u: order * uM2 };
+    }
+    case 'M2·K1': {
+      const fM2 = 1.0004 - 0.0373 * cN + 0.0002 * c2N;
+      const uM2 = -2.14 * sN;
+      const fK1 = 1.0060 + 0.1150 * cN - 0.0088 * c2N + 0.0006 * c3N;
+      const uK1 = -8.86 * sN + 0.68 * s2N - 0.07 * s3N;
+      return { f: fM2 * fK1, u: uM2 + uK1 };
+    }
+    case 'M2²·K1': {
+      const fM2 = 1.0004 - 0.0373 * cN + 0.0002 * c2N;
+      const uM2 = -2.14 * sN;
+      const fK1 = 1.0060 + 0.1150 * cN - 0.0088 * c2N + 0.0006 * c3N;
+      const uK1 = -8.86 * sN + 0.68 * s2N - 0.07 * s3N;
+      return { f: fM2 * fM2 * fK1, u: 2 * uM2 - uK1 };
+    }
+    case 'M2⁻¹': {
+      // 2SM2 = 2S2−M2, MSF = S2−M2: the M2 term enters negatively.
+      return { f: 1.0004 - 0.0373 * cN + 0.0002 * c2N, u: 2.14 * sN };
     }
   }
 }
