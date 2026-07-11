@@ -1,6 +1,6 @@
 {
   "name": "signalk-tidal-currents",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Tidal current predictions from GRIB2, UTCEF and harmonic data sources",
   "type": "module",
   "main": "dist/index.js",

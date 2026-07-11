@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.0 — 2026-07-11
+
+### Added
+
+- **10 new constituents** in the astronomical engine: M3, MK3, 2MK3, M8,
+  2SM2, MSF, SA, S4, S6 and R2 — the engine now covers the full NOS
+  standard set except M1/OO1 (whose nodal corrections need Schureman's
+  full obliquity theory and contribute only ~1–3 cm/s). M3/M8 join
+  M4/MN4/M6 in a generalized M2ⁿ overtide family; MK3/2MK3 use compound
+  M2·K1 nodal factors; 2SM2/MSF are S2−M2 compounds.
+  Together with the new **NOAA CO-OPS tidal current datasets** in
+  [signalk-router-data](https://github.com/marcelrv/signalk-router-data)
+  (2,544 US stations converted from NOAA's official harmonic
+  constituents), predictions validate against NOAA's own published
+  values to 1–6 cm/s RMSE — the shallow-water constituents cut the error
+  at strong tidal passes (e.g. Burrows Pass, Puget Sound) from ~23 to
+  ~6 cm/s.
+
+### Changed
+
+- Unknown-constituent warnings are aggregated to one per constituent
+  name per UTCEF file instead of one per station (a whole-file property
+  previously produced thousands of repeated warnings in the manager
+  summary).
+
 ## 0.2.0 — 2026-07-07
 
 ### Added
