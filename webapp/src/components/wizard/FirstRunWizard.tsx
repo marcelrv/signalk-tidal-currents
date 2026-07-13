@@ -167,8 +167,8 @@ export function FirstRunWizard() {
           />
           <button
             type="button"
-            disabled={newDownloads.length === 0 || installing}
-            onClick={install}
+            disabled={installing}
+            onClick={hasNewDownloads ? install : dismissWizard}
             className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
           >
             {installing
