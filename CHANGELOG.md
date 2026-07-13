@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.3.1 — 2026-07-13
+
+### Fixed
+
+- Near You wizard now recommends only the single best not-yet-installed
+  dataset per tier (**live forecast** vs **always-available backup**,
+  split by `update_check.method`) instead of pre-selecting every catalog
+  source whose polygon happens to cover the position — the
+  always-matching global OpenCPN harmonic pack no longer gets
+  auto-installed alongside a better regional dataset. A tier is skipped
+  once anything in it is already installed for that position, so
+  accepting one recommendation doesn't surface another on the next
+  visit.
+- The wizard's "Close" button was disabled in exactly the case where its
+  label read "Close" (nothing left to install) — now only disabled while
+  an install is actually in progress.
+- Download-completion tracking no longer depends on a specific row's
+  `DownloadButton` being mounted: a new global `GET /downloads/events`
+  SSE stream keeps datasets/storage in sync regardless of view or active
+  filters, fixing "Update"/"Update all" silently appearing to do
+  nothing. `UpdateAllBanner` also no longer swallows a failed
+  `startDownload` call silently.
+- Template-file (forecast/nowcast) downloads now try progressively older
+  cycles when the chosen one 404s/550s. Fixes BSH nowcast files, which
+  are only ever published at the 00Z cycle — the catalog's shared
+  `cycle_hours` metadata (same as the 00Z/12Z forecast files) previously
+  led the plugin to request a 12Z nowcast that was never published,
+  permanently failing to update.
+- The auto-update sweep's in-flight check is now selector-aware
+  (region/type/variant), so one BSH variant downloading no longer blocks
+  its sibling variants from being checked in the same sweep.
+- A template file's on-disk filename now includes `variant` explicitly,
+  instead of relying on `forecast_hours` happening to differ between
+  variants to avoid collisions.
+- A successful re-download now removes the file(s) it superseded instead
+  of leaving them behind as permanent orphans (skipped when the same
+  cycle is re-requested and nothing actually changed).
+- The update banner's itemized list now shows an estimated size for
+  already-installed template datasets (from the prior download) instead
+  of "size varies (forecast cycle)", via a new shared
+  `estimatedSizeBytes()` helper shared with the wizard and browser list.
+
+### Added
+
+- GitHub Actions workflow to publish to npm (via OIDC trusted
+  publishing) whenever a GitHub Release is published.
+
 ## 0.3.0 — 2026-07-11
 
 ### Added
