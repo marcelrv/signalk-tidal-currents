@@ -61,18 +61,14 @@ export async function runAutoUpdateSweep(deps: AutoUpdateDeps): Promise<AutoUpda
   });
   if (candidates.length === 0) return result;
 
-  const inFlight = new Set(
-    deps.downloads
-      .list()
-      .filter((j) => j.state === 'queued' || j.state === 'active')
-      .map((j) => j.catalogSourceId),
-  );
-
   const storage = await statStorage(deps.dataDir);
   let projectedUsedBytes = storage.totalBytes !== null && storage.freeBytes !== null ? storage.totalBytes - storage.freeBytes : null;
 
   for (const install of candidates) {
-    if (inFlight.has(install.catalogSourceId)) {
+    // Variant-aware: a nowcast job in flight for `bsh_currents` must not
+    // block its sibling forecast+24h/+48h variants of the SAME source, which
+    // are separate files with their own stale status.
+    if (deps.downloads.hasInFlight(install.catalogSourceId, { region_id: install.regionId, type: install.fileType, variant: install.variant })) {
       result.skippedInFlight.push(install.id);
       continue;
     }

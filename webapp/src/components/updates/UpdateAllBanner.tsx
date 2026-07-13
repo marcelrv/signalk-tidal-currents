@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 
 import { useAppStore } from '../../store/useAppStore';
-import { hasUnknownSizeRisk, rowForDataset, rowsForSources, totalSizeBytes, wouldExceedDiskThreshold } from '../../lib/sources';
+import { estimatedSizeBytes, hasUnknownSizeRisk, rowForDataset, rowsForSources, totalSizeBytes, wouldExceedDiskThreshold } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
 
@@ -18,6 +18,7 @@ export function UpdateAllBanner() {
   const startDownload = useAppStore((s) => s.startDownload);
   const [confirmingOverfull, setConfirmingOverfull] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const updatable = useMemo(() => {
     const sources = catalog?.document?.sources ?? [];
@@ -30,30 +31,36 @@ export function UpdateAllBanner() {
 
   if (updatable.length === 0) return null;
 
-  // Every entry here is an ALREADY-INSTALLED dataset that's gone stale, so
-  // its previous download size (dataset.sizeBytes, from the manifest) is a
-  // real same-region estimate for the re-download — used in preference to
-  // the catalog's declared size, which is null for forecast/nowcast
-  // (template) sources and would otherwise leave the whole total "unknown"
-  // (the observed "0 B + N unknown size" case). Falls back to the catalog
-  // size only if a manifest size is somehow missing. Matches the backend
-  // auto-update sweep, which estimates the same way.
+  // Every entry here is an ALREADY-INSTALLED dataset that's gone stale.
+  // `estimatedSizeBytes` prefers the catalog's declared size (exact, for a
+  // static file) and falls back to the previous download's real size only
+  // when the catalog can't know ahead of time (forecast/nowcast template
+  // sources) — the same estimate the backend auto-update sweep uses.
   let knownTotal = 0;
   let unknownCount = 0;
-  for (const { dataset, source } of updatable) {
-    const size = dataset.sizeBytes > 0 ? dataset.sizeBytes : totalSizeBytes(source!);
+  for (const { dataset, source, row } of updatable) {
+    const size = row ? estimatedSizeBytes(row, dataset) : dataset.sizeBytes > 0 ? dataset.sizeBytes : totalSizeBytes(source!);
     if (size === null) unknownCount++;
     else knownTotal += size;
   }
 
   const begin = async () => {
     setStarting(true);
+    setError(null);
     try {
-      await Promise.all(
+      // allSettled, not all — one rejected startDownload (e.g. a stale
+      // selector) must not hide that the rest still started, and must not
+      // silently vanish the way a bare try/finally with no catch would.
+      const results = await Promise.allSettled(
         updatable.map(({ dataset }) =>
           startDownload(dataset.catalogSourceId!, dataset.regionId ? { region_id: dataset.regionId, type: dataset.fileType, variant: dataset.variant } : undefined),
         ),
       );
+      const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      if (failures.length > 0) {
+        const reasons = failures.map((f) => (f.reason instanceof Error ? f.reason.message : String(f.reason))).join('; ');
+        setError(`${failures.length} of ${updatable.length} update${updatable.length === 1 ? '' : 's'} failed to start: ${reasons}`);
+      }
     } finally {
       setStarting(false);
     }
@@ -87,22 +94,32 @@ export function UpdateAllBanner() {
           </span>
         </summary>
         <ul className="mb-2 mt-1 list-inside list-disc text-xs text-muted">
-          {updatable.map(({ dataset, source, row }) => (
-            <li key={dataset.id}>
-              {row?.name ?? source!.name}
-              {row?.sizeBytes != null ? ` — ${formatBytes(row.sizeBytes)}` : ' — size varies (forecast cycle)'}
-            </li>
-          ))}
+          {updatable.map(({ dataset, source, row }) => {
+            const size = row ? estimatedSizeBytes(row, dataset) : dataset.sizeBytes > 0 ? dataset.sizeBytes : totalSizeBytes(source!);
+            return (
+              <li key={dataset.id}>
+                {row?.name ?? source!.name}
+                {size !== null ? ` — ${formatBytes(size)}` : ' — size varies (forecast cycle)'}
+              </li>
+            );
+          })}
         </ul>
       </details>
-      <button
-        type="button"
-        disabled={starting}
-        onClick={handleClick}
-        className="min-h-9 shrink-0 rounded-full bg-warn px-3.5 text-xs font-semibold text-bg disabled:opacity-50"
-      >
-        {starting ? 'Starting…' : `Update all · ${sizeLabel}`}
-      </button>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        <button
+          type="button"
+          disabled={starting}
+          onClick={handleClick}
+          className="min-h-9 shrink-0 rounded-full bg-warn px-3.5 text-xs font-semibold text-bg disabled:opacity-50"
+        >
+          {starting ? 'Starting…' : `Update all · ${sizeLabel}`}
+        </button>
+        {error && (
+          <span role="alert" className="max-w-[16rem] text-right text-xs text-danger">
+            {error}
+          </span>
+        )}
+      </div>
       {confirmingOverfull && (
         <Modal title="Disk almost full" onClose={() => setConfirmingOverfull(false)}>
           <p className="mb-2 text-muted">

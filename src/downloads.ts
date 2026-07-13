@@ -78,6 +78,16 @@ export interface DownloadEngine {
    * of waiting for their own lazy poll interval.
    */
   onAnyDone(listener: (job: DownloadJob) => void): () => void;
+  /**
+   * True iff a queued/active job exists for this exact `sourceId` AND an
+   * equivalent `FileSelector` (region_id/type/variant compared field-by-field;
+   * a field omitted on EITHER side is treated as a wildcard for that field,
+   * matching how a bare `sourceId` job — no selector — is "in flight" for any
+   * selector of that source). Used by the auto-update sweep so one BSH
+   * variant's in-flight job doesn't cause its sibling variants (same
+   * `sourceId`, different `region_id`/`variant`) to be skipped too.
+   */
+  hasInFlight(sourceId: string, selector?: FileSelector): boolean;
 }
 
 /** Progress-only updates are throttled to at most once per this many ms per job — state transitions always emit immediately regardless. */
@@ -114,10 +124,37 @@ function pad3(n: number): string {
   return String(n).padStart(3, '0');
 }
 
-/** Chooses the forecast cycle (YYYYMMDD + HH) to download: `update_check.latest_cycle` when known, else the latest `cycle_hours` entry not after the current UTC hour. */
-function chooseCycle(file: TemplateCatalogFile, latestCycle: string | undefined, maxAgeHours?: number): { ymd: string; hh: string; iso: string } {
+function cycleSlot(day: Date, hour: number): { ymd: string; hh: string; iso: string } {
+  const hh = String(hour).padStart(2, '0');
+  const ymd = day.toISOString().slice(0, 10).replace(/-/g, '');
+  return { ymd, hh, iso: new Date(`${day.toISOString().slice(0, 10)}T${hh}:00:00Z`).toISOString() };
+}
+
+/**
+ * Best-first cycle candidates for `file`: `[0]` is the normal choice
+ * (`update_check.latest_cycle` when known, else the latest `cycle_hours`
+ * entry not after the current UTC hour); `[1..]` step progressively OLDER
+ * through the SAME file's `cycle_hours` list (wrapping to the previous day
+ * past the earliest hour). The fallback candidates exist because a file's
+ * declared `cycle_hours` isn't always what the upstream server actually
+ * publishes for THAT specific file — observed on BSH: the catalog lists
+ * `cycle_hours: ['00','12']` for both the nowcast and forecast-day files of
+ * a region, but the real server only publishes the nowcast/analysis file at
+ * 00Z, never 12Z, even though the 12Z forecast files DO exist. Callers only
+ * consult candidates beyond `[0]` when the chosen one 404s/550s
+ * (`isFileNotFoundError`) — never for other failures, where an older cycle
+ * wouldn't fix the actual problem.
+ */
+function chooseCycleCandidates(
+  file: TemplateCatalogFile,
+  latestCycle: string | undefined,
+  maxAgeHours: number | undefined,
+  count: number,
+): Array<{ ymd: string; hh: string; iso: string }> {
   const hours = [...file.cycle_hours].map((h) => parseInt(h, 10)).filter((h) => Number.isFinite(h)).sort((a, b) => a - b);
   const now = new Date();
+  if (hours.length === 0) return [cycleSlot(now, now.getUTCHours())];
+
   // The catalog's latest_cycle is the most recent cycle the source knows about
   // across all its files. If the latest cycle hour is valid for this file,
   // use it. Otherwise fall back to the current time (e.g. BSH publishes analysis
@@ -129,7 +166,7 @@ function chooseCycle(file: TemplateCatalogFile, latestCycle: string | undefined,
   // cycle should be available. Fall back to now as the upper bound so the
   // next cycle can be discovered.
   let upperBound: Date;
-  if (latestCycle && hours.length > 0) {
+  if (latestCycle) {
     const d = new Date(latestCycle);
     if (hours.includes(d.getUTCHours())) {
       upperBound = (maxAgeHours !== undefined && Date.now() - d.getTime() > maxAgeHours * 3600_000) ? now : d;
@@ -140,16 +177,32 @@ function chooseCycle(file: TemplateCatalogFile, latestCycle: string | undefined,
     upperBound = now;
   }
   const boundHH = upperBound.getUTCHours();
-  let chosen = [...hours].reverse().find((h) => h <= boundHH);
+  const descending = [...hours].reverse();
+  let idx = descending.findIndex((h) => h <= boundHH);
   let day = new Date(Date.UTC(upperBound.getUTCFullYear(), upperBound.getUTCMonth(), upperBound.getUTCDate()));
-  if (chosen === undefined) {
+  if (idx === -1) {
     // Every cycle today is still in the future — use yesterday's latest cycle.
-    chosen = hours[hours.length - 1];
+    idx = 0;
     day = new Date(day.getTime() - 24 * 3600_000);
   }
-  const hh = String(chosen ?? 0).padStart(2, '0');
-  const ymd = day.toISOString().slice(0, 10).replace(/-/g, '');
-  return { ymd, hh, iso: new Date(`${day.toISOString().slice(0, 10)}T${hh}:00:00Z`).toISOString() };
+
+  const candidates: Array<{ ymd: string; hh: string; iso: string }> = [];
+  for (let i = 0; i < count; i++) {
+    candidates.push(cycleSlot(day, descending[idx]));
+    idx++;
+    if (idx >= descending.length) {
+      idx = 0;
+      day = new Date(day.getTime() - 24 * 3600_000);
+    }
+  }
+  return candidates;
+}
+
+/** True iff `e` is a "the file genuinely doesn't exist" failure (FTP 550, HTTP 404) — the class of error where trying an OLDER published cycle is a reasonable, safe recovery. Any other failure (network, auth, disk) is left to propagate as-is; an older cycle wouldn't fix those, and silently substituting one would mask the real problem. */
+function isFileNotFoundError(e: unknown): boolean {
+  if (e && typeof e === 'object' && 'code' in e && (e as { code?: unknown }).code === 550) return true;
+  if (e instanceof Error && /^HTTP 404\b/.test(e.message)) return true;
+  return false;
 }
 
 function fillTemplate(template: string, ymd: string, hh: string, forecastHour: number): string {
@@ -210,6 +263,14 @@ function pickFile(source: CatalogSource, selector?: FileSelector): CatalogFile {
   }
   if (source.files.length === 0) throw new Error(`source "${source.id}" has no files`);
   return templateFiles[0] ?? source.files[0];
+}
+
+/** True iff two selectors could refer to the same file — a field left unset on either side is a wildcard for that field, so a bare `undefined` selector (no region_id at all) overlaps every selector of the same source. Exported so tests can exercise `hasInFlight`-equivalent matching without duplicating the semantics. */
+export function selectorsOverlap(a: FileSelector | undefined, b: FileSelector | undefined): boolean {
+  if (a?.region_id !== undefined && b?.region_id !== undefined && a.region_id !== b.region_id) return false;
+  if (a?.type !== undefined && b?.type !== undefined && a.type !== b.type) return false;
+  if (a?.variant !== undefined && b?.variant !== undefined && a.variant !== b.variant) return false;
+  return true;
 }
 
 async function writeChunk(stream: fs.WriteStream, chunk: Uint8Array): Promise<void> {
@@ -433,15 +494,17 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     if (!templateFile) {
       throw new Error(`no template file for region "${selector?.region_id}"${selector?.type ? ` (${selector.type})` : ''} in source "${source.id}"`);
     }
-    const { ymd, hh, iso } = chooseCycle(templateFile, source.update_check.latest_cycle, source.update_check.max_age_hours);
-    const names: string[] = [];
-    let sizeBytes = 0;
+    const cycleCandidates = chooseCycleCandidates(templateFile, source.update_check.latest_cycle, source.update_check.max_age_hours, 3);
     // The region (and forecast/nowcast type) MUST be part of the filename:
     // multi-region template sources (e.g. NOAA RTOFS) share one url_template
     // pattern, and a source-id-only name made every region's download land
     // on the SAME file — each region silently overwriting the previous one
-    // while the manifest kept claiming all of them were installed.
-    const regionTag = `${templateFile.region_id}_${templateFile.type}`.replace(/[^A-Za-z0-9._-]+/g, '-');
+    // while the manifest kept claiming all of them were installed. `variant`
+    // is included explicitly too (not left to the `f{hour}` suffix below to
+    // disambiguate implicitly) — today every BSH variant happens to have a
+    // distinct forecast_hours value, but nothing guarantees that stays true,
+    // and two same-hour variants would otherwise silently collide on disk.
+    const regionTag = `${templateFile.region_id}_${templateFile.type}${templateFile.variant ? `_${templateFile.variant}` : ''}`.replace(/[^A-Za-z0-9._-]+/g, '-');
     // Files land under a per-region subfolder (region_id, sanitized) rather
     // than flat in the type directory — with several regions installed
     // (a boat cruising both US coasts, say), a flat GRIB directory becomes a
@@ -454,25 +517,51 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     // forward-slash-joined keys (used to restrict per-dataset lookups to
     // this install's own files) on every platform, not just POSIX.
     const regionDir = templateFile.region_id.replace(/[^A-Za-z0-9._-]+/g, '-');
-    for (const hour of templateFile.forecast_hours) {
-      const url = fillTemplate(templateFile.url_template, ymd, hh, hour);
-      const filename = `${source.id}_${regionTag}_${ymd}${hh}_f${pad3(hour)}${path.extname(new URL(url).pathname) || '.grb2'}`;
-      const relName = `${subdir}/${regionDir}/${filename}`;
-      const target = path.join(opts.dataDir, relName);
-      // Same fix as the static-file branch above: `total` repeats on every
-      // chunk, only count it once per forecast-hour file.
-      let totalCounted = false;
-      const result = await downloadOne(url, target, (delta, total) => {
-        job.bytes += delta;
-        if (total !== null && !totalCounted) {
-          job.totalBytes = (job.totalBytes ?? 0) + total;
-          totalCounted = true;
+
+    let chosen: { ymd: string; hh: string; iso: string } | null = null;
+    let names: string[] = [];
+    let sizeBytes = 0;
+    let lastNotFoundError: unknown = null;
+    for (const candidate of cycleCandidates) {
+      names = [];
+      sizeBytes = 0;
+      job.bytes = 0;
+      job.totalBytes = null;
+      try {
+        for (const hour of templateFile.forecast_hours) {
+          const url = fillTemplate(templateFile.url_template, candidate.ymd, candidate.hh, hour);
+          const filename = `${source.id}_${regionTag}_${candidate.ymd}${candidate.hh}_f${pad3(hour)}${path.extname(new URL(url).pathname) || '.grb2'}`;
+          const relName = `${subdir}/${regionDir}/${filename}`;
+          const target = path.join(opts.dataDir, relName);
+          // Same fix as the static-file branch above: `total` repeats on every
+          // chunk, only count it once per forecast-hour file.
+          let totalCounted = false;
+          const result = await downloadOne(url, target, (delta, total) => {
+            job.bytes += delta;
+            if (total !== null && !totalCounted) {
+              job.totalBytes = (job.totalBytes ?? 0) + total;
+              totalCounted = true;
+            }
+            notify(job, true);
+          }, controller.signal);
+          names.push(relName);
+          sizeBytes += result.size;
         }
-        notify(job, true);
-      }, controller.signal);
-      names.push(relName);
-      sizeBytes += result.size;
+        chosen = candidate;
+        break;
+      } catch (e) {
+        for (const relName of names) {
+          try { fs.unlinkSync(path.join(opts.dataDir, relName)); } catch { /* best effort */ }
+        }
+        if (!isFileNotFoundError(e)) throw e;
+        lastNotFoundError = e;
+        // else: this cycle genuinely isn't published for this file yet — try the next-older candidate.
+      }
     }
+    if (!chosen) {
+      throw lastNotFoundError instanceof Error ? lastNotFoundError : new Error(`no cycle candidate available for "${templateFile.region_id}" (${templateFile.type}) in source "${source.id}"`);
+    }
+
     const install: ManifestInstall = {
       // Some real catalog regions carry BOTH a forecast and a nowcast file
       // under the SAME region_id (observed in the NOAA catalog) — the id
@@ -488,14 +577,30 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       files: names,
       size_bytes: sizeBytes,
       downloaded_at: new Date().toISOString(),
-      cycle: iso,
+      cycle: chosen.iso,
       regionId: templateFile.region_id,
       fileType: templateFile.type,
       variant: templateFile.variant,
     };
     const manifest = readManifest(opts.manifestPath);
+    // Capture the install this one is about to replace (same id — same
+    // source/region/type/variant, just a different cycle) BEFORE upserting,
+    // so its now-superseded files can be removed once the new cycle is
+    // safely in place. Without this, every successful update left the prior
+    // cycle's file behind forever (the on-disk name always encodes the
+    // cycle, so a new download never overwrites the old one) — accumulating
+    // as an orphan (`orphan:grib:...`) the user had to notice and delete by
+    // hand.
+    const previousInstall = manifest.installs.find((i) => i.id === install.id);
     writeManifestAtomic(opts.manifestPath, upsertInstall(manifest, install));
     job.resultInstallId = install.id;
+
+    if (previousInstall) {
+      for (const relName of previousInstall.files) {
+        if (names.includes(relName)) continue; // same cycle re-requested — this path is the file we just (re)wrote, not a stale one
+        try { fs.unlinkSync(path.join(opts.dataDir, relName)); } catch { /* best effort — already gone, or a permissions issue; not fatal */ }
+      }
+    }
   }
 
   function processQueue(): void {
@@ -560,6 +665,14 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     onAnyDone(listener: (job: DownloadJob) => void): () => void {
       emitter.on('any-done', listener);
       return () => emitter.off('any-done', listener);
+    },
+    hasInFlight(sourceId: string, selector?: FileSelector): boolean {
+      return [...jobs.values()].some(
+        (j) =>
+          j.catalogSourceId === sourceId &&
+          (j.state === 'queued' || j.state === 'active') &&
+          selectorsOverlap(selectors.get(j.id), selector),
+      );
     },
     cancel(id: string): void {
       abortControllers.get(id)?.abort();

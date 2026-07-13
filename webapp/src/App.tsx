@@ -14,6 +14,7 @@ import { SourceDetailModal } from './components/browser/SourceDetailModal';
 import { FirstRunWizard } from './components/wizard/FirstRunWizard';
 import { StorageGauge } from './components/storage/StorageGauge';
 import { UpdateAllBanner } from './components/updates/UpdateAllBanner';
+import { useGlobalDownloadEvents } from './hooks/useGlobalDownloadEvents';
 import { timeAgo } from './lib/format';
 
 const THEME_CYCLE: Theme[] = ['day', 'dark', 'red'];
@@ -49,6 +50,8 @@ export function App() {
     fetchPriority();
     fetchVesselPosition();
   }, [fetchCatalog, fetchDatasets, fetchStorage, fetchPriority, fetchVesselPosition]);
+
+  useGlobalDownloadEvents();
 
   const availableTags = useMemo(() => {
     const tags = new Set<string>();

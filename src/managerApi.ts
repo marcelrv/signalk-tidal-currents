@@ -306,6 +306,49 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     res.json(mgr.downloads.list());
   });
 
+  // Global completion feed (fixes "Update"/"Update all" appearing to do
+  // nothing when no per-job SSE/poll subscription happens to be mounted for
+  // that exact job — e.g. Map view, or a filter hiding the row): one
+  // long-lived stream, independent of any specific job id, that emits every
+  // job the moment it reaches a terminal state via `onAnyDone` (already
+  // fires regardless of whether anyone called `onUpdate` for that job).
+  // Registered BEFORE `/downloads/:id` below so the literal path wins.
+  router.get('/downloads/events', (_req, res) => {
+    const raw = res as unknown as SseRes;
+    raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    let closed = false;
+    // Flush immediately — some proxies/compression middleware hold headers
+    // AND body back until the first write, so without this a client sees
+    // nothing at all (not even the response headers) until the next
+    // heartbeat, up to 15s later, or the next job completion, whichever
+    // comes first (the per-job SSE route below doesn't hit this because it
+    // always has a real `send(job)` to write right after `writeHead`).
+    raw.write(':connected\n\n');
+    const heartbeat = setInterval(() => {
+      if (!closed) raw.write(':hb\n\n');
+    }, 15_000);
+
+    const unsubscribe = mgr.downloads.onAnyDone((job) => {
+      if (!closed) raw.write(`data: ${JSON.stringify(job)}\n\n`);
+    });
+
+    function cleanup(): void {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+      raw.end();
+    }
+
+    raw.on('close', cleanup);
+  });
+
   router.get('/downloads/:id', (req, res) => {
     const job = mgr.downloads.get(req.params.id);
     if (!job) {

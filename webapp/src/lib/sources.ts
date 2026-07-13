@@ -100,6 +100,18 @@ export function isRowInstalled(datasets: DatasetEntry[], row: SourceRow): boolea
   return !!d && d.status !== 'error';
 }
 
+/**
+ * Best available size estimate for `row`: the catalog's declared size when
+ * known, else the size of `dataset`'s last real download (a template/forecast
+ * row has no declared size — the previous cycle's actual byte count is a real
+ * same-region estimate for the next one, not a guess). Null only when
+ * neither is available (never installed, catalog size unknown).
+ */
+export function estimatedSizeBytes(row: SourceRow, dataset: DatasetEntry | undefined): number | null {
+  if (row.sizeBytes !== null) return row.sizeBytes;
+  return dataset && dataset.sizeBytes > 0 ? dataset.sizeBytes : null;
+}
+
 /** Inverse of `datasetForRow` — the display row (name/regionName/size) for an installed dataset, so UI that only has the dataset (e.g. the Update-All banner) can still show a human-readable label instead of a raw id. */
 export function rowForDataset(rows: SourceRow[], dataset: DatasetEntry): SourceRow | undefined {
   return rows.find(

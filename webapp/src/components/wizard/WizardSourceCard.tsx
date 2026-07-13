@@ -1,5 +1,5 @@
 import { DatasetEntry } from '../../api/types';
-import { SourceRow } from '../../lib/sources';
+import { SourceRow, estimatedSizeBytes } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 
 const TYPE_BADGE: Record<SourceRow['source']['type'], string> = { utcef: 'UTCEF', grib2: 'GRIB2', harmonic: 'Harmonic' };
@@ -18,7 +18,7 @@ export function WizardSourceCard({
   recommended?: boolean;
 }) {
   const isInstalled = dataset && dataset.status !== 'error';
-  const displaySize = dataset ? dataset.sizeBytes : row.sizeBytes;
+  const displaySize = estimatedSizeBytes(row, dataset ?? undefined);
 
   return (
     <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-border p-3">

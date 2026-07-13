@@ -576,3 +576,246 @@ test('onAnyDone() fires for a job the caller never subscribed to via onUpdate(),
     },
   );
 });
+
+test('hasInFlight() distinguishes selectors of the SAME source by region/type/variant (BSH-style: a nowcast job in flight must not report a sibling forecast variant as in flight)', async () => {
+  await withServer(
+    (req, res) => {
+      res.writeHead(200, { 'Content-Length': '30' });
+      let sent = 0;
+      const iv = setInterval(() => {
+        sent += 10;
+        if (sent >= 30) { clearInterval(iv); res.end(Buffer.alloc(10, 65)); return; }
+        res.write(Buffer.alloc(10, 65));
+      }, 200);
+    },
+    async (baseUrl) => {
+      const { root, manifestPath } = tmpDirs();
+      const source: CatalogSource = {
+        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
+        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'expiry', last_checked: new Date().toISOString() },
+        files: [
+          {
+            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'nowcast', url_template: `${baseUrl}/nowcast.grb2`, forecast_hours: [0], cycle_hours: ['00'],
+          },
+          {
+            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'forecast', variant: '+24h', url_template: `${baseUrl}/24h.grb2`, forecast_hours: [24], cycle_hours: ['00'],
+          },
+        ],
+      };
+      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      const job = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
+      await waitFor(() => engine.get(job.id)!.state === 'active');
+
+      assert.equal(engine.hasInFlight('bsh_currents', { region_id: 'north_sea', type: 'nowcast' }), true);
+      assert.equal(engine.hasInFlight('bsh_currents', { region_id: 'north_sea', type: 'forecast', variant: '+24h' }), false);
+      assert.equal(engine.hasInFlight('bsh_currents'), true, 'a bare selector overlaps any selector of the same source');
+      assert.equal(engine.hasInFlight('other_source', { region_id: 'north_sea', type: 'nowcast' }), false);
+
+      engine.cancel(job.id);
+      await waitFor(() => engine.get(job.id)!.state === 'error');
+    },
+  );
+});
+
+test('a template file whose chosen cycle 404s falls back to the next-older cycle in the SAME cycle_hours list (BSH nowcast-only-at-00Z-not-12Z scenario)', async () => {
+  const requestedPaths: string[] = [];
+  await withServer(
+    (req, res) => {
+      requestedPaths.push(req.url ?? '');
+      if ((req.url ?? '').endsWith('/12.grb2')) {
+        res.writeHead(404);
+        res.end('not found');
+        return;
+      }
+      res.writeHead(200);
+      res.end(Buffer.from('nowcast-data'));
+    },
+    async (baseUrl) => {
+      const { root, manifestPath } = tmpDirs();
+      const now = new Date();
+      const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0)).toISOString();
+      const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
+      const source: CatalogSource = {
+        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
+        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 12, latest_cycle: cycleIso },
+        files: [
+          {
+            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'nowcast', url_template: `${baseUrl}/{HH}.grb2`, forecast_hours: [0], cycle_hours: ['00', '12'],
+          },
+        ],
+      };
+      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      const job = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
+      await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error', 5000);
+
+      assert.equal(engine.get(job.id)!.state, 'done', engine.get(job.id)!.error);
+      assert.deepEqual(requestedPaths, ['/12.grb2', '/00.grb2'], 'must try the chosen 12Z cycle first, then fall back to 00Z');
+
+      const manifest = readManifest(manifestPath);
+      assert.equal(manifest.installs.length, 1);
+      // The install's recorded cycle must reflect the cycle that ACTUALLY succeeded (00Z), not the originally-chosen one (12Z).
+      assert.equal(manifest.installs[0].cycle, new Date(`${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}T00:00:00Z`).toISOString());
+    },
+  );
+});
+
+test('a template file download failure that is NOT "file not found" (e.g. HTTP 500) propagates immediately, without trying an older cycle', async () => {
+  const requestedPaths: string[] = [];
+  await withServer(
+    (req, res) => {
+      requestedPaths.push(req.url ?? '');
+      res.writeHead(500);
+      res.end('server error');
+    },
+    async (baseUrl) => {
+      const { root, manifestPath } = tmpDirs();
+      const now = new Date();
+      const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0)).toISOString();
+      const source: CatalogSource = {
+        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
+        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 12, latest_cycle: cycleIso },
+        files: [
+          {
+            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'nowcast', url_template: `${baseUrl}/{HH}.grb2`, forecast_hours: [0], cycle_hours: ['00', '12'],
+          },
+        ],
+      };
+      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      const job = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
+      await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error', 5000);
+
+      assert.equal(engine.get(job.id)!.state, 'error');
+      assert.match(engine.get(job.id)!.error ?? '', /HTTP 500/);
+      assert.deepEqual(requestedPaths, ['/12.grb2'], 'a non-not-found error must not trigger a fallback attempt at an older cycle');
+    },
+  );
+});
+
+test('two variants of the same region+type that happen to share a forecast hour no longer collide on disk (variant is now part of the filename)', async () => {
+  await withServer(
+    (req, res) => { res.writeHead(200); res.end(Buffer.from(req.url ?? '')); },
+    async (baseUrl) => {
+      const { root, manifestPath } = tmpDirs();
+      const cycleIso = '2026-07-03T00:00:00Z';
+      const mkVariant = (variant: string) => ({
+        region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+        type: 'forecast' as const, url_template: `${baseUrl}/${variant}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+        // Same forecast_hours on purpose — this is the scenario the old
+        // filename (region+type only) couldn't distinguish.
+        forecast_hours: [24], cycle_hours: ['00'], variant,
+      });
+      const source: CatalogSource = {
+        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
+        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 24, latest_cycle: cycleIso },
+        files: [mkVariant('am'), mkVariant('pm')],
+      };
+      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      const am = engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast', variant: 'am' });
+      await waitFor(() => engine.get(am.id)!.state === 'done' || engine.get(am.id)!.state === 'error');
+      assert.equal(engine.get(am.id)!.state, 'done', engine.get(am.id)!.error);
+
+      const pm = engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast', variant: 'pm' });
+      await waitFor(() => engine.get(pm.id)!.state === 'done' || engine.get(pm.id)!.state === 'error');
+      assert.equal(engine.get(pm.id)!.state, 'done', engine.get(pm.id)!.error);
+
+      const manifest = readManifest(manifestPath);
+      assert.equal(manifest.installs.length, 2, 'both variants must have their own install, not overwrite each other');
+      const files = manifest.installs.flatMap((i) => i.files);
+      assert.equal(new Set(files).size, files.length, 'the two variants must not land on the same on-disk filename');
+      for (const f of files) {
+        assert.ok(fs.existsSync(path.join(root, f)), `${f} missing on disk`);
+      }
+    },
+  );
+});
+
+test('a successful re-download of the SAME region/type/variant at a NEW cycle deletes the file it superseded (no orphan left behind)', async () => {
+  await withServer(
+    (req, res) => { res.writeHead(200); res.end(Buffer.from(req.url ?? '')); },
+    async (baseUrl) => {
+      const { root, manifestPath } = tmpDirs();
+      const source: CatalogSource = {
+        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
+        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        // A huge max_age_hours pins `latest_cycle` as the deterministic choice
+        // (the "stale snapshot, use now instead" branch never kicks in).
+        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 999999, latest_cycle: '2026-07-01T00:00:00Z' },
+        files: [{
+          region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+          type: 'nowcast', url_template: `${baseUrl}/{YYYYMMDD}/{HH}.grb2`, forecast_hours: [0], cycle_hours: ['00'],
+        }],
+      };
+      // A real CatalogClient (not fakeCatalogClient's frozen snapshot) so the
+      // second download can resolve a genuinely different cycle by mutating
+      // the SAME source object's update_check between the two engine.start() calls.
+      const document: CatalogDocument = { catalog_schema_version: '1.0.0', version: 1, generated: new Date().toISOString(), source_count: 1, sources: [source] };
+      const state: CatalogState = { status: 'cached', document, fetchedAt: new Date().toISOString(), error: null, sourceUrl: 'https://x', warnings: [] };
+      const catalog: CatalogClient = { get: () => state, refresh: async () => state };
+
+      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog, catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      const job1 = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
+      await waitFor(() => engine.get(job1.id)!.state === 'done' || engine.get(job1.id)!.state === 'error');
+      assert.equal(engine.get(job1.id)!.state, 'done', engine.get(job1.id)!.error);
+      const firstFile = path.join(root, readManifest(manifestPath).installs[0].files[0]);
+      assert.ok(fs.existsSync(firstFile));
+
+      source.update_check = { ...source.update_check, latest_cycle: '2026-07-02T00:00:00Z' };
+
+      const job2 = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
+      await waitFor(() => engine.get(job2.id)!.state === 'done' || engine.get(job2.id)!.state === 'error');
+      assert.equal(engine.get(job2.id)!.state, 'done', engine.get(job2.id)!.error);
+
+      const manifestAfterSecond = readManifest(manifestPath);
+      assert.equal(manifestAfterSecond.installs.length, 1, 'still one logical install for this region/type/variant, not two');
+      const secondFile = path.join(root, manifestAfterSecond.installs[0].files[0]);
+      assert.notEqual(secondFile, firstFile, 'the second cycle must use a different filename');
+      assert.ok(fs.existsSync(secondFile), 'the new cycle file must exist');
+      assert.ok(!fs.existsSync(firstFile), 'the superseded first-cycle file must have been deleted, not left as an orphan');
+    },
+  );
+});
+
+test('re-requesting the SAME cycle (no new data yet) does not delete the file it just (re)wrote', async () => {
+  await withServer(
+    (req, res) => { res.writeHead(200); res.end(Buffer.from('same-cycle-data')); },
+    async (baseUrl) => {
+      const { root, manifestPath } = tmpDirs();
+      const source: CatalogSource = {
+        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
+        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 999999, latest_cycle: '2026-07-01T00:00:00Z' },
+        files: [{
+          region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+          type: 'nowcast', url_template: `${baseUrl}/{YYYYMMDD}/{HH}.grb2`, forecast_hours: [0], cycle_hours: ['00'],
+        }],
+      };
+      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      const job1 = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
+      await waitFor(() => engine.get(job1.id)!.state === 'done' || engine.get(job1.id)!.state === 'error');
+      assert.equal(engine.get(job1.id)!.state, 'done', engine.get(job1.id)!.error);
+
+      const job2 = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
+      await waitFor(() => engine.get(job2.id)!.state === 'done' || engine.get(job2.id)!.state === 'error');
+      assert.equal(engine.get(job2.id)!.state, 'done', engine.get(job2.id)!.error);
+
+      const manifest = readManifest(manifestPath);
+      assert.equal(manifest.installs.length, 1);
+      const file = path.join(root, manifest.installs[0].files[0]);
+      assert.ok(fs.existsSync(file), 'the (re-)downloaded file must still exist — must not delete what it just wrote');
+    },
+  );
+});

@@ -1,6 +1,6 @@
 import { useAppStore } from '../../store/useAppStore';
 import { DatasetEntry } from '../../api/types';
-import { SourceRow, displayStatus } from '../../lib/sources';
+import { SourceRow, displayStatus, estimatedSizeBytes } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { StatusDot } from '../shared/StatusBadge';
 import { ExpiryCountdown } from '../shared/ExpiryCountdown';
@@ -37,6 +37,7 @@ export function SourceListRow({
   const select = useAppStore((s) => s.select);
   const selected = useAppStore((s) => s.selection.key === row.key);
   const status = displayStatus(dataset);
+  const sizeBytes = estimatedSizeBytes(row, dataset);
 
   return (
     <li
@@ -63,7 +64,7 @@ export function SourceListRow({
               className="shrink-0 tabular-nums"
               title={row.sizeBytes === null ? 'Forecast/nowcast cycle file — size varies, not known until downloaded' : undefined}
             >
-              {row.sizeBytes === null ? (dataset ? formatBytes(dataset.sizeBytes) : 'size varies') : formatBytes(row.sizeBytes)}
+              {sizeBytes === null ? 'size varies' : formatBytes(sizeBytes)}
             </span>
             {dataset && <ExpiryCountdown dataset={dataset} />}
           </span>

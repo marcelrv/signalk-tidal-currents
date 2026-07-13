@@ -77,6 +77,7 @@ function fakeDownloadEngine(): DownloadEngine {
     cancel: () => {},
     onUpdate: () => () => {},
     onAnyDone: () => () => {},
+    hasInFlight: () => false,
   };
 }
 

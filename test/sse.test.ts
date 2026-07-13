@@ -230,3 +230,85 @@ test('SSE: an aborted client connection does not crash the server (indirect: ser
     contentServer.close();
   }
 });
+
+test('SSE: global /downloads/events emits a frame for ANY job reaching a terminal state, even one nobody per-job-subscribed to', async () => {
+  const contentServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Length': '5' });
+    res.end('hello');
+  });
+  const port1 = await listen(contentServer);
+  try {
+    const { root, manifestPath } = tmpDirs();
+    const source: CatalogSource = {
+      id: 'quick2', source: 'test', type: 'harmonic', name: 'Quick2', description: '',
+      contributor: 'Test', url: `http://127.0.0.1:${port1}`, tags: [], region: region(),
+      update_check: { method: 'sha256', last_checked: new Date().toISOString() },
+      files: [{ filename: 'HARMONIC', url: `http://127.0.0.1:${port1}/f`, size_bytes: 5 }],
+    };
+    const downloads = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
+    const mgr = baseMgr({ downloads, dataDir: root, manifestPath });
+    const { router, server } = createRealRouter();
+    registerManagerRoutes(router, mgr);
+    const port2 = await listen(server);
+    try {
+      // Started via the engine directly (not via the per-job /events route) —
+      // nobody ever subscribed to THIS job id specifically.
+      const job = downloads.start('quick2');
+      const resp = await fetch(`http://127.0.0.1:${port2}/downloads/events`);
+      assert.equal(resp.headers.get('content-type'), 'text/event-stream');
+      const reader = resp.body!.getReader();
+      const decoder = new TextDecoder();
+      let text = '';
+      const deadline = Date.now() + 5000;
+      // Regression guard: some proxies/compression middleware hold BOTH
+      // headers and body back until the first write — a client would see
+      // nothing at all for up to 15s (the heartbeat interval) without an
+      // immediate flush right after connecting.
+      while (!text.includes(':connected') && Date.now() < deadline) {
+        const { value } = await reader.read();
+        if (value) text += decoder.decode(value);
+      }
+      assert.ok(text.includes(':connected'), `expected an immediate flush right after connecting; got: ${text}`);
+
+      // This route never self-closes (it's meant to stay open for the whole
+      // app session), so read until the job's frame shows up or we time out —
+      // unlike the per-job /events test above, which can just read to `done`.
+      while (!text.includes(`"id":"${job.id}"`) && Date.now() < deadline) {
+        const { value } = await reader.read();
+        if (value) text += decoder.decode(value);
+      }
+      await reader.cancel().catch(() => {});
+      assert.ok(text.includes('data: '), text);
+      assert.ok(text.includes(`"id":"${job.id}"`), text);
+      assert.ok(/"state":"done"/.test(text) || /"state":"error"/.test(text), text);
+    } finally {
+      server.close();
+    }
+  } finally {
+    contentServer.close();
+  }
+});
+
+test('SSE: /downloads/:id still resolves correctly (the literal /downloads/events route does not shadow it)', async () => {
+  const { root, manifestPath } = tmpDirs();
+  const source: CatalogSource = {
+    id: 'literal-check', source: 'test', type: 'harmonic', name: 'Literal', description: '',
+    contributor: 'Test', url: 'https://example.org', tags: [], region: region(),
+    update_check: { method: 'sha256', last_checked: new Date().toISOString() },
+    files: [{ filename: 'HARMONIC', url: 'https://example.org/f', size_bytes: 5 }],
+  };
+  const downloads = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
+  const mgr = baseMgr({ downloads, dataDir: root, manifestPath });
+  const { router, server } = createRealRouter();
+  registerManagerRoutes(router, mgr);
+  const port = await listen(server);
+  try {
+    const job = downloads.start('literal-check');
+    const resp = await fetch(`http://127.0.0.1:${port}/downloads/${job.id}`);
+    assert.equal(resp.status, 200);
+    const body = (await resp.json()) as { id: string };
+    assert.equal(body.id, job.id);
+  } finally {
+    server.close();
+  }
+});

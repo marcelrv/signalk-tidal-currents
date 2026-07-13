@@ -119,6 +119,7 @@ function pluginConstructor(app: any) {
       cancel: () => {},
       onUpdate: () => () => {},
       onAnyDone: () => () => {},
+      hasInFlight: () => false,
     },
     manifestPath: '',
     dataDir: '',
