@@ -1,0 +1,57 @@
+# Publishes to npm whenever a GitHub Release is published. Expects the
+# release's tag (e.g. "v0.3.1") to match package.json's version — bump
+# package.json (and CHANGELOG.md) in a normal commit first, merge it, THEN
+# create the matching GitHub Release; this workflow refuses to publish if
+# the two disagree, so a stale tag can't accidentally ship the wrong code.
+#
+# Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret at all. One-time
+# setup on npmjs.com: the package's page → Settings → "Trusted Publisher" →
+# Add GitHub Actions publisher, with:
+#   Organization or user: <the GitHub owner, e.g. marcelrv>
+#   Repository:            signalk-tidal-currents
+#   Workflow filename:     publish-npm.yml   (must match this file's name exactly)
+#   Environment:           (leave blank unless you add one below)
+# `permissions: id-token: write` below is what lets npm CLI exchange this
+# job's OIDC token for a short-lived publish credential automatically.
+
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs a recent npm CLI (11.5.1+) — newer than
+      # what Node 22's bundled npm may ship, so upgrade explicitly rather
+      # than depending on whatever setup-node happened to install.
+      - run: npm install -g npm@latest
+
+      - name: Verify package.json version matches the release tag
+        run: |
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          TAG="${{ github.event.release.tag_name }}"
+          if [ "$PKG_VERSION" != "$TAG" ]; then
+            echo "package.json version ($PKG_VERSION) does not match release tag ($TAG) — bump package.json first."
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm test
+      # npm publish also runs prepublishOnly (npm run build) itself, but
+      # building here first fails fast with build output visible in the
+      # log, before npm even attempts to publish.
+      - run: npm run build
+      - run: npm publish --provenance
