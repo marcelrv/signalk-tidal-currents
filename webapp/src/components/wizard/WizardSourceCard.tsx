@@ -9,11 +9,13 @@ export function WizardSourceCard({
   dataset,
   checked,
   onToggle,
+  recommended,
 }: {
   row: SourceRow;
   dataset: DatasetEntry | null;
   checked: boolean;
   onToggle: () => void;
+  recommended?: boolean;
 }) {
   const isInstalled = dataset && dataset.status !== 'error';
   const displaySize = dataset ? dataset.sizeBytes : row.sizeBytes;
@@ -28,6 +30,9 @@ export function WizardSourceCard({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 font-medium">
           <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs font-medium text-muted">{TYPE_BADGE[row.source.type]}</span>
+          {recommended && !isInstalled && (
+            <span className="rounded-md bg-accent/15 px-1.5 py-0.5 text-xs font-medium text-accent">Recommended</span>
+          )}
           {row.name}
           {isInstalled && <span className="text-xs text-green-500">active</span>}
         </div>

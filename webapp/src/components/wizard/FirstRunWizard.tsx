@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Dispatch, SetStateAction, useEffect, useMemo, useState } from 'react';
 
 import { useAppStore } from '../../store/useAppStore';
-import { coveringRows } from '../../lib/wizard';
-import { datasetForRow, rowsForSources } from '../../lib/sources';
+import { coveringRows, groupByTier } from '../../lib/wizard';
+import { datasetForRow, isRowInstalled, rowsForSources, SourceRow } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
+import { DatasetEntry } from '../../api/types';
 import { Modal } from '../shared/Modal';
 import { WizardSourceCard } from './WizardSourceCard';
 
@@ -39,16 +40,32 @@ export function FirstRunWizard() {
   }, [position, catalog]);
 
   // Default-select only rows that are NOT already installed.
-  const notInstalled = useMemo(() => {
-    return candidates.filter((row) => {
-      const d = datasetForRow(datasets, row);
-      return !d || d.status === 'error';
-    });
-  }, [candidates, datasets]);
+  const notInstalled = useMemo(() => candidates.filter((row) => !isRowInstalled(datasets, row)), [candidates, datasets]);
 
+  // Grouped for display (includes already-installed rows, so they still show under the right tier).
+  const allGrouped = useMemo(() => groupByTier(candidates), [candidates]);
+
+  // Best not-installed row per tier — the one TierSection must always render
+  // plainly (not tucked inside the collapsed "more options" disclosure, even
+  // if an already-installed row outranks it in allGrouped).
+  const notInstalledGrouped = useMemo(() => groupByTier(notInstalled), [notInstalled]);
+
+  // A tier only gets a recommendation when NOTHING in it is installed yet for
+  // this position. Otherwise, accepting one recommendation would immediately
+  // surface another the next time the wizard opens — e.g. this position has
+  // three overlapping "backup" sources (utcef_netherlands, utcef_atn_north_sea,
+  // utcef_north_sea); installing the smallest one must not make the
+  // next-smallest pop up as a fresh "recommended" pick.
+  const liveRecommendedKey = allGrouped.live.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.live[0]?.key ?? null);
+  const backupRecommendedKey = allGrouped.backup.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.backup[0]?.key ?? null);
+
+  // Default-select only the recommended row per tier (≤ 2 total), not every covering row.
   useEffect(() => {
-    setSelected(new Set(notInstalled.map((c) => c.key)));
-  }, [notInstalled]);
+    const keys = new Set<string>();
+    if (liveRecommendedKey) keys.add(liveRecommendedKey);
+    if (backupRecommendedKey) keys.add(backupRecommendedKey);
+    setSelected(keys);
+  }, [liveRecommendedKey, backupRecommendedKey]);
 
   if (!wizard.open) return null;
 
@@ -128,26 +145,26 @@ export function FirstRunWizard() {
             {candidates.length} dataset{candidates.length === 1 ? '' : 's'} cover{' '}
             {position.latitude.toFixed(2)}, {position.longitude.toFixed(2)}:
           </p>
-          <ul className="flex flex-col gap-2">
-            {candidates.map((row) => {
-              const d = datasetForRow(datasets, row);
-              return (
-                <li key={row.key}>
-                  <WizardSourceCard
-                    row={row}
-                    dataset={d ?? null}
-                    checked={selected.has(row.key)}
-                    onToggle={() => {
-                      const next = new Set(selected);
-                      if (next.has(row.key)) next.delete(row.key);
-                      else next.add(row.key);
-                      setSelected(next);
-                    }}
-                  />
-                </li>
-              );
-            })}
-          </ul>
+          <TierSection
+            title="Live forecast"
+            explainer="Updates automatically when you have internet — best accuracy while it's available."
+            emptyMessage="No live forecast available here."
+            rows={allGrouped.live}
+            recommendedKey={liveRecommendedKey}
+            datasets={datasets}
+            selected={selected}
+            setSelected={setSelected}
+          />
+          <TierSection
+            title="Always-available backup"
+            explainer="Downloads once and keeps working offline — usually lower resolution."
+            emptyMessage="No offline backup available here."
+            rows={allGrouped.backup}
+            recommendedKey={backupRecommendedKey}
+            datasets={datasets}
+            selected={selected}
+            setSelected={setSelected}
+          />
           <button
             type="button"
             disabled={newDownloads.length === 0 || installing}
@@ -163,5 +180,85 @@ export function FirstRunWizard() {
         </div>
       )}
     </Modal>
+  );
+}
+
+/**
+ * One tier ("Live forecast" / "Always-available backup") of the wizard's
+ * candidate list. `rows` is best-first ranked (`groupByTier`) and includes
+ * already-installed rows so they still show under the right tier.
+ * `recommendedKey` is the best NOT-installed row's key — null once the tier
+ * already has a working install for this position, so accepting one
+ * recommendation doesn't surface another next time. The recommended row (if
+ * any) is surfaced plainly together with any already-installed rows;
+ * everything else (genuinely redundant coverage, e.g. the global OpenCPN
+ * harmonic pack, or a second overlapping regional pack once the tier is
+ * satisfied) is collapsed under a disclosure so the default view stays small
+ * while still letting the user opt into extras.
+ */
+function TierSection({
+  title,
+  explainer,
+  emptyMessage,
+  rows,
+  recommendedKey,
+  datasets,
+  selected,
+  setSelected,
+}: {
+  title: string;
+  explainer: string;
+  emptyMessage: string;
+  rows: SourceRow[];
+  recommendedKey: string | null;
+  datasets: DatasetEntry[];
+  selected: Set<string>;
+  setSelected: Dispatch<SetStateAction<Set<string>>>;
+}) {
+  const toggle = (key: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const renderRow = (row: SourceRow, recommended: boolean) => {
+    const d = datasetForRow(datasets, row);
+    return (
+      <li key={row.key}>
+        <WizardSourceCard row={row} dataset={d ?? null} checked={selected.has(row.key)} onToggle={() => toggle(row.key)} recommended={recommended} />
+      </li>
+    );
+  };
+
+  const primary = rows.filter((r) => r.key === recommendedKey || isRowInstalled(datasets, r));
+  const extra = rows.filter((r) => r.key !== recommendedKey && !isRowInstalled(datasets, r));
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div>
+        <h3 className="text-sm font-medium">{title}</h3>
+        <p className="text-xs text-muted">{explainer}</p>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted">{emptyMessage}</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {primary.map((row) => renderRow(row, row.key === recommendedKey))}
+          {extra.length > 0 && (
+            <li>
+              <details>
+                <summary className="min-h-11 cursor-pointer py-1 text-sm text-accent">
+                  Show {extra.length} more option{extra.length === 1 ? '' : 's'} covering this area
+                </summary>
+                <ul className="mt-2 flex flex-col gap-2">{extra.map((row) => renderRow(row, false))}</ul>
+              </details>
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
   );
 }

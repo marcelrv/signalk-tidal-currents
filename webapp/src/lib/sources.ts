@@ -94,6 +94,12 @@ export function datasetForRow(datasets: DatasetEntry[], row: SourceRow): Dataset
   );
 }
 
+/** True iff `row` has a working (non-error) installed dataset. */
+export function isRowInstalled(datasets: DatasetEntry[], row: SourceRow): boolean {
+  const d = datasetForRow(datasets, row);
+  return !!d && d.status !== 'error';
+}
+
 /** Inverse of `datasetForRow` — the display row (name/regionName/size) for an installed dataset, so UI that only has the dataset (e.g. the Update-All banner) can still show a human-readable label instead of a raw id. */
 export function rowForDataset(rows: SourceRow[], dataset: DatasetEntry): SourceRow | undefined {
   return rows.find(
