@@ -210,6 +210,6 @@ to cut a release:
 - `.tcd` (libtcd binary) support requires porting libtcd's bit-unpacking —
   the format is public domain (spec: Depner, OAML TCD, 2003); do NOT copy
   OpenCPN's GPLv2 `tcds_binary_harmonic.cpp`.
-- signalk-autoroute integration: its `FlowField` provider interface consumes
+- signalk-routeiq integration: its `FlowField` provider interface consumes
   `GET /vector`-style samples; a `StationFlowField` there should prefer this
   plugin's stations and fall back to its height-gradient estimate.

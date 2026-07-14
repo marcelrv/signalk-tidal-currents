@@ -20,7 +20,7 @@ Unlike tide-height plugins (e.g. the excellent
 about **water movement**: how fast the tidal stream runs and which way it
 sets — at a station or anywhere a forecast grid covers, at any time.
 Typical uses: passage planning around tidal gates, current-aware routing
-(e.g. [signalk-autoroute](https://github.com/marcelrv/signalk-autoroute)),
+(e.g. [signalk-routeiq](https://github.com/marcelrv/signalk-routeiq)),
 and showing predicted set/drift on instruments.
 
 ## Tidal Currents Manager (bundled webapp)
