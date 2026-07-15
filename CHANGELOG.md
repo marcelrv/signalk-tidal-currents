@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.2 — 2026-07-16
+
+### Fixed
+
+- BSH's `+24h`/`+48h` forecast-day files could get permanently stuck on an
+  old cycle and never refresh, even when clicking "Update"/"Update all"
+  repeatedly. They're published on a different schedule (12Z) than the
+  nowcast file the catalog's shared freshness timestamp tracks (00Z), so
+  the update check kept looking for a cycle that was never going to
+  arrive. It now also checks the current cycle directly when that happens,
+  so the update goes through as expected.
+- A dataset row whose background update failed (as in the above case) gave
+  no indication anything had gone wrong — it silently reverted to
+  "Update", indistinguishable from the click having done nothing. Failed
+  rows now show "Retry" with the actual error message.
+
 ## 0.3.1 — 2026-07-13
 
 ### Fixed
