@@ -77,7 +77,17 @@ export function DownloadButton({
     );
   }
 
-  if (status === 'active') {
+  // A job that failed AFTER being queued (a real download/network error, not
+  // a rejected startDownload() call) leaves `job` sitting in `state: 'error'`
+  // indefinitely — `jobId` only changes on the NEXT attempt for this exact
+  // row (see downloadKeyFor), so this is stable until then. Without surfacing
+  // it here, the row just reverts to its pre-click appearance the moment the
+  // job leaves `active`, looking exactly like the click did nothing — this is
+  // what made "Update"/"Update all" appear to silently fail on rows whose
+  // background job errored (e.g. a 404 on every cycle candidate).
+  const jobError = job?.state === 'error' ? job.error ?? 'Download failed' : null;
+
+  if (status === 'active' && !jobError) {
     return (
       <span
         aria-label="Installed"
@@ -89,17 +99,17 @@ export function DownloadButton({
     );
   }
 
-  const label = status === 'update-available' ? 'Update' : status === 'error' ? 'Retry' : 'Get';
+  const label = jobError ? 'Retry' : status === 'update-available' ? 'Update' : status === 'error' ? 'Retry' : 'Get';
   return (
     <div className="flex shrink-0 flex-col items-end gap-1">
       <button
         type="button"
         aria-label={`${label} ${source.name}`}
         className={`flex min-h-9 items-center gap-1.5 rounded-full px-3.5 text-xs font-semibold ${
-          status === 'update-available'
-            ? 'bg-warn/15 text-warn'
-            : status === 'error'
-              ? 'bg-danger/15 text-danger'
+          jobError || status === 'error'
+            ? 'bg-danger/15 text-danger'
+            : status === 'update-available'
+              ? 'bg-warn/15 text-warn'
               : 'bg-accent text-bg'
         }`}
         onClick={handleClick}
@@ -107,9 +117,9 @@ export function DownloadButton({
         <Icon name="download" className="h-3.5 w-3.5" />
         {label}
       </button>
-      {error && (
+      {(error ?? jobError) && (
         <span role="alert" className="max-w-[14rem] text-right text-xs text-danger">
-          {error}
+          {error ?? jobError}
         </span>
       )}
       {confirmingOverfull && (

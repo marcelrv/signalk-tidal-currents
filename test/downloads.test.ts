@@ -666,6 +666,60 @@ test('a template file whose chosen cycle 404s falls back to the next-older cycle
   );
 });
 
+test('when EVERY latest_cycle-anchored candidate 404s, a fallback anchored on the real current time is tried before giving up (BSH forecast-at-12Z-while-shared-latest_cycle-tracks-00Z scenario)', async () => {
+  const requestedPaths: string[] = [];
+  const now = new Date();
+  const todayYmd = now.toISOString().slice(0, 10).replace(/-/g, '');
+  const successPath = `/${todayYmd}/00.grb2`;
+  await withServer(
+    (req, res) => {
+      const url = req.url ?? '';
+      requestedPaths.push(url);
+      if (url === successPath) {
+        res.writeHead(200);
+        res.end(Buffer.from('forecast-data'));
+        return;
+      }
+      res.writeHead(404);
+      res.end('not found');
+    },
+    async (baseUrl) => {
+      const { root, manifestPath } = tmpDirs();
+      const source: CatalogSource = {
+        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
+        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        // Pinned to a date decades in the past with no max_age_hours (so
+        // staleness never forces a fallback to `now` on its own) — every
+        // latest_cycle-anchored candidate is guaranteed to land on a date
+        // that will never match `successPath`.
+        update_check: { method: 'expiry', last_checked: new Date().toISOString(), latest_cycle: '1970-01-01T00:00:00Z' },
+        files: [
+          {
+            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
+            type: 'forecast', variant: '+24h', url_template: `${baseUrl}/{YYYYMMDD}/{HH}.grb2`,
+            forecast_hours: [24], cycle_hours: ['00'],
+          },
+        ],
+      };
+      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+
+      const job = engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast', variant: '+24h' });
+      await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error', 5000);
+
+      assert.equal(engine.get(job.id)!.state, 'done', engine.get(job.id)!.error);
+      // 3 doomed latest_cycle-anchored attempts (1970 and its two predecessor
+      // 00Z cycles), then the fallback anchored on the real current day succeeds.
+      assert.equal(requestedPaths.length, 4, requestedPaths.join(', '));
+      assert.equal(requestedPaths[3], successPath);
+      assert.ok(requestedPaths.slice(0, 3).every((p) => p.startsWith('/19')), 'the primary candidates must all be anchored on the pinned 1970 latest_cycle, not today');
+
+      const manifest = readManifest(manifestPath);
+      assert.equal(manifest.installs.length, 1);
+      assert.equal(manifest.installs[0].cycle, new Date(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`).toISOString());
+    },
+  );
+});
+
 test('a template file download failure that is NOT "file not found" (e.g. HTTP 500) propagates immediately, without trying an older cycle', async () => {
   const requestedPaths: string[] = [];
   await withServer(

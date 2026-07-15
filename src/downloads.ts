@@ -494,7 +494,22 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     if (!templateFile) {
       throw new Error(`no template file for region "${selector?.region_id}"${selector?.type ? ` (${selector.type})` : ''} in source "${source.id}"`);
     }
-    const cycleCandidates = chooseCycleCandidates(templateFile, source.update_check.latest_cycle, source.update_check.max_age_hours, 3);
+    // The catalog's `latest_cycle` is a single per-SOURCE timestamp, but it's
+    // only ever confirmed against ONE of the source's files (observed: BSH's
+    // nowcast, published at 00Z) — a sibling file/variant published on a
+    // DIFFERENT cycle schedule (BSH's +24h/+48h forecast-day files, published
+    // at 12Z) has no way to signal that to `chooseCycleCandidates`, since its
+    // own `cycle_hours` metadata lists both hours for every file regardless of
+    // which one that specific file actually uses. Anchoring on `latest_cycle`
+    // then walks backward from the WRONG hour and never reaches the cycle
+    // that's actually current for this file — permanently stranding it on
+    // whatever cycle last happened to succeed. Only reached when every
+    // `latest_cycle`-anchored candidate above has already 404'd; deduplicated
+    // against them so no URL is ever requested twice.
+    const primaryCandidates = chooseCycleCandidates(templateFile, source.update_check.latest_cycle, source.update_check.max_age_hours, 3);
+    const primaryIsos = new Set(primaryCandidates.map((c) => c.iso));
+    const fallbackCandidates = chooseCycleCandidates(templateFile, undefined, undefined, 3).filter((c) => !primaryIsos.has(c.iso));
+    const cycleCandidates = [...primaryCandidates, ...fallbackCandidates];
     // The region (and forecast/nowcast type) MUST be part of the filename:
     // multi-region template sources (e.g. NOAA RTOFS) share one url_template
     // pattern, and a source-id-only name made every region's download land
