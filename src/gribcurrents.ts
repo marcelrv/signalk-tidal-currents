@@ -374,10 +374,28 @@ function gridBboxWindow(
   grid: Grib2Grid,
   bbox: { west: number; south: number; east: number; north: number },
 ): { iMin: number; iMax: number; jMin: number; jMax: number } | null {
-  const lonIndex = (lon: number): number => ((((lon - grid.lon0) % 360) + 360) % 360) / grid.di;
+  // lonIndex must return the index CLOSEST to the grid's own span, not the
+  // [0, 360/di) principal value: a plain "% 360" modulo always folds a
+  // faraway west edge to a huge positive index instead of a small negative
+  // one. That's invisible while a regional grid is small relative to the
+  // viewport's distance from lon0, but the moment a caller's bbox is wider
+  // than the grid (e.g. a map viewport zoomed out past the grid's own
+  // extent), bbox.west lands past grid.lon0's "far side" and the raw modulo
+  // index overshoots grid.ni with no upper clamp — iMin then exceeds the
+  // (correctly clamped) iMax and the grid is wrongly reported as not
+  // overlapping the bbox at all, even though it's fully contained in it.
+  const lonIndex = (lon: number): number =>
+    (((((lon - grid.lon0 + 180) % 360) + 360) % 360) - 180) / grid.di;
   let iMinF = lonIndex(bbox.west);
   let iMaxF = lonIndex(bbox.east);
   if (iMaxF < iMinF) iMaxF += 360 / grid.di; // bbox straddles the grid's lon0 wrap point
+  // A bbox at least as wide as the grid itself trivially contains the whole
+  // grid regardless of where its edges happen to normalize to — covers the
+  // fully-zoomed-out case without relying on delicate modulo arithmetic.
+  if (iMaxF - iMinF >= grid.ni - 1) {
+    iMinF = 0;
+    iMaxF = grid.ni - 1;
+  }
   const iMin = Math.max(0, Math.floor(iMinF));
   const iMax = Math.min(grid.ni - 1, Math.ceil(iMaxF));
   const jMin = Math.max(0, Math.floor((bbox.south - grid.lat0) / grid.dj));

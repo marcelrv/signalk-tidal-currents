@@ -401,6 +401,14 @@ test('gribGridSamples: samples every region, not just slots[0] grid', () => {
   assert.ok(west.length > 0, 'expected samples in the first region');
   assert.ok(west.every((p) => p.longitude > 4 && p.longitude < 6));
 
+  // A viewport much wider than region B's own small span (-75.0 to -74.4),
+  // extending well past its western edge — the "zoomed out" map case. The
+  // region is still fully contained in the bbox and must still yield
+  // samples (this used to come back empty: the old lonIndex modulo folded
+  // the far-west bbox edge to a huge positive index with no upper clamp).
+  const zoomedOut = gribGridSamples(data, { west: -90, south: 20, east: -70, north: 40 }, T0, 50);
+  assert.ok(zoomedOut.length > 0, 'expected samples in region B from a wide zoomed-out viewport');
+
   // Summary reports both regions and a union envelope spanning them.
   const summary = gribSummary(data) as {
     regions: { lonWest: number; lonEast: number }[];
