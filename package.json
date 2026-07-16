@@ -24,6 +24,7 @@
     "signalk",
     "tides",
     "tidal-currents",
+    "tide-streams",
     "xtide",
     "opencpn",
     "harmonics",
@@ -39,7 +40,7 @@
       "./img/screenshot-list-dark.png",
       "./img/screenshot-near-you.png",
       "./img/screenshot-map.png",
-      "./img/screenshot-config.jpg"
+      "./img/screenshot-config.png"
     ],
     "webapp": {
       "name": "Tidal Currents Manager",
