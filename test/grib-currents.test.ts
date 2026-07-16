@@ -171,15 +171,19 @@ test('resolveVector prefers GRIB inside coverage, station outside', () => {
   const state = apiState();
   const inGrib = resolveVector(state, 53.2, 5.2, T0)!;
   assert.equal(inGrib.source, 'grib');
-  // Outside the grid but near the fixture stations' area → station fallback.
-  const outside = resolveVector(state, 53.2, 6.5, T0)!;
+  // Outside the grid (which ends at 5.5E) but within REST_FALLBACK_MAX_KM of
+  // the fixture station at (53.2, 5.2) → station fallback.
+  const outside = resolveVector(state, 53.2, 5.6, T0)!;
   assert.equal(outside.source, 'station');
   assert.equal(outside.station!.id, 'test-sub-courants');
   // preferGrib=false flips the order.
   const stationFirst = resolveVector(apiState(false), 53.2, 5.2, T0)!;
   assert.equal(stationFirst.source, 'station');
-  // Station path respects the distance limit; GRIB does not.
-  assert.equal(resolveVector(state, 53.2, 6.5, T0, 5), null);
+  // Station path respects an explicit tighter distance limit; GRIB does not.
+  assert.equal(resolveVector(state, 53.2, 5.6, T0, 5), null);
+  // ~87 km from the fixture station and outside GRIB coverage → beyond the
+  // default REST_FALLBACK_MAX_KM cap, so no source covers it at all.
+  assert.equal(resolveVector(state, 53.2, 6.5, T0), null);
 });
 
 test('GET / reports both sources', () => {
@@ -200,7 +204,7 @@ test('GET /vector selects source and reports it', () => {
   assert.equal(grib.body.station, null);
   assert.ok(Math.abs(grib.body.sample.u - 1.0) < 1e-6);
 
-  const station = call('/vector', { latitude: 53.2, longitude: 6.5, time: new Date(T0).toISOString() });
+  const station = call('/vector', { latitude: 53.2, longitude: 5.6, time: new Date(T0).toISOString() });
   assert.equal(station.body.source, 'station');
   assert.equal(station.body.station.id, 'test-sub-courants');
 

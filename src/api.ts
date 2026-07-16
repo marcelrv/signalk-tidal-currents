@@ -91,6 +91,21 @@ export interface ResolvedVector {
 /** Nearest-station fallback radius for a SINGLE dataset's probe in the priority stack (see fromUtcefDataset in resolveVector). */
 export const UTCEF_DATASET_FALLBACK_MAX_KM = 50;
 
+/**
+ * Default nearest-station fallback radius for the merged type-rank pass
+ * (REST /vector and /timeline, which don't pass an explicit maxStationKm).
+ * Without a cap, a position with no GRIB/UTCEF coverage nearby would still
+ * match whatever station happens to be nearest on the *entire* station list
+ * — which, for a query far from any installed dataset (e.g. a boat outside
+ * all configured regions), can be a station thousands of km away on another
+ * continent. That's a "best guess", not useful data, so bound it the same
+ * way the per-dataset probe already is — currents are driven by local
+ * channel/bathymetry, not something a distant station approximates well
+ * even within "the same region", so there's no case for going wider here
+ * than the per-dataset radius.
+ */
+export const REST_FALLBACK_MAX_KM = UTCEF_DATASET_FALLBACK_MAX_KM;
+
 /** Human-readable name of whichever station backed a resolved vector. */
 export function resolvedStationName(r: ResolvedVector): string | null {
   if (r.source === 'station') return r.station?.name ?? null;
@@ -103,14 +118,16 @@ export function resolvedStationName(r: ResolvedVector): string | null {
  * grid) wins when it covers the position/time unless preferGrib is false;
  * among station-type sources the modern UTCEF vector data is tried before the
  * legacy OpenCPN harmonics. `maxStationKm` bounds the station searches
- * (Infinity for the REST API, the configured limit for delta publishing).
+ * (REST_FALLBACK_MAX_KM for the REST API, the configured limit for delta
+ * publishing — never truly unbounded, so a query far from any coverage
+ * returns "no data" instead of a station on the other side of the planet).
  */
 export function resolveVector(
   state: ApiState,
   lat: number,
   lon: number,
   timeMs: number,
-  maxStationKm = Infinity,
+  maxStationKm = REST_FALLBACK_MAX_KM,
 ): ResolvedVector | null {
   const fromGrib = (files?: ReadonlySet<string>): ResolvedVector | null => {
     const g = state.grib?.get();
@@ -499,13 +516,19 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     const win = parseWindow(req, res);
     if (!win) return;
 
-    // Resolve the fallback stations once, not per sample.
+    // Resolve the fallback stations once, not per sample. Bounded the same
+    // way resolveVector's merged pass is (REST_FALLBACK_MAX_KM) — otherwise a
+    // position outside all coverage would still pick up whatever station is
+    // nearest on the entire station list, however far away that is.
     const near = state.data
-      ? nearestCurrentStations(state.data, pos.lat, pos.lon, 10).filter((n) => n.vectorCapable)
+      ? nearestCurrentStations(state.data, pos.lat, pos.lon, 10).filter(
+          (n) => n.vectorCapable && n.distanceKm <= REST_FALLBACK_MAX_KM,
+        )
       : [];
     const station = near.length > 0 ? near[0] : null;
     const u = utcefData();
-    const utcefNear = u ? nearestUtcefStations(u, pos.lat, pos.lon, 1)[0] ?? null : null;
+    const utcefNearRaw = u ? nearestUtcefStations(u, pos.lat, pos.lon, 1)[0] ?? null : null;
+    const utcefNear = utcefNearRaw && utcefNearRaw.distanceKm <= REST_FALLBACK_MAX_KM ? utcefNearRaw : null;
     const g = gribData();
 
     // Per-sample source candidates in preference order (same policy as
