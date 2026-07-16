@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.3 — 2026-07-16
+
+### Fixed
+
+- Current arrows on the chart now appear as soon as you enable the layer,
+  at any zoom level. Previously they only showed up once you'd zoomed in
+  quite far, so it looked like a region had no data even when it was
+  fully downloaded and up to date.
+- In the rare case where your boat is far from any downloaded current
+  data, the plugin now correctly shows "no data available" instead of
+  occasionally borrowing a current reading from a station on the other
+  side of the world.
+
 ## 0.3.2 — 2026-07-16
 
 ### Fixed
