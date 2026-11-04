@@ -182,11 +182,13 @@ Base: `/signalk/v2/api/currents` (same routes at
 | `GET /stations/{id}/timeline?start=&end=&step=` | Set/drift series for one station (default 24 h, 10-min step) |
 | `GET /timeline?latitude=&longitude=&start=&end=&step=` | Set/drift series at a **position** — per-sample source selection (GRIB / UTCEF / station) |
 | `GET /vector?latitude=&longitude=&time=` | Set/drift vector at a position (GRIB → UTCEF → station, configurable) |
-| `GET /grid?bbox=w,s,e,n&time=&maxPoints=` | GRIB current vectors sampled over a viewport for a flow-field overlay, thinned to `maxPoints` |
+| `GET /grid?bbox=w,s,e,n&time=&maxPoints=` | Current vectors over a viewport for a flow-field overlay — GRIB lattice samples and UTCEF stations, merged by source priority (each point has a `source` field), thinned to `maxPoints` |
 
 **Stations vs positions**: harmonic and UTCEF data are station-based; GRIB
 data is gridded and has no stations, so GRIB-backed lookups are purely
-positional (`/vector`, `/timeline`, `/grid`). `/vector` and `/timeline`
+positional (`/vector`, `/timeline`, `/grid`). `/grid` also includes UTCEF
+stations, so areas without GRIB coverage still get arrows; where both cover
+a point, the configured source priority decides which one is shown. `/vector` and `/timeline`
 report which source produced each answer (`source` field; per-sample in
 `/timeline`, so a window extending past the GRIB forecast horizon degrades
 to the other sources sample-by-sample rather than failing).

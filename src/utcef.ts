@@ -439,18 +439,50 @@ export function loadUtcefDir(dir: string, cache?: UtcefFileCache): UtcefData | n
   };
 }
 
+/** A UTCEF sample: always a full 2D vector, so direction/u/v are never null (unlike legacy reference stations). */
+export interface UtcefSample extends CurrentSample {
+  direction: number;
+  u: number;
+  v: number;
+}
+
+/**
+ * Single-entry memo of the per-constituent astronomical terms (Greenwich
+ * equilibrium argument + nodal phase, and nodal factor f) for one instant.
+ * These depend only on (time, constituent), not on the station, so a map
+ * overlay sampling thousands of stations at the SAME time computes each
+ * constituent's V0/f/u once instead of once per station. null = unknown
+ * constituent (already warned at load).
+ */
+let termsTimeMs = NaN;
+let terms = new Map<string, { base: number; f: number } | null>();
+
+function constituentTerms(timeMs: number, name: string): { base: number; f: number } | null {
+  if (timeMs !== termsTimeMs) {
+    termsTimeMs = timeMs;
+    terms = new Map();
+  }
+  let t = terms.get(name);
+  if (t === undefined) {
+    const a = astronomicalArgs(timeMs);
+    const v0 = equilibriumArg(a, name);
+    const nf = nodeFactors(a, name);
+    t = v0 === null || nf === null ? null : { base: v0 + nf.u, f: nf.f };
+    terms.set(name, t);
+  }
+  return t;
+}
+
 /** Set/drift sample at a UTCEF current station for a UTC time. */
-export function utcefSampleAt(station: UtcefCurrentStation, timeMs: number): CurrentSample {
-  const a = astronomicalArgs(timeMs);
+export function utcefSampleAt(station: UtcefCurrentStation, timeMs: number): UtcefSample {
   let u = station.meanU;
   let v = station.meanV;
   for (const c of station.constituents) {
-    const v0 = equilibriumArg(a, c.name);
-    const nf = nodeFactors(a, c.name);
-    if (v0 === null || nf === null) continue; // unknown constituent (already warned at load)
-    const base = v0 + nf.u; // Greenwich equilibrium argument + nodal phase
-    u += nf.f * c.uAmp * Math.cos((base - c.uPhaseG) * DEG2RAD);
-    v += nf.f * c.vAmp * Math.cos((base - c.vPhaseG) * DEG2RAD);
+    const t = constituentTerms(timeMs, c.name);
+    if (t === null) continue; // unknown constituent (already warned at load)
+    // t.base = Greenwich equilibrium argument + nodal phase
+    u += t.f * c.uAmp * Math.cos((t.base - c.uPhaseG) * DEG2RAD);
+    v += t.f * c.vAmp * Math.cos((t.base - c.vPhaseG) * DEG2RAD);
   }
   const speedMs = Math.hypot(u, v);
   // Direction of set (°T): same convention as the GRIB source.
@@ -461,6 +493,58 @@ export function utcefSampleAt(station: UtcefCurrentStation, timeMs: number): Cur
     direction: Math.round(direction * 10) / 10,
     u: Math.round(u * 1000) / 1000,
     v: Math.round(v * 1000) / 1000,
+  };
+}
+
+/** UTCEF current stations inside a lon/lat box (inclusive). No cap: callers thin the result, and stopping early in array order would make the thinned set depend on file load order. */
+export function utcefStationsInBbox(
+  data: UtcefData,
+  bbox: { west: number; south: number; east: number; north: number },
+): UtcefCurrentStation[] {
+  return data.currentStations.filter(
+    (s) => s.latitude >= bbox.south && s.latitude <= bbox.north && s.longitude >= bbox.west && s.longitude <= bbox.east,
+  );
+}
+
+/**
+ * Bucketed index over a set of stations answering "would utcefVectorAt claim
+ * this point?" (contained in a representative_area, or a station within
+ * maxKm) without utcefVectorAt's linear scan over every station — for map
+ * overlays probing thousands of points per request. `files` restricts the
+ * probe to one dataset's stations, as utcefVectorAt does.
+ */
+export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.5) {
+  const cells = new Map<string, UtcefCurrentStation[]>();
+  const withArea: UtcefCurrentStation[] = [];
+  for (const s of stations) {
+    if (s.representativeArea) withArea.push(s);
+    const key = `${Math.floor(s.latitude / cellDeg)}:${Math.floor(s.longitude / cellDeg)}`;
+    const list = cells.get(key);
+    if (list) list.push(s);
+    else cells.set(key, [s]);
+  }
+  const inFiles = (s: UtcefCurrentStation, files?: ReadonlySet<string>) =>
+    !files || (s.file !== undefined && files.has(s.file));
+  return {
+    covers(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): boolean {
+      for (const s of withArea) {
+        if (inFiles(s, files) && pointInArea(s.representativeArea!, lat, lon)) return true;
+      }
+      const dLat = maxKm / 111.32;
+      const dLon = dLat / Math.max(Math.cos(lat * DEG2RAD), 0.01);
+      const j0 = Math.floor((lat - dLat) / cellDeg);
+      const j1 = Math.floor((lat + dLat) / cellDeg);
+      const i0 = Math.floor((lon - dLon) / cellDeg);
+      const i1 = Math.floor((lon + dLon) / cellDeg);
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          for (const s of cells.get(`${j}:${i}`) ?? []) {
+            if (inFiles(s, files) && distanceKm(lat, lon, s.latitude, s.longitude) <= maxKm) return true;
+          }
+        }
+      }
+      return false;
+    },
   };
 }
 

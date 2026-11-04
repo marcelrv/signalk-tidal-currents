@@ -100,11 +100,17 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   arrows); zoomed-in passes more, or a small bbox where everything fits and
   nothing is thinned. This replaced the old first-500-in-array-order
   truncation (arbitrary, reshuffled on pan). `/grid?bbox=…` is the gridded
-  equivalent for GRIB coverage (`gribGridSamples()` in `gribcurrents.ts`):
-  samples are chosen from the source grid's own fixed (i, j) index
+  equivalent (`gribGridSamples()` in `gribcurrents.ts`):
+  GRIB samples are chosen from the source grid's own fixed (i, j) index
   lattice at a stride targeting `maxPoints` (never finer than native
   resolution) — same stable-across-pan/zoom philosophy, applied to the
-  regular lattice instead of irregular stations. Both `/stations?bbox=` and
+  regular lattice instead of irregular stations. UTCEF stations in the bbox
+  are merged in (`gridPoints()` in `api.ts`): each candidate survives only
+  where its own source is the first layer of the resolveVector order
+  (dataset stack, then type rank) that covers it, so the overlay agrees with
+  `/vector` and partial GRIB coverage doesn't hide UTCEF elsewhere. Points
+  carry `source`. Legacy harmonic stations are not part of `/grid`.
+  Both `/stations?bbox=` and
   `/grid?bbox=` exist so a map can show full-viewport current coverage
   instead of a fixed nearest-N station list.
 - `src/index.ts` — plugin entry. Publishes `environment.current` deltas

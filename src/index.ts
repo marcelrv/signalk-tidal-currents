@@ -590,14 +590,16 @@ const openApiSpec = {
     '/grid': {
       get: {
         summary:
-          'GRIB current vectors sampled over a bbox for a flow-field overlay. maxPoints caps the ' +
-          'count via a stable grid-lattice stride — same zoom-out/zoom-in density control as /stations viewport mode.',
+          'Current vectors over a bbox for a flow-field overlay: GRIB lattice samples merged with UTCEF ' +
+          'stations, each point kept only where its source wins the configured source priority (same ' +
+          'order as /vector). Every point carries `source` ("grib" | "utcef", plus `stationId` for UTCEF). ' +
+          'maxPoints caps the count via stable thinning — same zoom-out/zoom-in density control as /stations viewport mode.',
         parameters: [
           { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: '"west,south,east,north"' },
           { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
           { name: 'maxPoints', in: 'query', schema: { type: 'integer', default: 400, maximum: 5000 } },
         ],
-        responses: { '200': { description: 'OK' }, '503': { description: 'No GRIB field loaded' } },
+        responses: { '200': { description: 'OK' }, '503': { description: 'Neither GRIB nor UTCEF current data loaded' } },
       },
     },
     '/stations/{id}': {

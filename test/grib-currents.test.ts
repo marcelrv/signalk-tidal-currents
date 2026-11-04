@@ -296,43 +296,120 @@ test('GET /grid samples the GRIB vector field over a bbox', () => {
   assert.equal(noGrib('/grid', { bbox: '5.0,53.0,5.4,53.4' }).code, 503);
 });
 
-test('GET /grid falls back to UTCEF stations when GRIB has no points in the viewport', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gridfb-'));
-  const doc = {
-    metadata: { schema_version: '1.0.0' },
-    dataset: {
-      type: 'FeatureCollection',
-      features: [
-        {
-          type: 'Feature',
-          id: 'K',
-          geometry: { type: 'Point', coordinates: [3.66, 51.96] },
-          properties: {
-            prediction_method: 'harmonic_constituents_currents',
-            data_unit_speed: 'knots',
-            harmonic_constituents: { M2: { u_amplitude: 2, u_phase_g: 0, v_amplitude: 1, v_phase_g: 0 } },
-          },
-        },
-      ],
+function utcefFeature(id: string, lat: number, lon: number) {
+  return {
+    type: 'Feature',
+    id,
+    geometry: { type: 'Point', coordinates: [lon, lat] },
+    properties: {
+      prediction_method: 'harmonic_constituents_currents',
+      data_unit_speed: 'knots',
+      harmonic_constituents: { M2: { u_amplitude: 2, u_phase_g: 0, v_amplitude: 1, v_phase_g: 0 } },
     },
   };
-  fs.writeFileSync(path.join(dir, 'k.utcef'), JSON.stringify(doc));
+}
+
+/** UTCEF dir with one file per entry of `files` (name → [id, lat, lon][]). */
+function writeUtcefDir(files: Record<string, Array<[string, number, number]>>): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gridfb-'));
+  for (const [name, stations] of Object.entries(files)) {
+    const doc = {
+      metadata: { schema_version: '1.0.0' },
+      dataset: { type: 'FeatureCollection', features: stations.map(([id, lat, lon]) => utcefFeature(id, lat, lon)) },
+    };
+    fs.writeFileSync(path.join(dir, name), JSON.stringify(doc));
+  }
+  return dir;
+}
+
+// K: Dutch coast, outside the synthetic GRIB box (52.9-53.5N, 4.9-5.5E).
+// G: in the middle of the GRIB box.
+const gridTime = new Date(T0).toISOString();
+
+test('GET /grid uses UTCEF stations where GRIB has no coverage', (t) => {
+  const dir = writeUtcefDir({ 'k.utcef': [['K', 51.96, 3.66]] });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const utcef = createUtcefSource(dir, 0);
-  const time = new Date(T0).toISOString();
   const bbox = '3.5,51.9,3.85,52.0';
 
-  // GRIB loaded but not covering the Dutch coast → UTCEF arrows.
+  // GRIB loaded but not covering the viewport → UTCEF arrows.
   const withGrib = makeApi({ data: null, error: null, grib: createGribSource(uvDir, 0), utcef, preferGrib: true });
-  const r = withGrib('/grid', { bbox, time });
+  const r = withGrib('/grid', { bbox, time: gridTime });
   assert.equal(r.code, 200);
   assert.equal(r.body.points.length, 1);
+  assert.equal(r.body.points[0].source, 'utcef');
+  assert.equal(r.body.points[0].stationId, 'K');
   assert.equal(r.body.points[0].latitude, 51.96);
   assert.ok(r.body.points[0].speedKn > 0);
   assert.ok(Number.isFinite(r.body.points[0].direction));
 
   // No GRIB at all, UTCEF only → still 200.
   const utcefOnly = makeApi({ data: null, error: null, grib: null, utcef, preferGrib: true });
-  assert.equal(utcefOnly('/grid', { bbox, time }).body.points.length, 1);
+  assert.equal(utcefOnly('/grid', { bbox, time: gridTime }).body.points.length, 1);
+
+  // Neither → 503.
+  const none = makeApi({ data: harmonics, error: null, grib: null, utcef: null, preferGrib: true });
+  assert.equal(none('/grid', { bbox, time: gridTime }).code, 503);
+});
+
+test('GET /grid merges GRIB and UTCEF per point by source priority', (t) => {
+  const dir = writeUtcefDir({ 'k.utcef': [['K', 51.96, 3.66]], 'g.utcef': [['G', 53.2, 5.2]] });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const utcef = createUtcefSource(dir, 0);
+  const grib = createGribSource(uvDir, 0);
+  const bbox = '3.5,51.9,5.5,53.5'; // GRIB box + K: only partly GRIB-covered
+
+  // GRIB first: GRIB lattice in its box, K outside it; G (inside GRIB) dropped.
+  const gribFirst = makeApi({ data: null, error: null, grib, utcef, preferGrib: true });
+  const a = gribFirst('/grid', { bbox, time: gridTime, maxPoints: '200' }).body.points;
+  assert.ok(a.some((p: any) => p.source === 'grib')); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.deepEqual(a.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId), ['K']); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+  // UTCEF first: G wins its 50 km neighbourhood (the whole small GRIB box), so
+  // no GRIB arrows remain there; both stations are shown.
+  const utcefFirst = makeApi({ data: null, error: null, grib, utcef, preferGrib: false });
+  const b = utcefFirst('/grid', { bbox, time: gridTime, maxPoints: '200' }).body.points;
+  assert.deepEqual(b.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId).sort(), ['G', 'K']); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(b.filter((p: any) => p.source === 'grib').length, 0); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+  // Dataset stack outranks the type rank: g.utcef stacked on top wins inside
+  // the GRIB box even though preferGrib is true.
+  const stacked = makeApi({
+    data: null,
+    error: null,
+    grib,
+    utcef,
+    preferGrib: true,
+    datasetRank: () => [{ id: 'g', type: 'utcef', files: ['g.utcef'] }],
+  });
+  const c = stacked('/grid', { bbox, time: gridTime, maxPoints: '200' }).body.points;
+  assert.ok(c.some((p: any) => p.stationId === 'G')); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(c.filter((p: any) => p.source === 'grib').length, 0); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+  // Same answer as /vector at G.
+  assert.equal(stacked('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.source, 'utcef');
+  assert.equal(gribFirst('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.source, 'grib');
+});
+
+test('GET /grid thins UTCEF points to maxPoints', (t) => {
+  const stations: Array<[string, number, number]> = [];
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) stations.push([`S${i}-${j}`, 51 + i * 0.1, 3 + j * 0.1]);
+  const dir = writeUtcefDir({ 'many.utcef': stations });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const call = makeApi({ data: null, error: null, grib: null, utcef: createUtcefSource(dir, 0), preferGrib: true });
+  const r = call('/grid', { bbox: '2.9,50.9,4.1,52.1', time: gridTime, maxPoints: '7' });
+  assert.equal(r.code, 200);
+  assert.ok(r.body.points.length > 0 && r.body.points.length <= 7);
+  assert.ok(r.body.points.every((p: any) => p.source === 'utcef')); // eslint-disable-line @typescript-eslint/no-explicit-any
+  // Stable: same request → same set.
+  assert.deepEqual(call('/grid', { bbox: '2.9,50.9,4.1,52.1', time: gridTime, maxPoints: '7' }).body.points, r.body.points);
+});
+
+test('GET /grid tags GRIB lattice points with source', () => {
+  const call = makeApi(apiState());
+  const r = call('/grid', { bbox: '5.0,53.0,5.4,53.4', time: gridTime, maxPoints: '25' });
+  assert.ok(r.body.points.length > 0);
+  assert.ok(r.body.points.every((p: any) => p.source === 'grib' && p.stationId === undefined)); // eslint-disable-line @typescript-eslint/no-explicit-any
 });
 
 test('GET /grid anchors samples to a fixed lattice — panning does not shift them', () => {
