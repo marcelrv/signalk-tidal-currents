@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react';
 
-import { useAppStore } from './store/useAppStore';
+import { READ_ONLY_HINT, useAppStore } from './store/useAppStore';
 import { Theme, useTheme } from './theme/ThemeProvider';
 import { Icon, IconName } from './components/shared/Icon';
 import { ViewToggle } from './components/layout/ViewToggle';
@@ -32,6 +32,9 @@ export function App() {
   const { theme, setTheme } = useTheme();
   const catalog = useAppStore((s) => s.catalog);
   const catalogLoading = useAppStore((s) => s.catalogLoading);
+  const catalogError = useAppStore((s) => s.catalogError);
+  const readOnly = useAppStore((s) => s.access === 'readonly');
+  const fetchAccess = useAppStore((s) => s.fetchAccess);
   const fetchCatalog = useAppStore((s) => s.fetchCatalog);
   const refreshCatalog = useAppStore((s) => s.refreshCatalog);
   const fetchDatasets = useAppStore((s) => s.fetchDatasets);
@@ -45,11 +48,13 @@ export function App() {
 
   useEffect(() => {
     fetchCatalog();
-    fetchDatasets();
-    fetchStorage();
+    // Datasets after access is known: an empty install opens the first-run
+    // wizard, which is pointless for a visitor who can't download.
+    fetchAccess().finally(() => fetchDatasets());
+    fetchStorage().catch(() => undefined);
     fetchPriority();
     fetchVesselPosition();
-  }, [fetchCatalog, fetchDatasets, fetchStorage, fetchPriority, fetchVesselPosition]);
+  }, [fetchAccess, fetchCatalog, fetchDatasets, fetchStorage, fetchPriority, fetchVesselPosition]);
 
   useGlobalDownloadEvents();
 
@@ -72,6 +77,7 @@ export function App() {
             <h1 className="truncate text-sm font-semibold leading-tight">Tidal Currents</h1>
             <LiveSourceChip />
           </div>
+          {!readOnly && (
           <button
             type="button"
             onClick={openWizard}
@@ -82,6 +88,7 @@ export function App() {
             <Icon name="download" className="h-4 w-4" />
             <span className="hidden sm:inline">Near You</span>
           </button>
+          )}
           <button
             type="button"
             onClick={() => setTheme(nextTheme)}
@@ -110,7 +117,17 @@ export function App() {
             </div>
           </div>
           <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-3 py-3">
-            <UpdateAllBanner />
+            {readOnly && (
+              <div role="status" className="mb-3 flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-muted">
+                <Icon name="alert" className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 flex-1">
+                  Read-only view — browse the catalog and installed data.{' '}
+                  <a href="/admin/#/login" className="font-semibold text-accent underline">Log in as an administrator</a>{' '}
+                  to download or manage datasets.
+                </span>
+              </div>
+            )}
+            {!readOnly && <UpdateAllBanner />}
             {view === 'list' ? (
               <SourceList />
             ) : (
@@ -128,11 +145,13 @@ export function App() {
           <button
             type="button"
             onClick={() => refreshCatalog()}
-            disabled={catalogLoading}
-            className="min-w-0 truncate text-xs text-muted disabled:opacity-50"
-            title="Tap to sync the catalog now"
+            disabled={catalogLoading || readOnly}
+            className={`min-w-0 truncate text-xs disabled:opacity-50 ${catalogError ? 'text-danger' : 'text-muted'}`}
+            title={readOnly ? READ_ONLY_HINT : catalogError ? `Sync failed: ${catalogError} — tap to retry` : 'Tap to sync the catalog now'}
           >
-            {catalogLoading ? 'syncing…' : `synced ${catalog?.fetchedAt ? timeAgo(catalog.fetchedAt) : 'never'}`}
+            {catalogLoading
+              ? 'syncing…'
+              : `${catalogError ? 'sync failed · ' : ''}synced ${catalog?.fetchedAt ? timeAgo(catalog.fetchedAt) : 'never'}`}
           </button>
           <span className="flex-1" />
           <button

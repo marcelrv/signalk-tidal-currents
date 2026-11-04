@@ -454,7 +454,9 @@ function pluginConstructor(app: any) {
             delete: (p, h) => app.delete(V2_BASE + p, h),
           };
           registerRoutes(prefixed, state);
-          registerManagerRoutes(prefixed, mgr);
+          // Read-only manager view on v2 — mutations stay on the admin-only
+          // /plugins path (see ManagerRouteOptions.writes).
+          registerManagerRoutes(prefixed, mgr, { writes: false });
           mountedV2 = true;
         } catch (e) {
           console.warn(`[${PLUGIN_ID}] could not mount /signalk/v2/api/currents: ${e}`);

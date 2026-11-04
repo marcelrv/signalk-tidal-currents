@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
 
 import { useAppStore } from '../store/useAppStore';
-import { api } from '../api/client';
+import { api, READ_BASE } from '../api/client';
 import { DownloadJob } from '../api/types';
 
-const API_BASE = '/plugins/signalk-tidal-currents';
 
 /**
  * Keeps `datasets`/`storage` fresh for EVERY download job, independent of
@@ -26,7 +25,7 @@ export function useGlobalDownloadEvents(): void {
       return;
     }
     setFellBack(false);
-    const source = new EventSource(`${API_BASE}/downloads/events`);
+    const source = new EventSource(`${READ_BASE}/downloads/events`);
     source.onmessage = (ev) => {
       try {
         setDownloadJob(JSON.parse(ev.data) as DownloadJob);

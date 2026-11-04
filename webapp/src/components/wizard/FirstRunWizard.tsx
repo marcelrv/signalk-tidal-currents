@@ -18,6 +18,7 @@ import { WizardSourceCard } from './WizardSourceCard';
  */
 export function FirstRunWizard() {
   const wizard = useAppStore((s) => s.wizard);
+  const readOnly = useAppStore((s) => s.access === 'readonly');
   const dismissWizard = useAppStore((s) => s.dismissWizard);
   const catalog = useAppStore((s) => s.catalog);
   const vesselPosition = useAppStore((s) => s.vesselPosition);
@@ -67,7 +68,7 @@ export function FirstRunWizard() {
     setSelected(keys);
   }, [liveRecommendedKey, backupRecommendedKey]);
 
-  if (!wizard.open) return null;
+  if (!wizard.open || readOnly) return null;
 
   const newDownloads = notInstalled.filter((c) => selected.has(c.key));
   const totalBytes = newDownloads.reduce((sum, c) => {

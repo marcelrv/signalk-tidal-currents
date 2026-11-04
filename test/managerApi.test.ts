@@ -110,6 +110,25 @@ test('GET /catalog returns the current catalog state shape', async () => {
   assert.equal((res.body as any).status, 'empty');
 });
 
+test('writes: false mounts only the read-only GET routes (v2 mount)', () => {
+  const { mgr } = baseMgr();
+  const seen: string[] = [];
+  const router: ManagerRouterLike = {
+    get: (p) => { seen.push(`GET ${p}`); },
+    post: (p) => { seen.push(`POST ${p}`); },
+    put: (p) => { seen.push(`PUT ${p}`); },
+    delete: (p) => { seen.push(`DELETE ${p}`); },
+  };
+  registerManagerRoutes(router, mgr, { writes: false });
+  assert.ok(seen.length > 0);
+  assert.deepEqual(seen.filter((r) => !r.startsWith('GET ')), []);
+  for (const r of ['GET /catalog', 'GET /datasets', 'GET /storage', 'GET /priority', 'GET /downloads']) assert.ok(seen.includes(r), r);
+
+  const all: string[] = [];
+  registerManagerRoutes({ ...router, get: (p) => { all.push(`GET ${p}`); }, post: (p) => { all.push(`POST ${p}`); }, put: (p) => { all.push(`PUT ${p}`); }, delete: (p) => { all.push(`DELETE ${p}`); } }, mgr);
+  for (const r of ['POST /catalog/refresh', 'POST /downloads', 'DELETE /datasets/:id', 'PUT /datasets/:id/auto-update', 'PUT /priority']) assert.ok(all.includes(r), r);
+});
+
 test('POST /catalog/refresh returns 502 with the cached copy on failure', async () => {
   const source: CatalogSource = {
     id: 's', source: 'test', type: 'grib2', name: 'S', description: '', contributor: 'C', url: 'https://x',

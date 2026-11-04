@@ -188,7 +188,23 @@ function orphanDatasets(mgr: ManagerState): DatasetEntry[] {
   return results;
 }
 
-export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerState): void {
+export interface ManagerRouteOptions {
+  /**
+   * Mount the mutating routes (POST/PUT/DELETE: catalog refresh, downloads,
+   * dataset delete/auto-update, priority). Default true. The
+   * `/signalk/v2/api/currents` mount passes false: signalk-server only
+   * requires *write* (not admin) permission under `/signalk/v2/api/*`, while
+   * `/plugins/<id>/*` is admin-only — so management stays on the plugin
+   * path and v2 serves the read-only manager view (which anonymous visitors
+   * can reach on a server with `allow_readonly`, e.g. a public demo).
+   */
+  writes?: boolean;
+}
+
+export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerState, opts: ManagerRouteOptions = {}): void {
+  const noop = () => undefined;
+  const router: ManagerRouterLike =
+    opts.writes === false ? { get: (p, h) => target.get(p, h), post: noop, put: noop, delete: noop } : target;
   router.get('/catalog', (_req, res) => {
     res.json(mgr.catalog.get());
   });

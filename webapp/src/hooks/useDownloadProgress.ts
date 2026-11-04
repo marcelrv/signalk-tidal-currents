@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { useAppStore } from '../store/useAppStore';
 import { DownloadJob } from '../api/types';
-
-const API_BASE = '/plugins/signalk-tidal-currents';
+import { READ_BASE } from '../api/client';
 
 /**
  * Subscribes to live download progress via Server-Sent Events (PRD §9 Phase
@@ -23,7 +22,7 @@ export function useDownloadProgress(jobId: string | null): boolean {
       return;
     }
     setFellBack(false);
-    const source = new EventSource(`${API_BASE}/downloads/${encodeURIComponent(jobId)}/events`);
+    const source = new EventSource(`${READ_BASE}/downloads/${encodeURIComponent(jobId)}/events`);
     source.onmessage = (ev) => {
       try {
         setDownloadJob(JSON.parse(ev.data) as DownloadJob);

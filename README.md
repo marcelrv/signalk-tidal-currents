@@ -173,6 +173,13 @@ or commercial weather routing providers.
 Base: `/signalk/v2/api/currents` (same routes at
 `/plugins/signalk-tidal-currents`).
 
+The Tidal Currents Manager webapp's own routes (`/catalog`, `/datasets`,
+`/storage`, `/downloads`, `/priority`, …) are readable on both mounts, but
+the **mutating** ones (catalog refresh, downloads, dataset delete /
+auto-update, priority changes) exist only on `/plugins/signalk-tidal-currents`,
+which signalk-server restricts to administrators. Visitors without admin
+rights (e.g. on a public read-only demo) get a read-only manager view.
+
 | Endpoint | Description |
 | --- | --- |
 | `GET /` | Dataset summary across all three sources (harmonic + UTCEF stations, GRIB coverage/time range) |

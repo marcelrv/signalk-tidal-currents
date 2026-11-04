@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import { api } from '../api/client';
+import { api, isPermissionError } from '../api/client';
 import {
   CatalogSourceType,
   CatalogState,
@@ -23,9 +23,25 @@ interface WizardState {
   dismissed: boolean;
 }
 
+/**
+ * What the current visitor may do. `readonly` = browse only (anonymous or
+ * non-admin on a secured server, e.g. a public demo) — mutations live on the
+ * admin-only plugin path. `unknown` until loginStatus has been read; treated
+ * as writable so a secured-but-logged-in admin never sees a flash of
+ * disabled controls (a 401/403 on a write still flips it to `readonly`).
+ */
+export type Access = 'admin' | 'readonly' | 'unknown';
+
+export const READ_ONLY_HINT = 'Read-only — log in as an administrator to change data';
+
 export interface AppState {
+  access: Access;
+  fetchAccess: () => Promise<void>;
+
   catalog: CatalogState | null;
   catalogLoading: boolean;
+  /** Last catalog fetch/refresh failure (null once one succeeds) — shown in the footer instead of being swallowed. */
+  catalogError: string | null;
   fetchCatalog: () => Promise<void>;
   refreshCatalog: () => Promise<void>;
 
@@ -80,24 +96,61 @@ export interface AppState {
   dismissWizard: () => void;
 }
 
-export const useAppStore = create<AppState>((set, get) => ({
+const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export const useAppStore = create<AppState>((set, get) => {
+  /**
+   * Every mutation goes through here: refuse up front in read-only mode
+   * (controls are disabled anyway — this is the backstop), and if the server
+   * answers 401/403 anyway (session expired, non-admin login), flip to
+   * read-only so the UI reflects it instead of failing silently.
+   */
+  async function write<T>(fn: () => Promise<T>): Promise<T> {
+    if (get().access === 'readonly') throw new Error(READ_ONLY_HINT);
+    try {
+      return await fn();
+    } catch (e) {
+      if (isPermissionError(e)) set({ access: 'readonly' });
+      throw e;
+    }
+  }
+
+  return {
+  access: 'unknown',
+  fetchAccess: async () => {
+    const st = await api.getLoginStatus();
+    // No loginStatus (no security) or security not enforced → full access,
+    // mirroring the server. Otherwise only a logged-in admin may write.
+    if (!st || st.authenticationRequired === false) set({ access: 'admin' });
+    else set({ access: st.status === 'loggedIn' && st.userLevel === 'admin' ? 'admin' : 'readonly' });
+  },
+
   catalog: null,
   catalogLoading: false,
+  catalogError: null,
   fetchCatalog: async () => {
     set({ catalogLoading: true });
     try {
       const catalog = await api.getCatalog();
-      set({ catalog });
+      set({ catalog, catalogError: catalog.error ?? null });
+    } catch (e) {
+      set({ catalogError: errorMessage(e) });
     } finally {
       set({ catalogLoading: false });
     }
   },
   refreshCatalog: async () => {
+    if (get().access === 'readonly') return; // Sync is disabled in the UI; nothing to do
     set({ catalogLoading: true });
     try {
-      const catalog = await api.refreshCatalog().catch((): CatalogState | null => null);
-      if (catalog) set({ catalog });
-      else await get().fetchCatalog(); // refresh failed — re-read whatever's cached
+      const catalog = await write(() => api.refreshCatalog());
+      set({ catalog, catalogError: catalog.error ?? null });
+    } catch (e) {
+      // Refresh failed — keep showing whatever is cached (re-read it in case
+      // we had nothing yet), but surface why instead of swallowing it.
+      const message = errorMessage(e);
+      await get().fetchCatalog();
+      set({ catalogError: isPermissionError(e) ? null : message });
     } finally {
       set({ catalogLoading: false });
     }
@@ -110,19 +163,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const datasets = await api.getDatasets();
       set({ datasets });
-      if (datasets.length === 0 && !get().wizard.dismissed) set({ wizard: { open: true, dismissed: false } });
+      if (datasets.length === 0 && !get().wizard.dismissed && get().access !== 'readonly') set({ wizard: { open: true, dismissed: false } });
     } finally {
       set({ datasetsLoading: false });
     }
   },
   deleteDataset: async (id) => {
-    await api.deleteDataset(id);
+    await write(() => api.deleteDataset(id));
     // Deleting frees disk and drops the install out of the priority stack —
     // refresh everything that displays either, not just the dataset list.
     await Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
   },
   setAutoUpdate: async (id, enabled) => {
-    await api.setAutoUpdate(id, enabled);
+    await write(() => api.setAutoUpdate(id, enabled));
     await get().fetchDatasets();
   },
 
@@ -147,11 +200,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (res) set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
   },
   setPriority: async (order) => {
-    const res = await api.setPriority({ order });
+    const res = await write(() => api.setPriority({ order }));
     set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
   },
   setDatasetPriority: async (datasets) => {
-    const res = await api.setPriority({ datasets });
+    const res = await write(() => api.setPriority({ datasets }));
     set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
   },
 
@@ -161,7 +214,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   downloads: {},
   jobIdBySource: {},
   startDownload: async (sourceId, selector) => {
-    const job = await api.startDownload(sourceId, selector);
+    const job = await write(() => api.startDownload(sourceId, selector));
     const key = downloadKeyFor(sourceId, selector?.region_id, selector?.type, selector?.variant);
     set((s) => ({
       downloads: { ...s.downloads, [job.id]: job },
@@ -205,4 +258,5 @@ export const useAppStore = create<AppState>((set, get) => ({
   wizard: { open: false, dismissed: false },
   openWizard: () => set({ wizard: { open: true, dismissed: false } }),
   dismissWizard: () => set({ wizard: { open: false, dismissed: true } }),
-}));
+  };
+});

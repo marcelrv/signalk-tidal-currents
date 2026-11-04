@@ -11,20 +11,49 @@ import {
 
 // Hardcoded, not derived from window.location — robust regardless of how the
 // Admin UI mounts this webapp (relative resolution quirks, trailing slash,
-// etc.). All backend I/O for this plugin lives under this one prefix.
-const API_BASE = '/plugins/signalk-tidal-currents';
+// etc.).
+//
+// Reads go to the v2 mount: signalk-server lets anonymous GETs through under
+// `/signalk/v2/api/*` when `allow_readonly` is on, so the manager can still
+// browse on a locked-down server (e.g. a public demo). Mutations go to the
+// plugin path, which signalk-server restricts to administrators — the
+// plugin doesn't mount them on v2 at all.
+export const READ_BASE = '/signalk/v2/api/currents';
+export const WRITE_BASE = '/plugins/signalk-tidal-currents';
+
+/** An HTTP error from the plugin API — `status` lets callers tell "not allowed" (401/403) apart from real failures. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+export function isPermissionError(e: unknown): boolean {
+  return e instanceof ApiError && (e.status === 401 || e.status === 403);
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${API_BASE}${path}`, {
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const base = method === 'GET' ? READ_BASE : WRITE_BASE;
+  const resp = await fetch(`${base}${path}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   });
   const body = await resp.json().catch(() => null);
   if (!resp.ok) {
     const message = (body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : null) ?? `HTTP ${resp.status}`;
-    throw new Error(message);
+    throw new ApiError(message, resp.status);
   }
   return body as T;
+}
+
+/** Subset of signalk-server's `/skServer/loginStatus` this app cares about. */
+export interface LoginStatus {
+  status?: string;
+  userLevel?: string;
+  authenticationRequired?: boolean;
+  readOnlyAccess?: boolean;
 }
 
 export const api = {
@@ -54,6 +83,17 @@ export const api = {
 
   getVectorAt: (lat: number, lon: number) =>
     request<VectorResponse>(`/vector?latitude=${lat}&longitude=${lon}`),
+
+  /** `null` when unavailable (no security plugin / older server) — treated as "everything allowed", same as the server does. */
+  getLoginStatus: async (): Promise<LoginStatus | null> => {
+    try {
+      const resp = await fetch('/skServer/loginStatus', { credentials: 'same-origin' });
+      if (!resp.ok) return null;
+      return (await resp.json()) as LoginStatus;
+    } catch {
+      return null;
+    }
+  },
 
   // Vessel position comes from the SignalK server itself, not this plugin.
   getVesselPosition: async (): Promise<{ latitude: number; longitude: number } | null> => {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { useAppStore } from '../../store/useAppStore';
+import { READ_ONLY_HINT, useAppStore } from '../../store/useAppStore';
 import { usePolling } from '../../hooks/usePolling';
 import { useDownloadProgress } from '../../hooks/useDownloadProgress';
 import { CatalogSource } from '../../api/types';
@@ -27,6 +27,7 @@ export function DownloadButton({
   status: DisplayStatus;
 }) {
   const startDownload = useAppStore((s) => s.startDownload);
+  const readOnly = useAppStore((s) => s.access === 'readonly');
   const pollDownload = useAppStore((s) => s.pollDownload);
   const downloads = useAppStore((s) => s.downloads);
   const storage = useAppStore((s) => s.storage);
@@ -105,7 +106,9 @@ export function DownloadButton({
       <button
         type="button"
         aria-label={`${label} ${source.name}`}
-        className={`flex min-h-9 items-center gap-1.5 rounded-full px-3.5 text-xs font-semibold ${
+        disabled={readOnly}
+        title={readOnly ? READ_ONLY_HINT : undefined}
+        className={`flex min-h-9 disabled:opacity-50 items-center gap-1.5 rounded-full px-3.5 text-xs font-semibold ${
           jobError || status === 'error'
             ? 'bg-danger/15 text-danger'
             : status === 'update-available'
