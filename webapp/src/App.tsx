@@ -34,6 +34,8 @@ export function App() {
   const catalogLoading = useAppStore((s) => s.catalogLoading);
   const catalogError = useAppStore((s) => s.catalogError);
   const readOnly = useReadOnly();
+  // Banner only once access is KNOWN read-only, not while loginStatus is pending.
+  const showReadOnlyBanner = useAppStore((s) => s.access === 'readonly');
   const readsDenied = useAppStore((s) => s.readsDenied);
   const fetchAccess = useAppStore((s) => s.fetchAccess);
   const fetchCatalog = useAppStore((s) => s.fetchCatalog);
@@ -128,12 +130,12 @@ export function App() {
             </div>
           </div>
           <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-3 py-3">
-            {readOnly && (
+            {showReadOnlyBanner && (
               <div role="status" className="mb-3 flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-muted">
                 <Icon name="alert" className="h-4 w-4 shrink-0" />
                 <span className="min-w-0 flex-1">
                   {readsDenied
-                    ? 'This server doesn’t offer a read-only manager view (needs signalk-server ≥ 2.35). '
+                    ? 'This server doesn’t allow read-only access to the manager (enable read-only access; needs signalk-server ≥ 2.35). '
                     : 'Read-only view — browse the catalog and installed data. '}
                   <a href="/admin/#/login" className="font-semibold text-accent underline">Log in as an administrator</a>{' '}
                   to download or manage datasets.

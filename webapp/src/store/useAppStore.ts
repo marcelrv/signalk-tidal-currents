@@ -26,16 +26,17 @@ interface WizardState {
 /**
  * What the current visitor may do. `readonly` = browse only (anonymous or
  * non-admin on a secured server, e.g. a public demo) — mutations live on the
- * admin-only plugin path. `unknown` until loginStatus has been read; treated
- * as writable so a secured-but-logged-in admin never sees a flash of
- * disabled controls (a 401/403 on a write still flips it to `readonly`).
+ * admin-only plugin path. `unknown` until loginStatus has been read; the UI
+ * treats it like `readonly` (controls hidden/disabled, no banner) so a demo
+ * visitor never sees a flash of admin controls — an admin briefly sees them
+ * disabled instead. A 401/403 on a write flips to `readonly`.
  */
 export type Access = 'admin' | 'readonly' | 'unknown';
 
 export const READ_ONLY_HINT = 'Read-only — log in as an administrator to change data';
 
-/** True when the visitor may only browse (see `Access`). */
-export const useReadOnly = () => useAppStore((s) => s.access === 'readonly');
+/** True unless the visitor is a confirmed admin — `unknown` counts as read-only (see `Access`). */
+export const useReadOnly = () => useAppStore((s) => s.access !== 'admin');
 
 /** The placeholder catalog served before start() has `status: 'empty'` + an error that is not a sync failure. */
 const catalogErrorOf = (c: CatalogState) => (c.status === 'empty' ? null : c.error ?? null);
@@ -160,7 +161,11 @@ export const useAppStore = create<AppState>((set, get) => {
     // Became admin after having been read-only (a failed first check later
     // retried, or a login elsewhere): re-run the empty-install check that
     // fetchDatasets skipped, so first-run onboarding isn't lost.
-    if (next === 'admin' && prev === 'readonly') get().fetchDatasets().catch(() => undefined);
+    // Same for the catalog: a refused first read left it empty + readsDenied.
+    if (next === 'admin' && prev === 'readonly') {
+      void get().fetchCatalog();
+      get().fetchDatasets().catch(() => undefined);
+    }
   },
 
   catalog: null,

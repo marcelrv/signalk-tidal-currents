@@ -28,7 +28,7 @@ function makeHarness() {
     put: (p, h) => handlers.set(`PUT ${p}`, h),
     delete: (p, h) => handlers.set(`DELETE ${p}`, h),
   };
-  async function call(method: string, routePath: string, opts: { params?: Record<string, string>; body?: unknown } = {}): Promise<FakeRes> {
+  async function call(method: string, routePath: string, opts: { params?: Record<string, string>; body?: unknown; skPrincipal?: { permissions: string } } = {}): Promise<FakeRes> {
     const h = handlers.get(`${method} ${routePath}`);
     if (!h) throw new Error(`no handler registered for ${method} ${routePath}`);
     const result: FakeRes = { statusCode: 200, body: undefined };
@@ -36,7 +36,7 @@ function makeHarness() {
       status(code: number) { result.statusCode = code; return res; },
       json(body: unknown) { result.body = body; },
     };
-    await h({ params: opts.params ?? {}, query: {}, body: opts.body }, res);
+    await h({ params: opts.params ?? {}, query: {}, body: opts.body, skPrincipal: opts.skPrincipal }, res);
     return result;
   }
   return { router, call };
@@ -125,12 +125,14 @@ test('public read routes go on the `reads` router; mutations and admin-only read
   assert.deepEqual(admin.sort(), ['DELETE /datasets/:id', 'GET /cleanup-candidates', 'POST /catalog/refresh', 'POST /downloads', 'PUT /datasets/:id/auto-update', 'PUT /priority']);
 });
 
-test('GET /storage does not expose the absolute data directory', async () => {
+test('GET /storage hides the absolute data directory from non-admins only', async () => {
   const { mgr } = baseMgr();
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
-  const storage = await call('GET', '/storage');
-  assert.equal((storage.body as any).path, undefined);
+  const anon = await call('GET', '/storage', { skPrincipal: { permissions: 'readonly' } });
+  assert.equal((anon.body as any).path, undefined);
+  const admin = await call('GET', '/storage', { skPrincipal: { permissions: 'admin' } });
+  assert.equal(typeof (admin.body as any).path, 'string');
 });
 
 test('POST /catalog/refresh returns 502 with the cached copy on failure', async () => {
@@ -371,8 +373,12 @@ test('GET/PUT /priority dataset stack: persisted order first, unranked installs 
 });
 
 test('redaction: only whole absolute data-dir paths, only for non-admins; /catalog hides the configured URL from non-admins', async () => {
-  const { mgr } = baseMgr({ dataDir: '/data' });
-  const err = "HTTP 404 fetching https://example.org/data/x.grb2; ENOSPC: write '/data/grib/x.grb2.part'";
+  // Platform-resolved, as the plugin resolves it ('/data' on POSIX, e.g.
+  // 'D:\\data' on Windows) — a literal '/data' never matches on Windows.
+  const dataDir = path.resolve('/data');
+  const part = path.join('grib', 'x.grb2.part');
+  const { mgr } = baseMgr({ dataDir });
+  const err = `HTTP 404 fetching https://example.org/data/x.grb2; ENOSPC: write '${path.join(dataDir, part)}'`;
   mgr.downloads = { ...fakeDownloadEngine(), list: () => [{ id: 'j', catalogSourceId: 's', state: 'error', bytes: 0, totalBytes: null, error: err }] };
   mgr.catalog = { get: () => ({ status: 'cached', document: null, fetchedAt: null, error: 'fetch failed: https://intranet.example/c.json?token=abc', sourceUrl: 'https://intranet.example/c.json?token=abc', warnings: [] }), refresh: async () => mgr.catalog.get() } as CatalogClient;
   const handlers = new Map<string, (req: any, res: any) => void>();
@@ -386,7 +392,7 @@ test('redaction: only whole absolute data-dir paths, only for non-admins; /catal
     return body;
   };
   const anon = { permissions: 'readonly' };
-  assert.equal(call('/downloads', anon)[0].error, "HTTP 404 fetching https://example.org/data/x.grb2; ENOSPC: write '<data dir>/grib/x.grb2.part'");
+  assert.equal(call('/downloads', anon)[0].error, `HTTP 404 fetching https://example.org/data/x.grb2; ENOSPC: write '<data dir>${path.sep}${part}'`);
   assert.equal(call('/downloads', { permissions: 'admin' })[0].error, err);
   assert.equal(call('/downloads')[0].error, err); // security off: no principal
   const cat = call('/catalog', anon);
@@ -395,8 +401,9 @@ test('redaction: only whole absolute data-dir paths, only for non-admins; /catal
   assert.equal(call('/catalog', { permissions: 'admin' }).sourceUrl, 'https://intranet.example/c.json?token=abc');
 });
 
-test('SSE feeds cap concurrent non-admin viewers (503 beyond MAX_PUBLIC_SSE_CLIENTS); admins are never capped', () => {
+for (const route of ['/downloads/events', '/downloads/:id/events']) test(`SSE ${route} caps concurrent non-admin viewers (503 beyond MAX_PUBLIC_SSE_CLIENTS); admins are never capped`, () => {
   const { mgr } = baseMgr();
+  const jobId = mgr.downloads.start('s', {}).id; // the per-job feed 404s an unknown job before admission
   const handlers = new Map<string, (req: any, res: any) => void>();
   registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
   const closers: (() => void)[] = [];
@@ -407,7 +414,7 @@ test('SSE feeds cap concurrent non-admin viewers (503 beyond MAX_PUBLIC_SSE_CLIE
       writeHead() {}, write() { return true; }, end() {},
       on(_e: string, cb: () => void) { closers.push(cb); },
     };
-    handlers.get('/downloads/events')!({ params: {}, query: {}, skPrincipal: principal }, res);
+    handlers.get(route)!({ params: { id: jobId }, query: {}, skPrincipal: principal }, res);
     return status;
   };
   for (let i = 0; i < MAX_PUBLIC_SSE_CLIENTS; i++) assert.equal(open({ permissions: 'readonly' }), 200);

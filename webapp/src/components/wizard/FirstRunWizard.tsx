@@ -1,6 +1,6 @@
-import { Dispatch, SetStateAction, useEffect, useMemo, useState } from 'react';
+import { Dispatch, SetStateAction, useEffect, useMemo, useState, useRef } from 'react';
 
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, useReadOnly } from '../../store/useAppStore';
 import { coveringRows, groupByTier } from '../../lib/wizard';
 import { datasetForRow, isRowInstalled, rowsForSources, SourceRow } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
@@ -18,6 +18,7 @@ import { WizardSourceCard } from './WizardSourceCard';
  */
 export function FirstRunWizard() {
   const wizard = useAppStore((s) => s.wizard);
+  const readOnly = useReadOnly();
   const dismissWizard = useAppStore((s) => s.dismissWizard);
   const catalog = useAppStore((s) => s.catalog);
   const vesselPosition = useAppStore((s) => s.vesselPosition);
@@ -60,17 +61,27 @@ export function FirstRunWizard() {
   const liveRecommendedKey = allGrouped.live.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.live[0]?.key ?? null);
   const backupRecommendedKey = allGrouped.backup.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.backup[0]?.key ?? null);
 
+  // After a partial failure the selection is the failed rows only; a started
+  // row finishing (datasets refresh → recommendations shift) must not reset it
+  // and reselect a row that is still downloading. Cleared on close.
+  const keepFailedSelection = useRef(false);
+  useEffect(() => {
+    if (!wizard.open) keepFailedSelection.current = false;
+  }, [wizard.open]);
+
   // Default-select only the recommended row per tier (≤ 2 total), not every covering row.
   useEffect(() => {
+    if (keepFailedSelection.current) return;
     const keys = new Set<string>();
     if (liveRecommendedKey) keys.add(liveRecommendedKey);
     if (backupRecommendedKey) keys.add(backupRecommendedKey);
     setSelected(keys);
   }, [liveRecommendedKey, backupRecommendedKey]);
 
-  // Opening is gated on access (Near You hidden, auto-open skipped); once
-  // open, stay mounted so a rejected download (e.g. 403) is shown, not lost.
-  if (!wizard.open) return null;
+  // Never shown read-only (backstop: "Near You" is visible while access is
+  // still 'unknown'), except to explain why an install just failed — a 401/403
+  // flips access to read-only mid-flow.
+  if (!wizard.open || (readOnly && !error)) return null;
 
   const newDownloads = notInstalled.filter((c) => selected.has(c.key));
   const totalBytes = newDownloads.reduce((sum, c) => {
@@ -93,6 +104,7 @@ export function FirstRunWizard() {
       }
       // Keep only the rejected rows selected — the started ones are already
       // running, and re-pressing Install must not queue them a second time.
+      keepFailedSelection.current = true;
       setSelected(new Set(failed.map((row) => row.key)));
       const reason = (results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason;
       setError(reason instanceof Error ? reason.message : String(reason));

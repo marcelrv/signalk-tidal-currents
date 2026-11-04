@@ -346,9 +346,14 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     res.json({ ok: true, autoUpdate: body.enabled });
   });
 
-  reads.get('/storage', async (_req, res) => {
-    const { path: _dataDir, ...stats } = await statStorage(mgr.dataDir);
-    res.json(stats);
+  reads.get('/storage', async (req, res) => {
+    const stats = await statStorage(mgr.dataDir);
+    if (isAdminRequest(req)) {
+      res.json(stats);
+      return;
+    }
+    const { path: _dataDir, ...rest } = stats;
+    res.json(rest);
   });
 
   router.get('/cleanup-candidates', (req, res) => {

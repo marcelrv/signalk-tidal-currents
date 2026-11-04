@@ -107,7 +107,7 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
           </section>
         )}
       </div>
-      {cleanupOpen && <SmartCleanupPanel onClose={() => setCleanupOpen(false)} />}
+      {cleanupOpen && !readOnly && <SmartCleanupPanel onClose={() => setCleanupOpen(false)} />}
     </Modal>
   );
 }

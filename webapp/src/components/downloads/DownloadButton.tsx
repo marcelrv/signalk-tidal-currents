@@ -146,7 +146,9 @@ export function DownloadButton({
                 setConfirmingOverfull(false);
                 begin();
               }}
-              className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg"
+              disabled={readOnly}
+              title={readOnly ? READ_ONLY_HINT : undefined}
+              className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
             >
               Download anyway
             </button>
