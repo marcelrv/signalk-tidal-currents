@@ -296,12 +296,13 @@ test('GET /grid samples the GRIB vector field over a bbox', () => {
   assert.equal(noGrib('/grid', { bbox: '5.0,53.0,5.4,53.4' }).code, 503);
 });
 
-function utcefFeature(id: string, lat: number, lon: number) {
+function utcefFeature(id: string, lat: number, lon: number, area?: number[][][]) {
   return {
     type: 'Feature',
     id,
     geometry: { type: 'Point', coordinates: [lon, lat] },
     properties: {
+      ...(area ? { representative_area: { type: 'Polygon', coordinates: area } } : {}),
       prediction_method: 'harmonic_constituents_currents',
       data_unit_speed: 'knots',
       harmonic_constituents: { M2: { u_amplitude: 2, u_phase_g: 0, v_amplitude: 1, v_phase_g: 0 } },
@@ -310,12 +311,12 @@ function utcefFeature(id: string, lat: number, lon: number) {
 }
 
 /** UTCEF dir with one file per entry of `files` (name → [id, lat, lon][]). */
-function writeUtcefDir(files: Record<string, Array<[string, number, number]>>): string {
+function writeUtcefDir(files: Record<string, Array<[string, number, number, number[][][]?]>>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gridfb-'));
   for (const [name, stations] of Object.entries(files)) {
     const doc = {
       metadata: { schema_version: '1.0.0' },
-      dataset: { type: 'FeatureCollection', features: stations.map(([id, lat, lon]) => utcefFeature(id, lat, lon)) },
+      dataset: { type: 'FeatureCollection', features: stations.map(([id, lat, lon, area]) => utcefFeature(id, lat, lon, area)) },
     };
     fs.writeFileSync(path.join(dir, name), JSON.stringify(doc));
   }
@@ -389,6 +390,37 @@ test('GET /grid merges GRIB and UTCEF per point by source priority', (t) => {
   // Same answer as /vector at G.
   assert.equal(stacked('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.source, 'utcef');
   assert.equal(gribFirst('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.source, 'grib');
+});
+
+test('GET /grid honours a distant station whose representative_area covers the viewport', (t) => {
+  // Station ~110 km south of the GRIB box, its area polygon covering the box.
+  const area = [[[4.8, 52.0], [5.6, 52.0], [5.6, 53.6], [4.8, 53.6], [4.8, 52.0]]];
+  const dir = writeUtcefDir({ 'far.utcef': [['F', 52.2, 5.2, area]] });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const call = makeApi({
+    data: null,
+    error: null,
+    grib: createGribSource(uvDir, 0),
+    utcef: createUtcefSource(dir, 0),
+    preferGrib: false,
+  });
+  assert.equal(call('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.source, 'utcef');
+  const pts = call('/grid', { bbox: '5.0,53.0,5.4,53.4', time: gridTime }).body.points;
+  assert.equal(pts.filter((p: any) => p.source === 'grib').length, 0); // eslint-disable-line @typescript-eslint/no-explicit-any
+});
+
+test('GET /grid splits the budget between sources instead of collapsing density', (t) => {
+  // 100 UTCEF stations south of the GRIB box, plus the 49-point GRIB lattice.
+  const stations: Array<[string, number, number]> = [];
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) stations.push([`S${i}-${j}`, 51 + i * 0.1, 3.5 + j * 0.1]);
+  const dir = writeUtcefDir({ 'many.utcef': stations });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const call = makeApi({ data: null, error: null, grib: createGribSource(uvDir, 0), utcef: createUtcefSource(dir, 0), preferGrib: true });
+  const pts = call('/grid', { bbox: '3.4,50.9,5.5,53.5', time: gridTime, maxPoints: '60' }).body.points;
+  assert.ok(pts.length <= 60, `${pts.length} > budget`);
+  assert.ok(pts.length >= 30, `density collapsed to ${pts.length}`);
+  assert.ok(pts.some((p: any) => p.source === 'grib')); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.ok(pts.some((p: any) => p.source === 'utcef')); // eslint-disable-line @typescript-eslint/no-explicit-any
 });
 
 test('GET /grid thins UTCEF points to maxPoints', (t) => {

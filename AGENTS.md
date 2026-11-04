@@ -108,8 +108,11 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   are merged in (`gridPoints()` in `api.ts`): each candidate survives only
   where its own source is the first layer of the resolveVector order
   (dataset stack, then type rank) that covers it, so the overlay agrees with
-  `/vector` and partial GRIB coverage doesn't hide UTCEF elsewhere. Points
-  carry `source`. Legacy harmonic stations are not part of `/grid`.
+  `/vector` wherever GRIB or UTCEF wins, and partial GRIB coverage doesn't
+  hide UTCEF elsewhere. The point budget is split between the two sources
+  (each thinned its own way). Points carry `source`. Legacy harmonic
+  stations are not part of `/grid` and don't claim positions there, so near
+  one that `/vector` would pick, `/grid` still shows GRIB/UTCEF.
   Both `/stations?bbox=` and
   `/grid?bbox=` exist so a map can show full-viewport current coverage
   instead of a fixed nearest-N station list.

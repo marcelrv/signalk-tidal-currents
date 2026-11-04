@@ -506,28 +506,58 @@ export function utcefStationsInBbox(
   );
 }
 
+/** Lon/lat bounds of a station's representative_area outer ring (memoised per station object). */
+const areaBoundsCache = new WeakMap<UtcefCurrentStation, { west: number; south: number; east: number; north: number } | null>();
+export function utcefAreaBounds(s: UtcefCurrentStation): { west: number; south: number; east: number; north: number } | null {
+  let b = areaBoundsCache.get(s);
+  if (b === undefined) {
+    const ring = s.representativeArea?.[0];
+    if (!ring || ring.length < 4) b = null;
+    else {
+      b = { west: Infinity, south: Infinity, east: -Infinity, north: -Infinity };
+      for (const [x, y] of ring) {
+        if (x < b.west) b.west = x;
+        if (x > b.east) b.east = x;
+        if (y < b.south) b.south = y;
+        if (y > b.north) b.north = y;
+      }
+    }
+    areaBoundsCache.set(s, b);
+  }
+  return b;
+}
+
 /**
  * Bucketed index over a set of stations answering "would utcefVectorAt claim
  * this point?" (contained in a representative_area, or a station within
  * maxKm) without utcefVectorAt's linear scan over every station — for map
- * overlays probing thousands of points per request. `files` restricts the
- * probe to one dataset's stations, as utcefVectorAt does.
+ * overlays probing thousands of points per request. Stations are bucketed by
+ * position, area polygons by their bounding box, so a probe only tests the
+ * polygons whose bounds cover its cell. `files` restricts the probe to one
+ * dataset's stations, as utcefVectorAt does.
  */
 export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.5) {
   const cells = new Map<string, UtcefCurrentStation[]>();
-  const withArea: UtcefCurrentStation[] = [];
-  for (const s of stations) {
-    if (s.representativeArea) withArea.push(s);
-    const key = `${Math.floor(s.latitude / cellDeg)}:${Math.floor(s.longitude / cellDeg)}`;
-    const list = cells.get(key);
+  const areaCells = new Map<string, UtcefCurrentStation[]>();
+  const push = (m: Map<string, UtcefCurrentStation[]>, key: string, s: UtcefCurrentStation) => {
+    const list = m.get(key);
     if (list) list.push(s);
-    else cells.set(key, [s]);
+    else m.set(key, [s]);
+  };
+  for (const s of stations) {
+    push(cells, `${Math.floor(s.latitude / cellDeg)}:${Math.floor(s.longitude / cellDeg)}`, s);
+    const b = utcefAreaBounds(s);
+    if (b) {
+      for (let j = Math.floor(b.south / cellDeg); j <= Math.floor(b.north / cellDeg); j++) {
+        for (let i = Math.floor(b.west / cellDeg); i <= Math.floor(b.east / cellDeg); i++) push(areaCells, `${j}:${i}`, s);
+      }
+    }
   }
   const inFiles = (s: UtcefCurrentStation, files?: ReadonlySet<string>) =>
     !files || (s.file !== undefined && files.has(s.file));
   return {
     covers(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): boolean {
-      for (const s of withArea) {
+      for (const s of areaCells.get(`${Math.floor(lat / cellDeg)}:${Math.floor(lon / cellDeg)}`) ?? []) {
         if (inFiles(s, files) && pointInArea(s.representativeArea!, lat, lon)) return true;
       }
       const dLat = maxKm / 111.32;
