@@ -18,6 +18,7 @@ import {
   GRIB_TIME_SLACK_MS,
 } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
+import { createUtcefSource } from '../dist/utcef.js';
 import { encodeGrib2File, EncodeField } from './grib2-testutil.js';
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -293,6 +294,45 @@ test('GET /grid samples the GRIB vector field over a bbox', () => {
   // No GRIB loaded → 503.
   const noGrib = makeApi({ data: harmonics, error: null, grib: null, preferGrib: true });
   assert.equal(noGrib('/grid', { bbox: '5.0,53.0,5.4,53.4' }).code, 503);
+});
+
+test('GET /grid falls back to UTCEF stations when GRIB has no points in the viewport', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gridfb-'));
+  const doc = {
+    metadata: { schema_version: '1.0.0' },
+    dataset: {
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          id: 'K',
+          geometry: { type: 'Point', coordinates: [3.66, 51.96] },
+          properties: {
+            prediction_method: 'harmonic_constituents_currents',
+            data_unit_speed: 'knots',
+            harmonic_constituents: { M2: { u_amplitude: 2, u_phase_g: 0, v_amplitude: 1, v_phase_g: 0 } },
+          },
+        },
+      ],
+    },
+  };
+  fs.writeFileSync(path.join(dir, 'k.utcef'), JSON.stringify(doc));
+  const utcef = createUtcefSource(dir, 0);
+  const time = new Date(T0).toISOString();
+  const bbox = '3.5,51.9,3.85,52.0';
+
+  // GRIB loaded but not covering the Dutch coast → UTCEF arrows.
+  const withGrib = makeApi({ data: null, error: null, grib: createGribSource(uvDir, 0), utcef, preferGrib: true });
+  const r = withGrib('/grid', { bbox, time });
+  assert.equal(r.code, 200);
+  assert.equal(r.body.points.length, 1);
+  assert.equal(r.body.points[0].latitude, 51.96);
+  assert.ok(r.body.points[0].speedKn > 0);
+  assert.ok(Number.isFinite(r.body.points[0].direction));
+
+  // No GRIB at all, UTCEF only → still 200.
+  const utcefOnly = makeApi({ data: null, error: null, grib: null, utcef, preferGrib: true });
+  assert.equal(utcefOnly('/grid', { bbox, time }).body.points.length, 1);
 });
 
 test('GET /grid anchors samples to a fixed lattice — panning does not shift them', () => {

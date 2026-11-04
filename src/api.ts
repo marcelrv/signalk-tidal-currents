@@ -20,7 +20,7 @@
  *   GET /stations/:id/timeline?start=&end=[&step=] — signed speed + set/drift
  *   GET /timeline?latitude=&longitude=[&start=&end=&step=] — position timeline (GRIB and/or station)
  *   GET /vector?latitude=&longitude=[&time=]       — vector at a position (GRIB preferred, station fallback)
- *   GET /grid?bbox=w,s,e,n[&time=&maxPoints=]      — sampled GRIB vector field over a viewport (GRIB only)
+ *   GET /grid?bbox=w,s,e,n[&time=&maxPoints=]      — sampled GRIB vector field over a viewport (UTCEF stations when GRIB has no points)
  */
 
 import { GribSource, gribGridSamples, gribSummary, gribVectorAt } from './gribcurrents.js';
@@ -636,8 +636,10 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
   // harmonic station locations.
   router.get('/grid', (req, res) => {
     const g = gribData();
-    if (!g) {
-      res.status(503).json({ error: 'no GRIB current field loaded' });
+    const u = utcefData();
+    const haveUtcef = !!(u && u.currentStations.length > 0);
+    if (!g && !haveUtcef) {
+      res.status(503).json({ error: 'no GRIB or UTCEF current data loaded' });
       return;
     }
     const bbox = parseBbox(req, res);
@@ -648,7 +650,27 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       return;
     }
     const maxPoints = Math.min(5000, Math.max(1, parseInt(String(req.query.maxPoints), 10) || 400));
-    const points = gribGridSamples(g, bbox, time, maxPoints);
+    let points: Array<{ latitude: number; longitude: number; speedKn: number; direction: number; u: number; v: number }> =
+      g ? gribGridSamples(g, bbox, time, maxPoints) : [];
+    // No GRIB coverage over this viewport/time (not installed, region not
+    // covered, or past its horizon): fall back to the UTCEF 2D-vector
+    // stations in the viewport so map clients still get arrows, thinned with
+    // the same stable cell ladder as /stations?bbox=.
+    if (points.length === 0 && u && haveUtcef) {
+      const inView = [];
+      for (const s of u.currentStations) {
+        if (s.latitude >= bbox.south && s.latitude <= bbox.north && s.longitude >= bbox.west && s.longitude <= bbox.east) {
+          inView.push({ lat: s.latitude, lon: s.longitude, s });
+          if (inView.length >= STATION_GATHER_CAP) break;
+        }
+      }
+      points = [];
+      for (const it of thinByCellLadder(inView, maxPoints)) {
+        const sample = utcefSampleAt(it.s, time);
+        if (sample.direction === null || sample.u === null || sample.v === null) continue;
+        points.push({ latitude: it.lat, longitude: it.lon, speedKn: sample.speedKn, direction: sample.direction, u: sample.u, v: sample.v });
+      }
+    }
     res.json({ time: new Date(time).toISOString(), units: { speedKn: 'knots (magnitude)', u: 'm/s east', v: 'm/s north' }, points });
   });
 }
