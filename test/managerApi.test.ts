@@ -112,20 +112,20 @@ test('GET /catalog returns the current catalog state shape', async () => {
 
 test('writes: false mounts only the read-only GET routes (v2 mount)', () => {
   const { mgr } = baseMgr();
+  const recordingRouter = (out: string[]): ManagerRouterLike => ({
+    get: (p) => { out.push(`GET ${p}`); },
+    post: (p) => { out.push(`POST ${p}`); },
+    put: (p) => { out.push(`PUT ${p}`); },
+    delete: (p) => { out.push(`DELETE ${p}`); },
+  });
   const seen: string[] = [];
-  const router: ManagerRouterLike = {
-    get: (p) => { seen.push(`GET ${p}`); },
-    post: (p) => { seen.push(`POST ${p}`); },
-    put: (p) => { seen.push(`PUT ${p}`); },
-    delete: (p) => { seen.push(`DELETE ${p}`); },
-  };
-  registerManagerRoutes(router, mgr, { writes: false });
+  registerManagerRoutes(recordingRouter(seen), mgr, { writes: false });
   assert.ok(seen.length > 0);
   assert.deepEqual(seen.filter((r) => !r.startsWith('GET ')), []);
   for (const r of ['GET /catalog', 'GET /datasets', 'GET /storage', 'GET /priority', 'GET /downloads']) assert.ok(seen.includes(r), r);
 
   const all: string[] = [];
-  registerManagerRoutes({ ...router, get: (p) => { all.push(`GET ${p}`); }, post: (p) => { all.push(`POST ${p}`); }, put: (p) => { all.push(`PUT ${p}`); }, delete: (p) => { all.push(`DELETE ${p}`); } }, mgr);
+  registerManagerRoutes(recordingRouter(all), mgr);
   for (const r of ['POST /catalog/refresh', 'POST /downloads', 'DELETE /datasets/:id', 'PUT /datasets/:id/auto-update', 'PUT /priority']) assert.ok(all.includes(r), r);
 });
 

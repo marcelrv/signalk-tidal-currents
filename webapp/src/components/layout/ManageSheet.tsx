@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { READ_ONLY_HINT, useAppStore } from '../../store/useAppStore';
+import { READ_ONLY_HINT, useAppStore, useReadOnly } from '../../store/useAppStore';
 import { timeAgo, formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
 import { Icon } from '../shared/Icon';
@@ -22,7 +22,7 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
   const catalog = useAppStore((s) => s.catalog);
   const catalogLoading = useAppStore((s) => s.catalogLoading);
   const refreshCatalog = useAppStore((s) => s.refreshCatalog);
-  const readOnly = useAppStore((s) => s.access === 'readonly');
+  const readOnly = useReadOnly();
   const fetchPriority = useAppStore((s) => s.fetchPriority);
   const datasets = useAppStore((s) => s.datasets);
   const [cleanupOpen, setCleanupOpen] = useState(false);

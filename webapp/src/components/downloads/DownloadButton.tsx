@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { READ_ONLY_HINT, useAppStore } from '../../store/useAppStore';
+import { READ_ONLY_HINT, useAppStore, useReadOnly } from '../../store/useAppStore';
 import { usePolling } from '../../hooks/usePolling';
 import { useDownloadProgress } from '../../hooks/useDownloadProgress';
 import { CatalogSource } from '../../api/types';
@@ -27,7 +27,7 @@ export function DownloadButton({
   status: DisplayStatus;
 }) {
   const startDownload = useAppStore((s) => s.startDownload);
-  const readOnly = useAppStore((s) => s.access === 'readonly');
+  const readOnly = useReadOnly();
   const pollDownload = useAppStore((s) => s.pollDownload);
   const downloads = useAppStore((s) => s.downloads);
   const storage = useAppStore((s) => s.storage);

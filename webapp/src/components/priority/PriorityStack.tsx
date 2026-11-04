@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, useReadOnly } from '../../store/useAppStore';
 import { DatasetEntry } from '../../api/types';
 import { datasetCoverageAreaSqDeg, rowForDataset, rowsForSources } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
@@ -22,7 +22,7 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
   const datasets = useAppStore((s) => s.datasets);
   const priorityDatasets = useAppStore((s) => s.priorityDatasets);
   const setDatasetPriority = useAppStore((s) => s.setDatasetPriority);
-  const readOnly = useAppStore((s) => s.access === 'readonly');
+  const readOnly = useReadOnly();
   const catalog = useAppStore((s) => s.catalog);
   const select = useAppStore((s) => s.select);
 

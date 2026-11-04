@@ -18,7 +18,6 @@ import { WizardSourceCard } from './WizardSourceCard';
  */
 export function FirstRunWizard() {
   const wizard = useAppStore((s) => s.wizard);
-  const readOnly = useAppStore((s) => s.access === 'readonly');
   const dismissWizard = useAppStore((s) => s.dismissWizard);
   const catalog = useAppStore((s) => s.catalog);
   const vesselPosition = useAppStore((s) => s.vesselPosition);
@@ -29,6 +28,7 @@ export function FirstRunWizard() {
   const [manualPos, setManualPos] = useState<{ lat: string; lon: string } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [installing, setInstalling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const position = manualPos && manualPos.lat !== '' && manualPos.lon !== ''
     ? { latitude: Number(manualPos.lat), longitude: Number(manualPos.lon) }
@@ -68,7 +68,9 @@ export function FirstRunWizard() {
     setSelected(keys);
   }, [liveRecommendedKey, backupRecommendedKey]);
 
-  if (!wizard.open || readOnly) return null;
+  // Opening is gated on access (Near You hidden, auto-open skipped); once
+  // open, stay mounted so a rejected download (e.g. 403) is shown, not lost.
+  if (!wizard.open) return null;
 
   const newDownloads = notInstalled.filter((c) => selected.has(c.key));
   const totalBytes = newDownloads.reduce((sum, c) => {
@@ -80,10 +82,13 @@ export function FirstRunWizard() {
 
   const install = async () => {
     setInstalling(true);
+    setError(null);
     try {
       await Promise.all(newDownloads.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined)));
       dismissWizard();
       setView('list');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setInstalling(false);
     }
@@ -178,6 +183,11 @@ export function FirstRunWizard() {
                 ? `Install selected (~${formatBytes(totalBytes)}${anyUnknownSize ? '+' : ''})`
                 : 'Close'}
           </button>
+          {error && (
+            <span role="alert" className="text-xs text-danger">
+              {error}
+            </span>
+          )}
         </div>
       )}
     </Modal>

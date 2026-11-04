@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react';
 
-import { READ_ONLY_HINT, useAppStore } from './store/useAppStore';
+import { READ_ONLY_HINT, useAppStore, useReadOnly } from './store/useAppStore';
 import { Theme, useTheme } from './theme/ThemeProvider';
 import { Icon, IconName } from './components/shared/Icon';
 import { ViewToggle } from './components/layout/ViewToggle';
@@ -33,7 +33,7 @@ export function App() {
   const catalog = useAppStore((s) => s.catalog);
   const catalogLoading = useAppStore((s) => s.catalogLoading);
   const catalogError = useAppStore((s) => s.catalogError);
-  const readOnly = useAppStore((s) => s.access === 'readonly');
+  const readOnly = useReadOnly();
   const fetchAccess = useAppStore((s) => s.fetchAccess);
   const fetchCatalog = useAppStore((s) => s.fetchCatalog);
   const refreshCatalog = useAppStore((s) => s.refreshCatalog);
@@ -50,11 +50,21 @@ export function App() {
     fetchCatalog();
     // Datasets after access is known: an empty install opens the first-run
     // wizard, which is pointless for a visitor who can't download.
-    fetchAccess().finally(() => fetchDatasets());
+    fetchAccess().finally(() => fetchDatasets().catch(() => undefined));
     fetchStorage().catch(() => undefined);
     fetchPriority();
     fetchVesselPosition();
   }, [fetchAccess, fetchCatalog, fetchDatasets, fetchStorage, fetchPriority, fetchVesselPosition]);
+
+  // Read-only can come from an expired session (a 401/403 on a write) —
+  // re-check on focus so logging back in elsewhere restores the controls.
+  useEffect(() => {
+    const recheck = () => {
+      if (useAppStore.getState().access === 'readonly') fetchAccess();
+    };
+    window.addEventListener('focus', recheck);
+    return () => window.removeEventListener('focus', recheck);
+  }, [fetchAccess]);
 
   useGlobalDownloadEvents();
 

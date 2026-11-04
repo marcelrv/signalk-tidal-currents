@@ -1,4 +1,4 @@
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, useReadOnly } from '../../store/useAppStore';
 import { SourceType } from '../../api/types';
 import { Icon } from '../shared/Icon';
 
@@ -15,7 +15,7 @@ const LABEL: Record<SourceType, string> = { grib2: 'GRIB2', utcef: 'UTCEF', harm
 export function PriorityList() {
   const priority = useAppStore((s) => s.priority);
   const setPriority = useAppStore((s) => s.setPriority);
-  const readOnly = useAppStore((s) => s.access === 'readonly');
+  const readOnly = useReadOnly();
 
   const move = (index: number, dir: -1 | 1) => {
     const next = [...priority];

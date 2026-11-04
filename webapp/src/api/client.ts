@@ -35,11 +35,17 @@ export function isPermissionError(e: unknown): boolean {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase();
-  const base = method === 'GET' ? READ_BASE : WRITE_BASE;
-  const resp = await fetch(`${base}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-  });
+  const send = (base: string) =>
+    fetch(`${base}${path}`, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    });
+  let resp = await send(method === 'GET' ? READ_BASE : WRITE_BASE);
+  // The v2 mount only exists once the plugin's start() got that far; the
+  // plugin path is always mounted (and serves "not started" placeholders),
+  // so fall back to it for reads the v2 mount doesn't have (a non-JSON 404 —
+  // a plugin route's own JSON 404, e.g. unknown job id, is a real answer).
+  if (method === 'GET' && resp.status === 404 && !resp.headers.get('content-type')?.includes('json')) resp = await send(WRITE_BASE);
   const body = await resp.json().catch(() => null);
   if (!resp.ok) {
     const message = (body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : null) ?? `HTTP ${resp.status}`;
@@ -53,7 +59,6 @@ export interface LoginStatus {
   status?: string;
   userLevel?: string;
   authenticationRequired?: boolean;
-  readOnlyAccess?: boolean;
 }
 
 export const api = {

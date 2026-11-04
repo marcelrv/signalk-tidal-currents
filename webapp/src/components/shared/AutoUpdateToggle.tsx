@@ -1,4 +1,4 @@
-import { READ_ONLY_HINT, useAppStore } from '../../store/useAppStore';
+import { READ_ONLY_HINT, useAppStore, useReadOnly } from '../../store/useAppStore';
 import { DatasetEntry } from '../../api/types';
 
 /**
@@ -9,7 +9,7 @@ import { DatasetEntry } from '../../api/types';
  */
 export function AutoUpdateToggle({ dataset }: { dataset: DatasetEntry }) {
   const setAutoUpdate = useAppStore((s) => s.setAutoUpdate);
-  const readOnly = useAppStore((s) => s.access === 'readonly');
+  const readOnly = useReadOnly();
   if (!dataset.catalogSourceId) return null;
 
   return (

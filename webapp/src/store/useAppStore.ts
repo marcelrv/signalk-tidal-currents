@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import { api, isPermissionError } from '../api/client';
+import { api, ApiError, isPermissionError } from '../api/client';
 import {
   CatalogSourceType,
   CatalogState,
@@ -33,6 +33,12 @@ interface WizardState {
 export type Access = 'admin' | 'readonly' | 'unknown';
 
 export const READ_ONLY_HINT = 'Read-only — log in as an administrator to change data';
+
+/** True when the visitor may only browse (see `Access`). */
+export const useReadOnly = () => useAppStore((s) => s.access === 'readonly');
+
+/** The placeholder catalog served before start() has `status: 'empty'` + an error that is not a sync failure. */
+const catalogErrorOf = (c: CatalogState) => (c.status === 'empty' ? null : c.error ?? null);
 
 export interface AppState {
   access: Access;
@@ -106,7 +112,8 @@ export const useAppStore = create<AppState>((set, get) => {
    * read-only so the UI reflects it instead of failing silently.
    */
   async function write<T>(fn: () => Promise<T>): Promise<T> {
-    if (get().access === 'readonly') throw new Error(READ_ONLY_HINT);
+    // Thrown as a 403 so callers handle it exactly like a server refusal.
+    if (get().access === 'readonly') throw new ApiError(READ_ONLY_HINT, 403);
     try {
       return await fn();
     } catch (e) {
@@ -132,7 +139,7 @@ export const useAppStore = create<AppState>((set, get) => {
     set({ catalogLoading: true });
     try {
       const catalog = await api.getCatalog();
-      set({ catalog, catalogError: catalog.error ?? null });
+      set({ catalog, catalogError: catalogErrorOf(catalog) });
     } catch (e) {
       set({ catalogError: errorMessage(e) });
     } finally {
@@ -140,17 +147,17 @@ export const useAppStore = create<AppState>((set, get) => {
     }
   },
   refreshCatalog: async () => {
-    if (get().access === 'readonly') return; // Sync is disabled in the UI; nothing to do
     set({ catalogLoading: true });
     try {
       const catalog = await write(() => api.refreshCatalog());
-      set({ catalog, catalogError: catalog.error ?? null });
+      set({ catalog, catalogError: catalogErrorOf(catalog) });
     } catch (e) {
       // Refresh failed — keep showing whatever is cached (re-read it in case
       // we had nothing yet), but surface why instead of swallowing it.
-      const message = errorMessage(e);
+      // A permission refusal isn't a sync failure: keep the server's own
+      // catalog error (set by fetchCatalog) rather than clearing it.
       await get().fetchCatalog();
-      set({ catalogError: isPermissionError(e) ? null : message });
+      if (!isPermissionError(e)) set({ catalogError: errorMessage(e) });
     } finally {
       set({ catalogLoading: false });
     }
