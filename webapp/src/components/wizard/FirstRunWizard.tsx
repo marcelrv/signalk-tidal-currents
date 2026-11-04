@@ -84,11 +84,18 @@ export function FirstRunWizard() {
     setInstalling(true);
     setError(null);
     try {
-      await Promise.all(newDownloads.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined)));
-      dismissWizard();
-      setView('list');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const results = await Promise.allSettled(newDownloads.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined)));
+      const failed = newDownloads.filter((_, i) => results[i].status === 'rejected');
+      if (failed.length === 0) {
+        dismissWizard();
+        setView('list');
+        return;
+      }
+      // Keep only the rejected rows selected — the started ones are already
+      // running, and re-pressing Install must not queue them a second time.
+      setSelected(new Set(failed.map((row) => row.key)));
+      const reason = (results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason;
+      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setInstalling(false);
     }

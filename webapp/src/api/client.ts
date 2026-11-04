@@ -11,19 +11,15 @@ import {
 
 // Hardcoded, not derived from window.location — robust regardless of how the
 // Admin UI mounts this webapp (relative resolution quirks, trailing slash,
-// etc.).
-//
-// Reads go to the v2 mount: signalk-server lets anonymous GETs through under
-// `/signalk/v2/api/*` when `allow_readonly` is on, so the manager can still
-// browse on a locked-down server (e.g. a public demo). Mutations go to the
-// plugin path, which signalk-server restricts to administrators — the
-// plugin doesn't mount them on v2 at all.
-export const READ_BASE = '/signalk/v2/api/currents';
-export const WRITE_BASE = '/plugins/signalk-tidal-currents';
+// etc.). All backend I/O for this plugin lives under this one prefix:
+// signalk-server keeps it admin-only, except the routes the plugin marks
+// readable via router.access('readonly') (the manager's read-only view), so
+// anonymous visitors can still browse on a locked-down server (public demo).
+export const API_BASE = '/plugins/signalk-tidal-currents';
 
-/** An HTTP error from the plugin API — `status` lets callers tell "not allowed" (401/403) apart from real failures. */
+/** An HTTP error from the plugin API — `status` lets callers tell "not allowed" (401/403) apart from real failures; `body` is the parsed JSON response (e.g. the cached catalog a failed refresh still returns). */
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly body: unknown = null) {
     super(message);
     this.name = 'ApiError';
   }
@@ -34,22 +30,14 @@ export function isPermissionError(e: unknown): boolean {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const method = (init?.method ?? 'GET').toUpperCase();
-  const send = (base: string) =>
-    fetch(`${base}${path}`, {
-      ...init,
-      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    });
-  let resp = await send(method === 'GET' ? READ_BASE : WRITE_BASE);
-  // The v2 mount only exists once the plugin's start() got that far; the
-  // plugin path is always mounted (and serves "not started" placeholders),
-  // so fall back to it for reads the v2 mount doesn't have (a non-JSON 404 —
-  // a plugin route's own JSON 404, e.g. unknown job id, is a real answer).
-  if (method === 'GET' && resp.status === 404 && !resp.headers.get('content-type')?.includes('json')) resp = await send(WRITE_BASE);
+  const resp = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+  });
   const body = await resp.json().catch(() => null);
   if (!resp.ok) {
     const message = (body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : null) ?? `HTTP ${resp.status}`;
-    throw new ApiError(message, resp.status);
+    throw new ApiError(message, resp.status, body);
   }
   return body as T;
 }
@@ -89,15 +77,11 @@ export const api = {
   getVectorAt: (lat: number, lon: number) =>
     request<VectorResponse>(`/vector?latitude=${lat}&longitude=${lon}`),
 
-  /** `null` when unavailable (no security plugin / older server) — treated as "everything allowed", same as the server does. */
-  getLoginStatus: async (): Promise<LoginStatus | null> => {
-    try {
-      const resp = await fetch('/skServer/loginStatus', { credentials: 'same-origin' });
-      if (!resp.ok) return null;
-      return (await resp.json()) as LoginStatus;
-    } catch {
-      return null;
-    }
+  /** Throws an ApiError on any non-OK answer (incl. 404, e.g. a proxy not forwarding /skServer) — access then stays unknown/read-only, never granted. */
+  getLoginStatus: async (): Promise<LoginStatus> => {
+    const resp = await fetch('/skServer/loginStatus', { credentials: 'same-origin' });
+    if (!resp.ok) throw new ApiError(`HTTP ${resp.status}`, resp.status);
+    return (await resp.json()) as LoginStatus;
   },
 
   // Vessel position comes from the SignalK server itself, not this plugin.

@@ -174,11 +174,13 @@ Base: `/signalk/v2/api/currents` (same routes at
 `/plugins/signalk-tidal-currents`).
 
 The Tidal Currents Manager webapp's own routes (`/catalog`, `/datasets`,
-`/storage`, `/downloads`, `/priority`, …) are readable on both mounts, but
-the **mutating** ones (catalog refresh, downloads, dataset delete /
-auto-update, priority changes) exist only on `/plugins/signalk-tidal-currents`,
-which signalk-server restricts to administrators. Visitors without admin
-rights (e.g. on a public read-only demo) get a read-only manager view.
+`/storage`, `/downloads`, `/priority`, …) exist only on
+`/plugins/signalk-tidal-currents`, which signalk-server restricts to
+administrators. On signalk-server ≥ 2.35 the plugin marks the manager's
+**read** routes readable by read-only users (incl. anonymous visitors with
+`allow_readonly`, e.g. a public demo), who get a read-only manager view; the
+mutating ones (catalog refresh, downloads, dataset delete / auto-update,
+priority changes) stay admin-only.
 
 | Endpoint | Description |
 | --- | --- |

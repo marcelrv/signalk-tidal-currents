@@ -30,7 +30,7 @@ import { createCatalogClient } from './catalog.js';
 import { createDownloadEngine } from './downloads.js';
 import { GRIB_EXT_RE, createGribSource } from './gribcurrents.js';
 import { HarmonicsData, loadHarmonicsDir } from './harmonics.js';
-import { ManagerRouterLike, ManagerState, registerManagerRoutes } from './managerApi.js';
+import { ManagerReadRouterLike, ManagerRouterLike, ManagerState, registerManagerRoutes } from './managerApi.js';
 import { readManifest } from './manifest.js';
 import {
   DEFAULT_PRIORITY,
@@ -447,16 +447,13 @@ function pluginConstructor(app: any) {
       if (!mountedV2 && typeof app.get === 'function') {
         try {
           const V2_BASE = '/signalk/v2/api/currents';
-          const prefixed: RouterLike & ManagerRouterLike = {
+          const prefixed: RouterLike = {
             get: (p, h) => app.get(p === '/' ? V2_BASE : V2_BASE + p, h),
-            post: (p, h) => app.post(V2_BASE + p, h),
-            put: (p, h) => app.put(V2_BASE + p, h),
-            delete: (p, h) => app.delete(V2_BASE + p, h),
           };
+          // Prediction API only — the Tidal Currents Manager routes live
+          // solely on the /plugins path (see registerWithRouter), where
+          // signalk-server enforces per-route admin/readonly permissions.
           registerRoutes(prefixed, state);
-          // Read-only manager view on v2 — mutations stay on the admin-only
-          // /plugins path (see ManagerRouteOptions.writes).
-          registerManagerRoutes(prefixed, mgr, { writes: false });
           mountedV2 = true;
         } catch (e) {
           console.warn(`[${PLUGIN_ID}] could not mount /signalk/v2/api/currents: ${e}`);
@@ -548,10 +545,16 @@ function pluginConstructor(app: any) {
       app.setPluginStatus('Stopped');
     },
 
-    registerWithRouter(router: RouterLike & ManagerRouterLike) {
-      // v1 plugin path: /plugins/signalk-tidal-currents/…
-      registerRoutes(router, state);
-      registerManagerRoutes(router, mgr);
+    registerWithRouter(router: RouterLike & ManagerRouterLike & { access?: (level: 'readonly') => RouterLike & ManagerReadRouterLike }) {
+      // v1 plugin path: /plugins/signalk-tidal-currents/… — admin-only by
+      // default. signalk-server ≥ 2.35 lets a plugin mark individual routes
+      // readable by read-only users via router.access('readonly'); the
+      // prediction API and the manager's read-only view use it so the
+      // manager webapp can browse on a locked-down server (e.g. a public
+      // demo with allow_readonly). Older servers: everything stays admin-only.
+      const reads: RouterLike & ManagerReadRouterLike = typeof router.access === 'function' ? router.access('readonly') : router;
+      registerRoutes(reads, state);
+      registerManagerRoutes(router, mgr, reads);
     },
 
     getOpenApi: () => openApiSpec,

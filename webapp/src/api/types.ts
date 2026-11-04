@@ -119,7 +119,6 @@ export interface DatasetEntry {
 }
 
 export interface StorageStats {
-  path: string;
   totalBytes: number | null;
   freeBytes: number | null;
   usedByPluginBytes: number;

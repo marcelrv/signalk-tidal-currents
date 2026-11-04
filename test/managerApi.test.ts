@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { registerManagerRoutes, ManagerRouterLike, ManagerState } from '../dist/managerApi.js';
+import { MAX_PUBLIC_SSE_CLIENTS, registerManagerRoutes, ManagerRouterLike, ManagerState } from '../dist/managerApi.js';
 import { writeManifestAtomic, upsertInstall, InstallManifest } from '../dist/manifest.js';
 import { DEFAULT_PRIORITY } from '../dist/priority.js';
 import { CatalogClient, CatalogState } from '../dist/catalog.js';
@@ -110,7 +110,7 @@ test('GET /catalog returns the current catalog state shape', async () => {
   assert.equal((res.body as any).status, 'empty');
 });
 
-test('writes: false mounts only the read-only GET routes (v2 mount)', () => {
+test('public read routes go on the `reads` router; mutations and admin-only reads stay on the main router', () => {
   const { mgr } = baseMgr();
   const recordingRouter = (out: string[]): ManagerRouterLike => ({
     get: (p) => { out.push(`GET ${p}`); },
@@ -118,15 +118,19 @@ test('writes: false mounts only the read-only GET routes (v2 mount)', () => {
     put: (p) => { out.push(`PUT ${p}`); },
     delete: (p) => { out.push(`DELETE ${p}`); },
   });
-  const seen: string[] = [];
-  registerManagerRoutes(recordingRouter(seen), mgr, { writes: false });
-  assert.ok(seen.length > 0);
-  assert.deepEqual(seen.filter((r) => !r.startsWith('GET ')), []);
-  for (const r of ['GET /catalog', 'GET /datasets', 'GET /storage', 'GET /priority', 'GET /downloads']) assert.ok(seen.includes(r), r);
+  const admin: string[] = [];
+  const pub: string[] = [];
+  registerManagerRoutes(recordingRouter(admin), mgr, recordingRouter(pub));
+  assert.deepEqual(pub.sort(), ['GET /catalog', 'GET /datasets', 'GET /downloads', 'GET /downloads/:id', 'GET /downloads/:id/events', 'GET /downloads/events', 'GET /priority', 'GET /storage']);
+  assert.deepEqual(admin.sort(), ['DELETE /datasets/:id', 'GET /cleanup-candidates', 'POST /catalog/refresh', 'POST /downloads', 'PUT /datasets/:id/auto-update', 'PUT /priority']);
+});
 
-  const all: string[] = [];
-  registerManagerRoutes(recordingRouter(all), mgr);
-  for (const r of ['POST /catalog/refresh', 'POST /downloads', 'DELETE /datasets/:id', 'PUT /datasets/:id/auto-update', 'PUT /priority']) assert.ok(all.includes(r), r);
+test('GET /storage does not expose the absolute data directory', async () => {
+  const { mgr } = baseMgr();
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const storage = await call('GET', '/storage');
+  assert.equal((storage.body as any).path, undefined);
 });
 
 test('POST /catalog/refresh returns 502 with the cached copy on failure', async () => {
@@ -364,4 +368,52 @@ test('GET/PUT /priority dataset stack: persisted order first, unranked installs 
   const good = await call('PUT', '/priority', { body: { datasets: ['c-utcef', 'gone-id'] } });
   assert.equal(good.statusCode, 200);
   assert.deepEqual((good.body as any).datasets, ['c-utcef', 'a-grib', 'b-utcef']);
+});
+
+test('redaction: only whole absolute data-dir paths, only for non-admins; /catalog hides the configured URL from non-admins', async () => {
+  const { mgr } = baseMgr({ dataDir: '/data' });
+  const err = "HTTP 404 fetching https://example.org/data/x.grb2; ENOSPC: write '/data/grib/x.grb2.part'";
+  mgr.downloads = { ...fakeDownloadEngine(), list: () => [{ id: 'j', catalogSourceId: 's', state: 'error', bytes: 0, totalBytes: null, error: err }] };
+  mgr.catalog = { get: () => ({ status: 'cached', document: null, fetchedAt: null, error: 'fetch failed: https://intranet.example/c.json?token=abc', sourceUrl: 'https://intranet.example/c.json?token=abc', warnings: [] }), refresh: async () => mgr.catalog.get() } as CatalogClient;
+  const handlers = new Map<string, (req: any, res: any) => void>();
+  const router: ManagerRouterLike = {
+    get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {},
+  };
+  registerManagerRoutes(router, mgr);
+  const call = (p: string, principal?: { permissions: string }) => {
+    let body: any;
+    handlers.get(p)!({ params: {}, query: {}, skPrincipal: principal }, { status() { return this; }, json(b: unknown) { body = b; } });
+    return body;
+  };
+  const anon = { permissions: 'readonly' };
+  assert.equal(call('/downloads', anon)[0].error, "HTTP 404 fetching https://example.org/data/x.grb2; ENOSPC: write '<data dir>/grib/x.grb2.part'");
+  assert.equal(call('/downloads', { permissions: 'admin' })[0].error, err);
+  assert.equal(call('/downloads')[0].error, err); // security off: no principal
+  const cat = call('/catalog', anon);
+  assert.equal(cat.sourceUrl, '');
+  assert.ok(!JSON.stringify(cat).includes('token=abc'), JSON.stringify(cat));
+  assert.equal(call('/catalog', { permissions: 'admin' }).sourceUrl, 'https://intranet.example/c.json?token=abc');
+});
+
+test('SSE feeds cap concurrent non-admin viewers (503 beyond MAX_PUBLIC_SSE_CLIENTS); admins are never capped', () => {
+  const { mgr } = baseMgr();
+  const handlers = new Map<string, (req: any, res: any) => void>();
+  registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
+  const closers: (() => void)[] = [];
+  const open = (principal: { permissions: string }) => {
+    let status = 200;
+    const res = {
+      status(c: number) { status = c; return res; }, json() {},
+      writeHead() {}, write() { return true; }, end() {},
+      on(_e: string, cb: () => void) { closers.push(cb); },
+    };
+    handlers.get('/downloads/events')!({ params: {}, query: {}, skPrincipal: principal }, res);
+    return status;
+  };
+  for (let i = 0; i < MAX_PUBLIC_SSE_CLIENTS; i++) assert.equal(open({ permissions: 'readonly' }), 200);
+  assert.equal(open({ permissions: 'readonly' }), 503);
+  assert.equal(open({ permissions: 'admin' }), 200);
+  closers[0](); // one viewer disconnects → a slot frees up
+  assert.equal(open({ permissions: 'readonly' }), 200);
+  closers.forEach((c) => c());
 });

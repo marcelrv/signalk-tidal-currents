@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import { api, ApiError, isPermissionError } from '../api/client';
+import { api, ApiError, isPermissionError, LoginStatus } from '../api/client';
 import {
   CatalogSourceType,
   CatalogState,
@@ -48,6 +48,8 @@ export interface AppState {
   catalogLoading: boolean;
   /** Last catalog fetch/refresh failure (null once one succeeds) — shown in the footer instead of being swallowed. */
   catalogError: string | null;
+  /** The server refused even the read-only manager routes (401/403 on GET) — see fetchCatalog. */
+  readsDenied: boolean;
   fetchCatalog: () => Promise<void>;
   refreshCatalog: () => Promise<void>;
 
@@ -106,42 +108,76 @@ const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e)
 
 export const useAppStore = create<AppState>((set, get) => {
   /**
-   * Every mutation goes through here: refuse up front in read-only mode
-   * (controls are disabled anyway — this is the backstop), and if the server
-   * answers 401/403 anyway (session expired, non-admin login), flip to
-   * read-only so the UI reflects it instead of failing silently.
+   * Every mutation goes through here. The server is the authority (controls
+   * are hidden/disabled in read-only mode anyway): if it answers 401/403
+   * (session expired, non-admin login), flip to read-only right away so the
+   * UI reflects it, then re-read loginStatus — a transient refusal for a
+   * still-logged-in admin restores the controls without waiting for a
+   * window focus event (which an embedding iframe may never get).
    */
   async function write<T>(fn: () => Promise<T>): Promise<T> {
-    // Thrown as a 403 so callers handle it exactly like a server refusal.
-    if (get().access === 'readonly') throw new ApiError(READ_ONLY_HINT, 403);
     try {
       return await fn();
     } catch (e) {
-      if (isPermissionError(e)) set({ access: 'readonly' });
+      if (isPermissionError(e)) {
+        set({ access: 'readonly' });
+        void get().fetchAccess();
+      }
       throw e;
     }
   }
 
+  let accessRetry: ReturnType<typeof setTimeout> | null = null;
+  // fetchAccess can overlap (write() refusal, window focus, retry timer):
+  // only the most recently STARTED call may set access.
+  let accessSeq = 0;
+
   return {
   access: 'unknown',
   fetchAccess: async () => {
-    const st = await api.getLoginStatus();
-    // No loginStatus (no security) or security not enforced → full access,
-    // mirroring the server. Otherwise only a logged-in admin may write.
-    if (!st || st.authenticationRequired === false) set({ access: 'admin' });
-    else set({ access: st.status === 'loggedIn' && st.userLevel === 'admin' ? 'admin' : 'readonly' });
+    if (accessRetry) clearTimeout(accessRetry);
+    accessRetry = null;
+    const seq = ++accessSeq;
+    let st: LoginStatus;
+    try {
+      st = await api.getLoginStatus();
+    } catch (e) {
+      if (seq !== accessSeq) return;
+      // Couldn't tell: grant nothing — fail closed if we had no answer yet (a
+      // confirmed admin keeps theirs). Retry transient failures (network,
+      // 5xx); a 404 (e.g. a reverse proxy not forwarding /skServer) won't
+      // fix itself, so don't poll it.
+      if (get().access === 'unknown') set({ access: 'readonly' });
+      if (!(e instanceof ApiError && e.status === 404)) accessRetry = setTimeout(() => void get().fetchAccess(), 10_000);
+      return;
+    }
+    if (seq !== accessSeq) return;
+    const prev = get().access;
+    // Only a confirmed "security not enforced" or a logged-in admin may write.
+    const next: Access =
+      st.authenticationRequired === false || (st.status === 'loggedIn' && st.userLevel === 'admin') ? 'admin' : 'readonly';
+    set({ access: next });
+    // Became admin after having been read-only (a failed first check later
+    // retried, or a login elsewhere): re-run the empty-install check that
+    // fetchDatasets skipped, so first-run onboarding isn't lost.
+    if (next === 'admin' && prev === 'readonly') get().fetchDatasets().catch(() => undefined);
   },
 
   catalog: null,
   catalogLoading: false,
   catalogError: null,
+  readsDenied: false,
   fetchCatalog: async () => {
     set({ catalogLoading: true });
     try {
       const catalog = await api.getCatalog();
-      set({ catalog, catalogError: catalogErrorOf(catalog) });
+      set({ catalog, catalogError: catalogErrorOf(catalog), readsDenied: false });
     } catch (e) {
-      set({ catalogError: errorMessage(e) });
+      // A refused READ isn't a sync failure: the server doesn't offer the
+      // read-only manager view to this visitor (signalk-server < 2.35 has no
+      // per-route readonly access) — the banner explains it instead.
+      if (isPermissionError(e)) set({ readsDenied: true });
+      else set({ catalogError: errorMessage(e) });
     } finally {
       set({ catalogLoading: false });
     }
@@ -152,12 +188,16 @@ export const useAppStore = create<AppState>((set, get) => {
       const catalog = await write(() => api.refreshCatalog());
       set({ catalog, catalogError: catalogErrorOf(catalog) });
     } catch (e) {
-      // Refresh failed — keep showing whatever is cached (re-read it in case
-      // we had nothing yet), but surface why instead of swallowing it.
-      // A permission refusal isn't a sync failure: keep the server's own
-      // catalog error (set by fetchCatalog) rather than clearing it.
-      await get().fetchCatalog();
+      // Refresh failed — keep showing whatever is cached (a 502 already
+      // carries it in the body; otherwise re-read it in case we had nothing
+      // yet), but surface why instead of swallowing it. A permission refusal
+      // isn't a sync failure: keep the catalog's own error instead.
+      const body = e instanceof ApiError ? e.body : null;
+      const cached =
+        body && typeof body === 'object' && 'status' in body ? (body as CatalogState) : await api.getCatalog().catch(() => null);
+      if (cached) set({ catalog: cached });
       if (!isPermissionError(e)) set({ catalogError: errorMessage(e) });
+      else if (cached) set({ catalogError: catalogErrorOf(cached) });
     } finally {
       set({ catalogLoading: false });
     }
@@ -170,7 +210,9 @@ export const useAppStore = create<AppState>((set, get) => {
     try {
       const datasets = await api.getDatasets();
       set({ datasets });
-      if (datasets.length === 0 && !get().wizard.dismissed && get().access !== 'readonly') set({ wizard: { open: true, dismissed: false } });
+      // Only for a CONFIRMED admin: an unknown access (loginStatus still
+      // pending/failing) must not pop the install wizard for a visitor.
+      if (datasets.length === 0 && !get().wizard.dismissed && get().access === 'admin') set({ wizard: { open: true, dismissed: false } });
     } finally {
       set({ datasetsLoading: false });
     }

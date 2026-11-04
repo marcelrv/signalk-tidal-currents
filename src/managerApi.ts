@@ -15,7 +15,7 @@ import { ApiState } from './api.js';
 import { CatalogClient } from './catalog.js';
 import { CatalogSourceType } from './catalogTypes.js';
 import { computeInstallStatus } from './datasetStatus.js';
-import { DownloadEngine, FileSelector } from './downloads.js';
+import { DownloadEngine, DownloadJob, FileSelector } from './downloads.js';
 import { readManifest, removeInstall, upsertInstall, writeManifestAtomic } from './manifest.js';
 import { DEFAULT_PRIORITY, SourceType, isValidDatasetStack, isValidPriorityOrder, resolveDatasetStack } from './priority.js';
 import { cleanupCandidates, statStorage } from './storage.js';
@@ -28,7 +28,22 @@ interface MReq {
   params: Record<string, string>;
   query: Record<string, unknown>;
   body?: unknown;
+  /** Set by signalk-server's security layer; absent when security is off. */
+  skPrincipal?: { permissions?: string };
 }
+
+/**
+ * True unless the request is from a non-admin principal. With security off
+ * there is no principal and everyone may administer anyway; with security
+ * on, every request reaching a plugin route carries one (anonymous
+ * `allow_readonly` visitors get permissions 'readonly').
+ */
+const isAdminRequest = (req: MReq) => !req.skPrincipal || req.skPrincipal.permissions === 'admin';
+
+/** Concurrent SSE streams allowed for non-admin viewers (shared by both feeds) — beyond it they get a 503 and the webapp falls back to polling. */
+export const MAX_PUBLIC_SSE_CLIENTS = 32;
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 interface MRes {
   json(body: unknown): void;
   status(code: number): MRes;
@@ -188,25 +203,65 @@ function orphanDatasets(mgr: ManagerState): DatasetEntry[] {
   return results;
 }
 
-export interface ManagerRouteOptions {
-  /**
-   * Mount the mutating routes (POST/PUT/DELETE: catalog refresh, downloads,
-   * dataset delete/auto-update, priority). Default true. The
-   * `/signalk/v2/api/currents` mount passes false: signalk-server only
-   * requires *write* (not admin) permission under `/signalk/v2/api/*`, while
-   * `/plugins/<id>/*` is admin-only — so management stays on the plugin
-   * path and v2 serves the read-only manager view (which anonymous visitors
-   * can reach on a server with `allow_readonly`, e.g. a public demo).
-   */
-  writes?: boolean;
-}
+/** The GET-only router the public read routes are registered on — see `registerManagerRoutes`. */
+export type ManagerReadRouterLike = Pick<ManagerRouterLike, 'get'>;
 
-export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerState, opts: ManagerRouteOptions = {}): void {
-  const noop = () => undefined;
-  const router: ManagerRouterLike =
-    opts.writes === false ? { get: (p, h) => target.get(p, h), post: noop, put: noop, delete: noop } : target;
-  router.get('/catalog', (_req, res) => {
-    res.json(mgr.catalog.get());
+/**
+ * Mount the Tidal Currents Manager routes. Mutations (and admin-only reads
+ * such as /cleanup-candidates) go on `router`; the read-only manager view
+ * (catalog, datasets, storage, downloads, priority) is registered EXPLICITLY
+ * on `reads`. registerWithRouter passes signalk-server's
+ * `router.access('readonly')` there, so those GETs are readable by
+ * read-only users (incl. anonymous visitors under `allow_readonly`, e.g. a
+ * public demo) while everything on `router` stays admin-only. A new route is
+ * public only if it is registered on `reads` — never by HTTP method alone.
+ */
+export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerState, reads: ManagerReadRouterLike = router): void {
+  // Read-only visitors must not learn the server's filesystem layout or the
+  // operator's config: strip the data directory from download error strings
+  // (e.g. "ENOSPC … '/home/…/x.grb2'") and the configured catalog URL from
+  // /catalog. Admins see everything verbatim.
+  // Only whole-path occurrences of the ABSOLUTE (resolved) data dir are
+  // replaced — '/data' must not match inside 'https://host/data/x', and a
+  // relative form (e.g. 'data') would hit ordinary words while revealing no
+  // filesystem layout anyway.
+  const dataDirRe = () => {
+    const abs = mgr.dataDir ? path.resolve(mgr.dataDir).replace(/[\\/]+$/, '') : '';
+    if (abs === '') return null; // unset, or the filesystem root
+    return new RegExp(`(^|[^\\w.:/\\\\-])${escapeRegExp(abs)}(?=[\\\\/]|$|[^\\w.-])`, 'g');
+  };
+  const redactPath = (s: string) => {
+    const re = dataDirRe();
+    return re ? s.replace(re, '$1<data dir>') : s;
+  };
+  const jobFor = (req: MReq) => <T extends { error?: string }>(job: T): T =>
+    job.error && !isAdminRequest(req) ? { ...job, error: redactPath(job.error) } : job;
+
+  let publicSseClients = 0;
+  /** Admits an SSE subscriber; returns a release callback, or null (503 already sent) when non-admin viewers are at the cap. */
+  const admitSse = (req: MReq, res: MRes): (() => void) | null => {
+    if (isAdminRequest(req)) return () => {};
+    if (publicSseClients >= MAX_PUBLIC_SSE_CLIENTS) {
+      res.status(503).json({ error: 'too many live viewers — poll /downloads instead' });
+      return null;
+    }
+    publicSseClients++;
+    let released = false;
+    return () => {
+      if (!released) publicSseClients--;
+      released = true;
+    };
+  };
+
+  reads.get('/catalog', (req, res) => {
+    const state = mgr.catalog.get();
+    if (isAdminRequest(req)) {
+      res.json(state);
+      return;
+    }
+    const { sourceUrl, ...rest } = state;
+    const error = state.error && sourceUrl ? state.error.split(sourceUrl).join('<catalog url>') : state.error;
+    res.json({ ...rest, sourceUrl: '', error: error === null ? null : redactPath(error) });
   });
 
   router.post('/catalog/refresh', async (_req, res) => {
@@ -218,7 +273,7 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
     res.json(state);
   });
 
-  router.get('/datasets', (_req, res) => {
+  reads.get('/datasets', (_req, res) => {
     res.json([...installedDatasets(mgr), ...orphanDatasets(mgr)]);
   });
 
@@ -291,8 +346,9 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
     res.json({ ok: true, autoUpdate: body.enabled });
   });
 
-  router.get('/storage', async (_req, res) => {
-    res.json(await statStorage(mgr.dataDir));
+  reads.get('/storage', async (_req, res) => {
+    const { path: _dataDir, ...stats } = await statStorage(mgr.dataDir);
+    res.json(stats);
   });
 
   router.get('/cleanup-candidates', (req, res) => {
@@ -318,8 +374,8 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
     }
   });
 
-  router.get('/downloads', (_req, res) => {
-    res.json(mgr.downloads.list());
+  reads.get('/downloads', (req, res) => {
+    res.json(mgr.downloads.list().map(jobFor(req)));
   });
 
   // Global completion feed (fixes "Update"/"Update all" appearing to do
@@ -329,7 +385,11 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
   // job the moment it reaches a terminal state via `onAnyDone` (already
   // fires regardless of whether anyone called `onUpdate` for that job).
   // Registered BEFORE `/downloads/:id` below so the literal path wins.
-  router.get('/downloads/events', (_req, res) => {
+  reads.get('/downloads/events', (req, res) => {
+    const admitted = admitSse(req, res);
+    if (!admitted) return;
+    const release: () => void = admitted; // non-null alias for the hoisted cleanup() below
+    const publicJob = jobFor(req);
     const raw = res as unknown as SseRes;
     raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -351,7 +411,7 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
     }, 15_000);
 
     const unsubscribe = mgr.downloads.onAnyDone((job) => {
-      if (!closed) raw.write(`data: ${JSON.stringify(job)}\n\n`);
+      if (!closed) raw.write(`data: ${JSON.stringify(publicJob(job))}\n\n`);
     });
 
     function cleanup(): void {
@@ -359,19 +419,20 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
       closed = true;
       clearInterval(heartbeat);
       unsubscribe();
+      release();
       raw.end();
     }
 
     raw.on('close', cleanup);
   });
 
-  router.get('/downloads/:id', (req, res) => {
+  reads.get('/downloads/:id', (req, res) => {
     const job = mgr.downloads.get(req.params.id);
     if (!job) {
       res.status(404).json({ error: `unknown download job: ${req.params.id}` });
       return;
     }
-    res.json(job);
+    res.json(jobFor(req)(job));
   });
 
   // SSE progress (PRD §9 Phase 2) — an upgrade layered on top of the polling
@@ -380,12 +441,16 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
   // snapshot on connect so a client that subscribes after the job already
   // progressed (or even finished) still gets a correct current state rather
   // than waiting for an event that may never come.
-  router.get('/downloads/:id/events', (req, res) => {
+  reads.get('/downloads/:id/events', (req, res) => {
     const job = mgr.downloads.get(req.params.id);
     if (!job) {
       res.status(404).json({ error: `unknown download job: ${req.params.id}` });
       return;
     }
+    const admitted = admitSse(req, res);
+    if (!admitted) return;
+    const release: () => void = admitted; // non-null alias for the hoisted cleanup() below
+    const publicJob = jobFor(req);
     const raw = res as unknown as SseRes;
     raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -395,9 +460,9 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
     });
 
     let closed = false;
-    const send = (j: unknown) => {
+    const send = (j: DownloadJob) => {
       if (closed) return;
-      raw.write(`data: ${JSON.stringify(j)}\n\n`);
+      raw.write(`data: ${JSON.stringify(publicJob(j))}\n\n`);
     };
     send(job);
 
@@ -415,6 +480,7 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
       closed = true;
       clearInterval(heartbeat);
       unsubscribe();
+      release();
       raw.end();
     }
 
@@ -427,7 +493,7 @@ export function registerManagerRoutes(target: ManagerRouterLike, mgr: ManagerSta
   const resolvedStack = () =>
     resolveDatasetStack(mgr.getDatasetStack(), mgr.getPriority(), readManifest(mgr.manifestPath).installs);
 
-  router.get('/priority', (_req, res) => {
+  reads.get('/priority', (_req, res) => {
     res.json({ order: mgr.getPriority(), default: DEFAULT_PRIORITY, datasets: resolvedStack().map((e) => e.id) });
   });
 
