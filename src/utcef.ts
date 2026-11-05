@@ -683,11 +683,18 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
       // Padded (110 km/deg < the true ~111.19) and the longitude span taken at
       // the poleward edge, so the box never under-covers; consider() is exact.
       const dLat = maxKm / 110;
-      const dLon = dLat / Math.max(Math.cos(Math.min(90, Math.abs(lat) + dLat) * DEG2RAD), 0.01);
+      const polar = Math.abs(lat) + dLat >= 90;
+      const dLon = polar ? 360 : dLat / Math.max(Math.cos((Math.abs(lat) + dLat) * DEG2RAD), 0.01);
       const j0 = Math.floor((lat - dLat) / cellDeg);
       const j1 = Math.floor((lat + dLat) / cellDeg);
       const i0 = Math.floor((lon - dLon) / cellDeg);
-      const i1 = Math.min(Math.floor((lon + dLon) / cellDeg), i0 + nLon - 1);
+      const i1 = polar ? i0 + nLon - 1 : Math.min(Math.floor((lon + dLon) / cellDeg), i0 + nLon - 1);
+      if ((j1 - j0 + 1) * (i1 - i0 + 1) > stations.length) {
+        // Box would scan more cells than there are stations (large radius /
+        // polar): a linear pass is cheaper, same consider() tie-break.
+        for (const s of stations) consider(s);
+        return best;
+      }
       for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) {
           for (const s of cells.get(key(j, i)) ?? []) consider(s);

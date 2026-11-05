@@ -283,11 +283,26 @@ export function gribVectorAt(
   timeMs: number,
   files?: ReadonlySet<string>,
 ): CurrentSample | null {
-  const slots = files ? slotsForFiles(data, files) : data.slots;
+  if (files) return vectorAtSlots(slotsForFiles(data, files), lat, lon, timeMs);
+  const merged = vectorAtSlots(data.slots, lat, lon, timeMs);
+  if (merged) return merged;
+  // The merged list de-duplicates same-time slots across files, so with
+  // several regional grids sharing valid times it only holds ONE region's
+  // grid. Probe each distinct grid group's own slots before giving up.
+  const groups = gridGroups(data);
+  if (groups.length < 2) return null;
+  for (const g of groups) {
+    const hit = vectorAtSlots(slotsForFiles(data, g.files), lat, lon, timeMs);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Bracketing slot pair of a time within a sorted slot list, or null when out of range (beyond the clamp slack). */
+function bracketSlots(slots: TimeSlot[], timeMs: number): { s0: TimeSlot; s1: TimeSlot } | null {
   if (slots.length === 0) return null;
   if (timeMs < slots[0].time - GRIB_TIME_SLACK_MS) return null;
   if (timeMs > slots[slots.length - 1].time + GRIB_TIME_SLACK_MS) return null;
-
   // Bracketing slots (binary search).
   let lo = 0;
   let hi = slots.length - 1;
@@ -296,8 +311,47 @@ export function gribVectorAt(
     if (slots[mid].time <= timeMs) lo = mid;
     else hi = mid - 1;
   }
-  const s0 = slots[lo];
-  const s1 = slots[Math.min(lo + 1, slots.length - 1)];
+  return { s0: slots[lo], s1: slots[Math.min(lo + 1, slots.length - 1)] };
+}
+
+/**
+ * The bracketing slot pair(s) gribVectorAt would sample at `timeMs`: one pair
+ * per slot list it probes (merged list, plus each grid group when `files` is
+ * undefined and several grids are loaded). Empty when out of range. Whether
+ * gribVectorAt is non-null at a position depends only on these pairs and the
+ * position — not on the exact time inside the pair — so callers can memoise
+ * coverage per pair (see gribPairsCover).
+ */
+export function gribBracketPairs(
+  data: GribCurrentsData,
+  timeMs: number,
+  files?: ReadonlySet<string>,
+): { s0: TimeSlot; s1: TimeSlot }[] {
+  const lists = files ? [slotsForFiles(data, files)] : [data.slots];
+  if (!files) {
+    const groups = gridGroups(data);
+    if (groups.length >= 2) for (const g of groups) lists.push(slotsForFiles(data, g.files));
+  }
+  const out: { s0: TimeSlot; s1: TimeSlot }[] = [];
+  for (const l of lists) {
+    const p = bracketSlots(l, timeMs);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+/** True iff gribVectorAt would be non-null at (lat, lon) for these pairs (mirrors its null logic exactly). */
+export function gribPairsCover(pairs: readonly { s0: TimeSlot; s1: TimeSlot }[], lat: number, lon: number): boolean {
+  for (const { s0, s1 } of pairs) {
+    if (sampleSlot(s0, lat, lon) || (s1 !== s0 && sampleSlot(s1, lat, lon))) return true;
+  }
+  return false;
+}
+
+function vectorAtSlots(slots: TimeSlot[], lat: number, lon: number, timeMs: number): CurrentSample | null {
+  const br = bracketSlots(slots, timeMs);
+  if (!br) return null;
+  const { s0, s1 } = br;
 
   const a = sampleSlot(s0, lat, lon);
   const b = s1 === s0 ? a : sampleSlot(s1, lat, lon);
@@ -364,7 +418,16 @@ export interface GridSample {
  * callers restrict `gribVectorAt` to a region's own (un-deduped) slots, exactly
  * as resolveVector's per-dataset probe does.
  */
-function gridGroups(data: GribCurrentsData): { grid: Grib2Grid; files: Set<string> }[] {
+type GridGroup = { grid: Grib2Grid; files: Set<string> };
+// One stable group list (and one Set per group) per data object, so the
+// slotsForFiles WeakMap cache keyed by Set identity keeps hitting.
+const gridGroupsCache = new WeakMap<GribCurrentsData, GridGroup[]>();
+function gridGroups(data: GribCurrentsData): GridGroup[] {
+  let cached = gridGroupsCache.get(data);
+  if (!cached) gridGroupsCache.set(data, (cached = computeGridGroups(data)));
+  return cached;
+}
+function computeGridGroups(data: GribCurrentsData): GridGroup[] {
   const groups: { grid: Grib2Grid; files: Set<string> }[] = [];
   for (const [file, slots] of Object.entries(data.slotsByFile)) {
     if (slots.length === 0) continue;
@@ -420,6 +483,16 @@ export function gribGridSamples(
   timeMs: number,
   maxPoints = 400,
 ): GridSample[] {
+  return gribGridSamplesWithFiles(data, bbox, timeMs, maxPoints).map((x) => x.sample);
+}
+
+/** Like gribGridSamples, but each sample carries the (stable) file set of the grid it was sampled from. */
+export function gribGridSamplesWithFiles(
+  data: GribCurrentsData,
+  bbox: { west: number; south: number; east: number; north: number },
+  timeMs: number,
+  maxPoints = 400,
+): { sample: GridSample; files: ReadonlySet<string> }[] {
   // Each downloaded region is its own grid geometry. Sample every region
   // whose lattice overlaps the viewport — not just the merged grid — or a
   // viewport over any region the same-time dedup dropped from `slots` (e.g.
@@ -434,7 +507,7 @@ export function gribGridSamples(
   // near maxPoints (regions are mostly disjoint, so usually there is one).
   const perGrid = Math.max(1, Math.floor(maxPoints / windows.length));
 
-  const points: GridSample[] = [];
+  const points: { sample: GridSample; files: ReadonlySet<string> }[] = [];
   for (const { grid, files, win } of windows) {
     const { iMin, iMax, jMin, jMax } = win;
     const iCount = iMax - iMin + 1;
@@ -455,12 +528,15 @@ export function gribGridSamples(
         const sample = gribVectorAt(data, lat, lon, timeMs, files);
         if (sample && sample.u !== null && sample.v !== null) {
           points.push({
-            latitude: Math.round(lat * 1e4) / 1e4,
-            longitude: Math.round(lon * 1e4) / 1e4,
-            speedKn: sample.speedKn,
-            direction: sample.direction ?? 0,
-            u: sample.u,
-            v: sample.v,
+            sample: {
+              latitude: Math.round(lat * 1e4) / 1e4,
+              longitude: Math.round(lon * 1e4) / 1e4,
+              speedKn: sample.speedKn,
+              direction: sample.direction ?? 0,
+              u: sample.u,
+              v: sample.v,
+            },
+            files,
           });
           if (points.length >= maxPoints) return points;
         }

@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerRoutes, resolveVector, orderedLayers, ApiState } from '../dist/api.js';
-import { createGribSource } from '../dist/gribcurrents.js';
+import { createGribSource, gribVectorAt } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { distanceKm } from '../dist/predict.js';
 import { createUtcefSource, utcefCoverageIndex, utcefVectorAt, utcefSampleAt } from '../dist/utcef.js';
@@ -26,18 +26,19 @@ function gridField(param: number, value: number): EncodeField {
 const uvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gu-'));
 fs.writeFileSync(path.join(uvDir, 'currents.grb2'), encodeGrib2File([gridField(2, 1), gridField(3, 0)]));
 
-function writeUtcefDir(files: Record<string, Array<[string, number, number]>>): string {
+function writeUtcefDir(files: Record<string, Array<[string, number, number, number[][][]?]>>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gu-u-'));
   for (const [name, stations] of Object.entries(files)) {
     const doc = {
       metadata: { schema_version: '1.0.0' },
       dataset: {
         type: 'FeatureCollection',
-        features: stations.map(([id, lat, lon]) => ({
+        features: stations.map(([id, lat, lon, area]) => ({
           type: 'Feature',
           id,
           geometry: { type: 'Point', coordinates: [lon, lat] },
           properties: {
+            ...(area ? { representative_area: { type: 'Polygon', coordinates: area } } : {}),
             prediction_method: 'harmonic_constituents_currents',
             data_unit_speed: 'knots',
             harmonic_constituents: { M2: { u_amplitude: 2, u_phase_g: 0, v_amplitude: 1, v_phase_g: 0 } },
@@ -287,4 +288,113 @@ test('orderedLayers is cached per stack snapshot: same list and same file Sets a
   const bare: ApiState = { data: null, error: null, preferGrib: false };
   assert.equal(orderedLayers(bare, 50), orderedLayers(bare, 50));
   assert.deepEqual(orderedLayers(bare, 50).map((l) => l.type), ['utcef', 'harmonic', 'grib2']);
+});
+
+test('/timeline UTCEF fallback honours representative_area like /vector', (t) => {
+  const area = [[[4.95, 52.95], [5.1, 52.95], [5.1, 53.1], [4.95, 53.1], [4.95, 52.95]]];
+  const dir = writeUtcefDir({ 'a.utcef': [['A', 53.0, 5.0], ['B', 53.3, 5.3, area]] });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const call = makeApi({ data: null, error: null, grib: null, utcef: createUtcefSource(dir, 0), preferGrib: true });
+  const q = { latitude: '53.02', longitude: '5.02', time: gridTime, hours: '2', step: '60' };
+  const vec = call('/vector', q);
+  const tl = call('/timeline', q);
+  const vBody = vec.body ?? vec;
+  const tBody = tl.body ?? tl;
+  assert.equal(vBody.station.id, 'B');
+  assert.equal(tBody.utcefStation.id, 'B');
+});
+
+function polarStation(id: string, lat: number, lon: number) {
+  return { id, name: id, latitude: lat, longitude: lon, meanU: 0, meanV: 0, constituents: [], file: 'a.utcef' } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+}
+
+test('coverage index finds a station across the pole (north and south)', () => {
+  for (const sign of [1, -1]) {
+    const list = [polarStation('P', sign * 89.9, 150)];
+    const idx = utcefCoverageIndex(list);
+    const d = distanceKm(sign * 89.8, 0, sign * 89.9, 150);
+    assert.ok(d < 50);
+    assert.equal(idx.stationAt(sign * 89.8, 0, 50)?.id, 'P');
+    assert.equal(idx.stationAt(sign * 89.8, 0, d - 1), null);
+  }
+});
+
+test('coverage index with a large maxKm matches the linear scan', () => {
+  const list: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  for (let k = 0; k < 40; k++) list.push(polarStation('S' + k, 55 + ((k * 7) % 10), -20 + ((k * 13) % 60)));
+  const idx = utcefCoverageIndex(list);
+  const data = { currentStations: list } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  for (const [lat, lon] of [[60, 0], [58.3, 12.7], [64, -15], [10, 100]]) {
+    for (const maxKm of [300, 2000, 5000]) {
+      const lin = utcefVectorAt(data, lat, lon, T0, Infinity);
+      const want = lin && lin.distanceKm <= maxKm ? lin.station.id : null;
+      assert.equal(idx.stationAt(lat, lon, maxKm)?.id ?? null, want, `${lat},${lon} @${maxKm}`);
+    }
+  }
+});
+
+// ---- review follow-ups: shadowed regions, layer-specific winner, memo ----
+const fld = (param: number, value: number, la1: number, lo1: number, d: number, n: number, forecastHours = 0): EncodeField =>
+  ({ param, refTime: T0, forecastHours, la1, lo1, dLat: d, dLon: d, ni: n, nj: n, values: new Array(n * n).fill(value) });
+function gribDirOf(files: Record<string, EncodeField[]>): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gu-g-'));
+  for (const [n, f] of Object.entries(files)) fs.writeFileSync(path.join(dir, n), encodeGrib2File(f));
+  return dir;
+}
+
+test('shadowed regional GRIB grid: no-files lookup, /grid and resolveVector all see it', () => {
+  const dir = gribDirOf({
+    'a.grb2': [fld(2, 1, 52.9, 4.9, 0.1, 7), fld(3, 0, 52.9, 4.9, 0.1, 7)],
+    'b.grb2': [fld(2, 1, 40, 290, 0.1, 7), fld(3, 0, 40, 290, 0.1, 7)],
+  });
+  const grib = createGribSource(dir, 0);
+  const utcef = createUtcefSource(writeUtcefDir({ 'x.utcef': [['K', 53.2, 5.2]] }), 0);
+  assert.ok(gribVectorAt(grib.get()!, 53.2, 5.2, T0));
+  const state = { data: null, error: null, grib, utcef, preferGrib: true } as unknown as ApiState;
+  const pts = makeApi(state)('/grid', { bbox: '4.9,52.9,5.5,53.5', time: gridTime, maxPoints: '50' }).points as P[];
+  assert.ok(pts.length > 0);
+  assert.ok(pts.every((p) => p.source === 'grib'));
+  assert.equal(resolveVector(state, 53.2, 5.2, T0)?.source, 'grib');
+});
+
+test('/grid: lower-ranked overlapping GRIB lattice dropped; points match resolveVector (with and without UTCEF)', () => {
+  const grib = createGribSource(gribDirOf({
+    'coast.grb2': [fld(2, 2, 52.9, 4.9, 0.05, 13), fld(3, 0, 52.9, 4.9, 0.05, 13)],
+    'global.grb2': [fld(2, 1, 50, 2, 0.5, 15), fld(3, 0, 50, 2, 0.5, 15)],
+  }), 0);
+  const rank = [
+    { id: 'coast', type: 'grib2' as const, files: ['coast.grb2'] },
+    { id: 'global', type: 'grib2' as const, files: ['global.grb2'] },
+  ];
+  const farUtcef = createUtcefSource(writeUtcefDir({ 'x.utcef': [['FAR', 10, -60]] }), 0);
+  for (const utcef of [farUtcef, null]) {
+    const state = { data: null, error: null, grib, utcef, preferGrib: true, datasetRank: () => rank } as unknown as ApiState;
+    const pts = makeApi(state)('/grid', { bbox: '5.0,53.0,5.4,53.4', time: gridTime, maxPoints: '400' }).points as P[];
+    const inCoast = pts.filter((p) => p.latitude >= 52.9 && p.latitude <= 53.5 && p.longitude >= 4.9 && p.longitude <= 5.5);
+    assert.ok(inCoast.length > 0);
+    assert.ok(inCoast.every((p) => p.u === 2), 'no global (u=1) point inside the coastal box');
+    for (const p of pts.filter((x) => x.source === 'grib')) {
+      const r = resolveVector(state, p.latitude, p.longitude, T0)!;
+      assert.equal(p.u, r.sample.u);
+      assert.equal(p.v, r.sample.v);
+    }
+  }
+});
+
+test('/grid UTCEF-station GRIB-coverage memo stays correct within and across slot pairs', () => {
+  const grib = createGribSource(gribDirOf({
+    'a.grb2': [
+      fld(2, 1, 52.9, 4.9, 0.1, 7, 0), fld(3, 0, 52.9, 4.9, 0.1, 7, 0),
+      fld(2, 1, 52.9, 4.9, 0.1, 7, 6), fld(3, 0, 52.9, 4.9, 0.1, 7, 6),
+    ],
+  }), 0);
+  const utcef = createUtcefSource(writeUtcefDir({ 'x.utcef': [['K', 53.2, 5.2]] }), 0);
+  const call = makeApi({ data: null, error: null, grib, utcef, preferGrib: true } as unknown as ApiState);
+  const at = (h: number) =>
+    (call('/grid', { bbox: '5.15,53.15,5.25,53.25', time: new Date(T0 + h * 3600_000).toISOString(), maxPoints: '1000' }).points as P[]);
+  const drawn = (pts: P[]) => pts.some((p) => p.source === 'utcef' && p.stationId === 'K' && p.latitude === 53.2 && p.longitude === 5.2);
+  assert.equal(drawn(at(1)), false);
+  assert.equal(drawn(at(2)), false); // same slot pair, memo hit
+  assert.equal(drawn(at(30)), true); // outside the GRIB range (+3 h slack)
+  assert.equal(drawn(at(3)), false); // back inside
 });

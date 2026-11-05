@@ -56,6 +56,8 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   TOWARD) per valid time, shallowest level wins. `gribVectorAt` =
   bilinear in space (NaN corners dropped + weights renormalized for
   coastlines) and linear in time (±3 h clamp slack at the range edges).
+  Without `files` and a merged-slot miss it probes every distinct grid group
+  (same-time dedup keeps only one region's grid in the merged `slots`).
   `createGribSource(dir)` re-stats the dir at most 1×/min and reloads on
   file-set change, re-decoding only files whose size/mtime changed (per-file
   parse cache — a full re-decode of every file on each change froze small
@@ -78,7 +80,7 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   a station whose `representative_area` polygon contains the point (first in
   array order), else nearest within `maxKm` (ties: earliest in array). A
   finite `maxKm` goes through `utcefCoverageIndexFor(data).stationAt()` (cell
-  buckets for stations and small polygons; polygons whose bbox spans > 64
+  buckets for stations and small polygons; falls back to a linear station pass when the search box would cover more cells than there are stations, e.g. large radii or near a pole; polygons whose bbox spans > 64
   cells live in a rank-ordered `largeAreas` list with a bbox pre-test, mind
   the ±360 frames); `Infinity` keeps the linear scan. A parity test pins the
   index path to the linear algorithm. `createUtcefSource(dir)` mirrors the GRIB source's
@@ -123,7 +125,10 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   `ceil(maxPoints/2)` whenever any UTCEF current-station data is loaded
   (else `maxPoints`) — independent of the view, so the stride and every
   arrow position stay put while panning; total ≤ `maxPoints`. Single pass:
-  each lattice sample's winner is evaluated once. Both `/stations?bbox=` and
+  each lattice sample's winner is evaluated once. The GRIB winner is
+  layer-specific: a lattice sample whose grid is not covered by the winning
+  stack layer's files is dropped (that dataset's own lattice covers the
+  area). Both `/stations?bbox=` and
   `/grid?bbox=` exist so a map can show full-viewport current coverage
   instead of a fixed nearest-N station list.
 - `src/index.ts` — plugin entry. Publishes `environment.current` deltas

@@ -23,7 +23,7 @@
  *   GET /grid?bbox=w,s,e,n[&time=&maxPoints=]      — vector field over a viewport: GRIB lattice + UTCEF stations, per-point source priority
  */
 
-import { GribCurrentsData, GribSource, GridSample, gribGridSamples, gribSummary, gribVectorAt } from './gribcurrents.js';
+import { GribCurrentsData, GribSource, GridSample, gribBracketPairs, gribGridSamplesWithFiles, gribPairsCover, gribSummary, gribVectorAt, TimeSlot } from './gribcurrents.js';
 import { HarmonicsData, IdxStation } from './harmonics.js';
 import { DatasetRankEntry, SourceType } from './priority.js';
 import {
@@ -583,8 +583,10 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       : [];
     const station = near.length > 0 ? near[0] : null;
     const u = utcefData();
-    const utcefNearRaw = u ? nearestUtcefStations(u, pos.lat, pos.lon, 1)[0] ?? null : null;
-    const utcefNear = utcefNearRaw && utcefNearRaw.distanceKm <= REST_FALLBACK_MAX_KM ? utcefNearRaw : null;
+    // Same station resolution as /vector (representative_area containment
+    // first, else nearest); resolution is time-independent.
+    const utcefHit = u ? utcefVectorAt(u, pos.lat, pos.lon, win.start, REST_FALLBACK_MAX_KM) : null;
+    const utcefNear = utcefHit ? { station: utcefHit.station, distanceKm: utcefHit.distanceKm } : null;
     const g = gribData();
 
     // Per-sample source candidates in preference order (same policy as
@@ -726,6 +728,11 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
   });
 }
 
+// Per-station GRIB coverage memo (see gridPoints): keyed by layer filesKey,
+// valid while the bracketing slot pairs are the same objects.
+// Keyed by the GRIB data object first so a reload drops the whole memo (the pairs hold decoded grids).
+const stationGribCoverage = new WeakMap<GribCurrentsData, WeakMap<UtcefCurrentStation, Map<string, { pairs: { s0: TimeSlot; s1: TimeSlot }[]; covered: boolean }>>>();
+
 /** One /grid point: a GRIB lattice sample or a UTCEF station, tagged with its source. */
 export type GridPoint = GridSample & { source: 'grib' | 'utcef'; stationId?: string };
 
@@ -738,7 +745,10 @@ type Bbox = { west: number; south: number; east: number; north: number };
  * first remaining layer that claims a position wins; a UTCEF layer names its
  * station.
  *
- * - GRIB lattice samples (gribGridSamples) where GRIB wins stay GRIB. A
+ * - GRIB lattice samples (gribGridSamples) where GRIB wins stay GRIB. The
+ *   GRIB winner is layer-specific: a sample whose grid is not covered by the
+ *   winning stack layer's files is dropped (that dataset's own lattice covers
+ *   the area). A
  *   sample won by a UTCEF station S ALWAYS becomes S's vector at the sample
  *   position (source 'utcef', stationId S.id), whether or not S itself is
  *   drawn — so the overlay never depends on which stations are in view or
@@ -761,36 +771,75 @@ function gridPoints(
   time: number,
   maxPoints: number,
 ): GridPoint[] {
-  const layers = u ? orderedLayers(state, REST_FALLBACK_MAX_KM) : [];
+  const layers = orderedLayers(state, REST_FALLBACK_MAX_KM);
   const index = u ? utcefCoverageIndexFor(u) : null;
+  // Arbitration is needed when UTCEF data is loaded or a per-dataset stack can
+  // make a GRIB layer win; with neither, the lattice is emitted as sampled.
+  const arbitrate = !!u || layers.some((l) => l.stack);
 
-  // Winner at an arbitrary point: 'grib', a UTCEF station, or null.
-  const winnerAt = (lat: number, lon: number): 'grib' | UtcefCurrentStation | null => {
+  type Win = UtcefCurrentStation | { grib: Layer } | null;
+  // THE arbitration loop (harmonic layers skipped): the first layer whose
+  // probe claims the position wins. Probes differ by position kind (lattice
+  // sample vs. station position).
+  const arbitrateLayers = (
+    utcefProbe: (l: Layer) => UtcefCurrentStation | null,
+    gribProbe: (l: Layer) => boolean,
+  ): Win => {
     for (const l of layers) {
       if (l.type === 'grib2') {
-        if (g && gribVectorAt(g, lat, lon, time, l.files) !== null) return 'grib';
+        if (g && gribProbe(l)) return { grib: l };
       } else if (l.type === 'utcef') {
-        const st = index!.stationAt(lat, lon, l.utcefMaxKm, l.files);
+        if (!index) continue;
+        const st = utcefProbe(l);
         if (st) return st;
       }
     }
     return null;
   };
-  // Same at a station's own position (UTCEF layers memoised per station).
-  const winnerAtStation = (s: UtcefCurrentStation): 'grib' | UtcefCurrentStation | null => {
-    for (const l of layers) {
-      if (l.type === 'grib2') {
-        if (g && gribVectorAt(g, s.latitude, s.longitude, time, l.files) !== null) return 'grib';
-      } else if (l.type === 'utcef') {
-        const st = index!.stationAtStation(s, l.utcefMaxKm, l.files, l.filesKey);
-        if (st) return st;
-      }
-    }
-    return null;
+  const intersects = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => {
+    for (const f of a) if (b.has(f)) return true;
+    return false;
   };
+  // Lattice sample: the sample itself proves GRIB coverage for its own grid's
+  // files, so a layer over those files (or an unrestricted one) needs no
+  // second interpolation; only layers over OTHER files are probed.
+  const winnerAtSample = (lat: number, lon: number, sampleFiles: ReadonlySet<string>): Win =>
+    arbitrateLayers(
+      (l) => index!.stationAt(lat, lon, l.utcefMaxKm, l.files),
+      (l) => !l.files || intersects(l.files, sampleFiles) || gribVectorAt(g!, lat, lon, time, l.files) !== null,
+    );
+  // Station position: GRIB coverage memoised per (station, layer files) on the
+  // bracketing slot pairs, so frames within the same pair skip the sampling.
+  const pairs: Map<string, { s0: TimeSlot; s1: TimeSlot }[]> = new Map();
+  const pairsFor = (l: Layer) => {
+    let p = pairs.get(l.filesKey);
+    if (!p) pairs.set(l.filesKey, (p = gribBracketPairs(g!, time, l.files)));
+    return p;
+  };
+  const gribCoversStation = (s: UtcefCurrentStation, l: Layer): boolean => {
+    const cur = pairsFor(l);
+    let perData = stationGribCoverage.get(g!);
+    if (!perData) stationGribCoverage.set(g!, (perData = new WeakMap()));
+    let perStation = perData.get(s);
+    if (!perStation) perData.set(s, (perStation = new Map()));
+    const hit = perStation.get(l.filesKey);
+    if (hit && hit.pairs.length === cur.length && hit.pairs.every((p, i) => p.s0 === cur[i].s0 && p.s1 === cur[i].s1)) {
+      return hit.covered;
+    }
+    const covered = gribPairsCover(cur, s.latitude, s.longitude);
+    perStation.set(l.filesKey, { pairs: cur, covered });
+    return covered;
+  };
+  const winnerAtStation = (s: UtcefCurrentStation): Win =>
+    arbitrateLayers(
+      (l) => index!.stationAtStation(s, l.utcefMaxKm, l.files, l.filesKey),
+      (l) => gribCoversStation(s, l),
+    );
 
+  const samples = new Map<UtcefCurrentStation, ReturnType<typeof utcefSampleAt>>();
   const utcefPoint = (s: UtcefCurrentStation, lat: number, lon: number): GridPoint => {
-    const sample = utcefSampleAt(s, time);
+    let sample = samples.get(s);
+    if (!sample) samples.set(s, (sample = utcefSampleAt(s, time)));
     return { latitude: lat, longitude: lon, speedKn: sample.speedKn, direction: sample.direction, u: sample.u, v: sample.v, source: 'utcef', stationId: s.id };
   };
 
@@ -799,10 +848,13 @@ function gridPoints(
   const gribRequest = u ? Math.max(1, Math.ceil(maxPoints / 2)) : maxPoints;
   const lattice: GridPoint[] = [];
   if (g) {
-    for (const p of gribGridSamples(g, bbox, time, gribRequest)) {
-      const w = u ? winnerAt(p.latitude, p.longitude) : null;
-      if (w === null || w === 'grib') lattice.push({ ...p, source: 'grib' });
-      else lattice.push(utcefPoint(w, p.latitude, p.longitude));
+    for (const { sample: p, files } of gribGridSamplesWithFiles(g, bbox, time, gribRequest)) {
+      const w = arbitrate ? winnerAtSample(p.latitude, p.longitude, files) : null;
+      if (w === null) lattice.push({ ...p, source: 'grib' });
+      else if ('grib' in w) {
+        // A winning stack layer over other files: its own lattice covers here.
+        if (!w.grib.files || intersects(w.grib.files, files)) lattice.push({ ...p, source: 'grib' });
+      } else lattice.push(utcefPoint(w, p.latitude, p.longitude));
     }
   }
   if (!u) return lattice;
@@ -814,7 +866,6 @@ function gridPoints(
     if (winnerAtStation(s) === s) winners.push({ lat: s.latitude, lon: s.longitude, s });
   }
   const utcefThin = thinByCellLadder(winners, Math.max(0, maxPoints - lattice.length));
-  const out = lattice;
-  for (const { s } of utcefThin) out.push(utcefPoint(s, s.latitude, s.longitude));
-  return out;
+  for (const { s } of utcefThin) lattice.push(utcefPoint(s, s.latitude, s.longitude));
+  return lattice;
 }
