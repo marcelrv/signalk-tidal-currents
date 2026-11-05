@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { useAppStore } from '../store/useAppStore';
-import { api, API_BASE } from '../api/client';
+import { api, API_BASE, isPermissionError } from '../api/client';
 import { DownloadJob } from '../api/types';
 
 /**
@@ -46,8 +46,10 @@ function usePollingFallback(active: boolean, setDownloadJob: (job: DownloadJob) 
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => {
-      api.listDownloads().then((jobs) => jobs.forEach(setDownloadJob)).catch(() => {
-        // transient fetch failure — next tick retries
+      api.listDownloads().then((jobs) => jobs.forEach(setDownloadJob)).catch((e) => {
+        // A refused read (old server without per-route readonly access) won't
+        // fix itself — stop polling; other failures are transient, next tick retries.
+        if (isPermissionError(e)) clearInterval(id);
       });
     }, 3000);
     return () => clearInterval(id);

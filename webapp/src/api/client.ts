@@ -79,7 +79,17 @@ export const api = {
 
   /** Throws an ApiError on any non-OK answer (incl. 404, e.g. a proxy not forwarding /skServer) — access then stays unknown/read-only, never granted. */
   getLoginStatus: async (): Promise<LoginStatus> => {
-    const resp = await fetch('/skServer/loginStatus', { credentials: 'same-origin' });
+    // Bounded: a hung request would otherwise block dataset loading (which
+    // waits on the access check) forever. The abort rejects with a non-ApiError,
+    // i.e. a transient failure the caller retries.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10_000);
+    let resp: Response;
+    try {
+      resp = await fetch('/skServer/loginStatus', { credentials: 'same-origin', signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!resp.ok) throw new ApiError(`HTTP ${resp.status}`, resp.status);
     return (await resp.json()) as LoginStatus;
   },

@@ -3,9 +3,10 @@
 
 /**
  * REST API for the Tidal Currents Manager webapp (PRD §7). Registered
- * alongside (not instead of) the existing prediction API in `api.ts`, on the
- * same two mount points (`/plugins/signalk-tidal-currents` and
- * `/signalk/v2/api/currents`).
+ * alongside (not instead of) the existing prediction API in `api.ts`. The
+ * manager routes live only on the `/plugins/signalk-tidal-currents` path
+ * (where `router.access('readonly')` applies); the prediction API stays on
+ * both that and `/signalk/v2/api/currents`.
  */
 
 import * as fs from 'fs';
@@ -32,19 +33,19 @@ interface MReq {
   skPrincipal?: { permissions?: string };
 }
 
-/**
- * True unless the request is from a non-admin principal. With security off
- * there is no principal and everyone may administer anyway; with security
- * on, every request reaching a plugin route carries one (anonymous
- * `allow_readonly` visitors get permissions 'readonly').
- */
-const isAdminRequest = (req: MReq) => !req.skPrincipal || req.skPrincipal.permissions === 'admin';
+/** Optional hooks for `registerManagerRoutes`. */
+export interface ManagerRouteOptions {
+  /** True when the server enforces security. Without it (tests) a missing principal is treated as "security off". */
+  securityEnabled?: () => boolean;
+}
 
 /** Concurrent SSE streams allowed for non-admin viewers (shared by both feeds) — beyond it they get a 503 and the webapp falls back to polling. */
 export const MAX_PUBLIC_SSE_CLIENTS = 32;
 
-/** How long non-admin /storage requests reuse one data-dir scan (the walk is synchronous — anonymous visitors must not be able to trigger it at will). */
-export const PUBLIC_STORAGE_TTL_MS = 30_000;
+/** How long non-admin /storage and /datasets requests reuse one data-dir scan (the walks are synchronous — anonymous visitors must not be able to trigger them at will). */
+export const PUBLIC_SCAN_TTL_MS = 30_000;
+/** Former name of PUBLIC_SCAN_TTL_MS, kept for importers. */
+export const PUBLIC_STORAGE_TTL_MS = PUBLIC_SCAN_TTL_MS;
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 interface MRes {
@@ -219,7 +220,15 @@ export type ManagerReadRouterLike = Pick<ManagerRouterLike, 'get'>;
  * public demo) while everything on `router` stays admin-only. A new route is
  * public only if it is registered on `reads` — never by HTTP method alone.
  */
-export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerState, reads: ManagerReadRouterLike = router): void {
+export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerState, reads: ManagerReadRouterLike = router, opts: ManagerRouteOptions = {}): void {
+  // Admin iff security is off or the principal is admin. With security on,
+  // every request reaching a plugin route carries a principal (anonymous
+  // `allow_readonly` visitors get 'readonly'); a MISSING one must not fail
+  // open to admin, so it is only trusted when security is known to be off.
+  const isAdminRequest = (req: MReq) => {
+    if (opts.securityEnabled ? !opts.securityEnabled() : !req.skPrincipal) return true;
+    return req.skPrincipal?.permissions === 'admin';
+  };
   // Read-only visitors must not learn the server's filesystem layout or the
   // operator's config: strip the data directory from download error strings
   // (e.g. "ENOSPC … '/home/…/x.grb2'") and the configured catalog URL from
@@ -276,8 +285,21 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     res.json(state);
   });
 
-  reads.get('/datasets', (_req, res) => {
-    res.json([...installedDatasets(mgr), ...orphanDatasets(mgr)]);
+  // Same sharing as /storage below: the scan is synchronous (manifest read,
+  // per-file existsSync, recursive walks), so non-admins reuse one result
+  // per PUBLIC_SCAN_TTL_MS; admins compute fresh and refresh the shared copy.
+  let publicDatasets: { at: number; list: unknown[] } | null = null;
+  reads.get('/datasets', (req, res) => {
+    if (isAdminRequest(req)) {
+      const list = [...installedDatasets(mgr), ...orphanDatasets(mgr)];
+      publicDatasets = { at: Date.now(), list };
+      res.json(list);
+      return;
+    }
+    if (!publicDatasets || Date.now() - publicDatasets.at > PUBLIC_SCAN_TTL_MS) {
+      publicDatasets = { at: Date.now(), list: [...installedDatasets(mgr), ...orphanDatasets(mgr)] };
+    }
+    res.json(publicDatasets.list);
   });
 
   router.delete('/datasets/:id', (req, res) => {
@@ -349,7 +371,7 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     res.json({ ok: true, autoUpdate: body.enabled });
   });
 
-  // Non-admins share one scan per PUBLIC_STORAGE_TTL_MS (overlapping
+  // Non-admins share one scan per PUBLIC_SCAN_TTL_MS (overlapping
   // requests await the same promise); admins always scan fresh, and their
   // result refreshes the shared copy (e.g. right after a download/delete).
   let publicStorage: { at: number; stats: Promise<Omit<StorageStats, 'path'>> } | null = null;
@@ -361,7 +383,7 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
       res.json(stats);
       return;
     }
-    if (!publicStorage || Date.now() - publicStorage.at > PUBLIC_STORAGE_TTL_MS) {
+    if (!publicStorage || Date.now() - publicStorage.at > PUBLIC_SCAN_TTL_MS) {
       const stats = statStorage(mgr.dataDir).then(publicView);
       publicStorage = { at: Date.now(), stats };
       stats.catch(() => { if (publicStorage?.stats === stats) publicStorage = null; }); // don't cache a failure
@@ -484,23 +506,33 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     };
     send(job);
 
-    const heartbeat = setInterval(() => {
-      if (!closed) raw.write(':hb\n\n');
-    }, 15_000);
-
-    const unsubscribe = mgr.downloads.onUpdate(req.params.id, (updated) => {
-      send(updated);
-      if (updated.state === 'done' || updated.state === 'error') cleanup();
-    });
-
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let unsubscribe: () => void = () => {};
     function cleanup(): void {
       if (closed) return;
       closed = true;
-      clearInterval(heartbeat);
+      if (heartbeat) clearInterval(heartbeat);
       unsubscribe();
       release();
       raw.end();
     }
+
+    // A job that is already terminal will never fire another update, so the
+    // snapshot is the whole stream — close now instead of holding a public
+    // SSE slot open forever.
+    if (job.state === 'done' || job.state === 'error') {
+      cleanup();
+      return;
+    }
+
+    heartbeat = setInterval(() => {
+      if (!closed) raw.write(':hb\n\n');
+    }, 15_000);
+
+    unsubscribe = mgr.downloads.onUpdate(req.params.id, (updated) => {
+      send(updated);
+      if (updated.state === 'done' || updated.state === 'error') cleanup();
+    });
 
     raw.on('close', cleanup);
   });

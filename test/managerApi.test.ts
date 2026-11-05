@@ -437,3 +437,45 @@ for (const route of ['/downloads/events', '/downloads/:id/events']) test(`SSE ${
   assert.equal(open({ permissions: 'readonly' }), 200);
   closers.forEach((c) => c());
 });
+
+test('GET /datasets: non-admins share one cached scan; admins scan fresh and refresh it', async () => {
+  const { mgr, dataDir } = baseMgr();
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const anon = { skPrincipal: { permissions: 'readonly' } };
+  const admin = { skPrincipal: { permissions: 'admin' } };
+  const before = ((await call('GET', '/datasets', anon)).body as unknown[]).length;
+  fs.writeFileSync(path.join(dataDir, 'x.grb2'), Buffer.alloc(16));
+  assert.equal(((await call('GET', '/datasets', anon)).body as unknown[]).length, before, 'anon reuses the cached list');
+  assert.equal(((await call('GET', '/datasets', admin)).body as unknown[]).length, before + 1, 'admin scans fresh');
+  assert.equal(((await call('GET', '/datasets', anon)).body as unknown[]).length, before + 1, 'admin refreshed the shared cache');
+});
+
+test('securityEnabled: a missing principal is NOT admin (fails closed)', async () => {
+  const { mgr } = baseMgr();
+  mgr.catalog = { get: () => ({ status: 'cached', document: null, fetchedAt: null, error: null, sourceUrl: 'https://intranet.example/c.json', warnings: [] }), refresh: async () => mgr.catalog.get() } as CatalogClient;
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr, router, { securityEnabled: () => true });
+  assert.equal(((await call('GET', '/catalog')).body as any).sourceUrl, '');
+  assert.ok(!('path' in ((await call('GET', '/storage')).body as any)));
+  assert.equal(((await call('GET', '/catalog', { skPrincipal: { permissions: 'admin' } })).body as any).sourceUrl, 'https://intranet.example/c.json');
+});
+
+test('SSE /downloads/:id/events on a terminal job closes at once and frees its public slot', () => {
+  const { mgr } = baseMgr();
+  mgr.downloads = { ...fakeDownloadEngine(), get: (id) => ({ id, catalogSourceId: 's', state: 'done', bytes: 1, totalBytes: 1 }) };
+  const handlers = new Map<string, (req: any, res: any) => void>();
+  registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
+  for (let i = 0; i < MAX_PUBLIC_SSE_CLIENTS + 1; i++) {
+    let status = 200;
+    let ended = false;
+    const res = {
+      status(c: number) { status = c; return res; }, json() {},
+      writeHead() {}, write() { return true; }, end() { ended = true; },
+      on() {},
+    };
+    handlers.get('/downloads/:id/events')!({ params: { id: 'j' }, query: {}, skPrincipal: { permissions: 'readonly' } }, res);
+    assert.equal(status, 200);
+    assert.ok(ended, 'stream ended after the snapshot');
+  }
+});

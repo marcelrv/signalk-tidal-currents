@@ -554,7 +554,13 @@ function pluginConstructor(app: any) {
       // demo with allow_readonly). Older servers: everything stays admin-only.
       const reads: RouterLike & ManagerReadRouterLike = typeof router.access === 'function' ? router.access('readonly') : router;
       registerRoutes(reads, state);
-      registerManagerRoutes(router, mgr, reads);
+      // Fail closed: with security on, a request lacking a principal is not admin.
+      registerManagerRoutes(router, mgr, reads, {
+        securityEnabled: () => {
+          const sec = app.securityStrategy;
+          return !!sec && !(typeof sec.isDummy === 'function' && sec.isDummy());
+        },
+      });
     },
 
     getOpenApi: () => openApiSpec,

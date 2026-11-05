@@ -165,6 +165,10 @@ export const useAppStore = create<AppState>((set, get) => {
     if (next === 'admin' && prev === 'readonly') {
       void get().fetchCatalog();
       get().fetchDatasets().catch(() => undefined);
+      // Storage and priority reads may likewise have been refused while
+      // read-only (signalk-server < 2.35).
+      get().fetchStorage().catch(() => undefined);
+      void get().fetchPriority();
     }
   },
 

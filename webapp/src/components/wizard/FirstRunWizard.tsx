@@ -66,7 +66,10 @@ export function FirstRunWizard() {
   // and reselect a row that is still downloading. Cleared on close.
   const keepFailedSelection = useRef(false);
   useEffect(() => {
-    if (!wizard.open) keepFailedSelection.current = false;
+    if (!wizard.open) {
+      keepFailedSelection.current = false;
+      setError(null); // the component stays mounted while closed — don't resurface a stale install error on reopen
+    }
   }, [wizard.open]);
 
   // Default-select only the recommended row per tier (≤ 2 total), not every covering row.
@@ -78,9 +81,9 @@ export function FirstRunWizard() {
     setSelected(keys);
   }, [liveRecommendedKey, backupRecommendedKey]);
 
-  // Never shown read-only (backstop: "Near You" is visible while access is
-  // still 'unknown'), except to explain why an install just failed — a 401/403
-  // flips access to read-only mid-flow.
+  // Never shown read-only — including while access is still 'unknown', which
+  // matches the hidden "Near You" button — except to explain why an install
+  // just failed: a 401/403 flips access to read-only mid-flow.
   if (!wizard.open || (readOnly && !error)) return null;
 
   const newDownloads = notInstalled.filter((c) => selected.has(c.key));
