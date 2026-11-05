@@ -29,6 +29,7 @@ import { DatasetRankEntry, SourceType } from './priority.js';
 import {
   CurrentSample,
   currentSampleAt,
+  legacyCoverageIndexFor,
   nearestCurrentStations,
   stationsInBbox,
   timeline,
@@ -706,7 +707,7 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
   // always filled with that station's vector; stations are drawn only where
   // they win. The GRIB request is half the budget whenever UTCEF station data
   // is loaded (else all of it), independent of the view. Legacy harmonic
-  // stations are not an overlay source and claim no positions. See gridPoints.
+  // stations claim no positions unless `stations=1` opts them in. See gridPoints.
   router.get('/grid', (req, res) => {
     const g = gribData();
     const u = utcefData();
@@ -723,7 +724,9 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       return;
     }
     const maxPoints = Math.min(5000, Math.max(1, parseInt(String(req.query.maxPoints), 10) || 400));
-    const points = gridPoints(state, g, haveUtcef ? u : null, bbox, time, maxPoints);
+    const stationsQ = String(req.query.stations ?? '').toLowerCase();
+    const includeStations = stationsQ === '1' || stationsQ === 'true';
+    const points = gridPoints(state, g, haveUtcef ? u : null, bbox, time, maxPoints, includeStations);
     res.json({
       time: new Date(time).toISOString(),
       units: { speedKn: 'knots (magnitude)', u: 'm/s east', v: 'm/s north' },
@@ -738,14 +741,18 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
 const stationGribCoverage = new WeakMap<GribCurrentsData, WeakMap<UtcefCurrentStation, Map<string, { pairs: { s0: TimeSlot; s1: TimeSlot }[]; covered: boolean }>>>();
 
 /** One /grid point: a GRIB lattice sample or a UTCEF station, tagged with its source. */
-export type GridPoint = GridSample & { source: 'grib' | 'utcef'; stationId?: string };
+export type GridPoint = GridSample & { source: 'grib' | 'utcef' | 'station'; stationId?: string };
 
 type Bbox = { west: number; south: number; east: number; north: number };
 
 /**
  * /grid points merged by source priority. Uses the SAME ordered layer list as
  * resolveVector (orderedLayers) except that harmonic layers are skipped
- * (legacy stations are not an overlay source and claim no positions). The
+ * unless `includeStations` (opt-in, /grid?stations=1) is set, in which case a
+ * harmonic layer claims a position when legacyCoverageIndexFor(...).stationAt
+ * finds the vector-capable station stationVectorAt would pick (source
+ * 'station', stationId); in-view such stations are drawn at their own position
+ * when they win it, thinned together with UTCEF winners. The
  * first remaining layer that claims a position wins; a UTCEF layer names its
  * station.
  *
@@ -775,20 +782,26 @@ function gridPoints(
   bbox: Bbox,
   time: number,
   maxPoints: number,
+  includeStations = false,
 ): GridPoint[] {
   const layers = orderedLayers(state, REST_FALLBACK_MAX_KM);
   const index = u ? utcefCoverageIndexFor(u) : null;
+  const legacy = includeStations && state.data ? legacyCoverageIndexFor(state.data) : null;
+  const legacyData = state.data;
+  const hasLegacyVectors =
+    !!legacy && stationsInBbox(legacyData!, -180, -90, 180, 90, Infinity).some((x) => x.vectorCapable);
   // Arbitration is needed when UTCEF data is loaded or a per-dataset stack can
   // make a GRIB layer win; with neither, the lattice is emitted as sampled.
-  const arbitrate = !!u || layers.some((l) => l.stack);
+  const arbitrate = !!u || layers.some((l) => l.stack) || hasLegacyVectors;
 
-  type Win = UtcefCurrentStation | { grib: Layer } | null;
+  type Win = UtcefCurrentStation | { grib: Layer } | { legacy: IdxStation } | null;
   // THE arbitration loop (harmonic layers skipped): the first layer whose
   // probe claims the position wins. Probes differ by position kind (lattice
   // sample vs. station position).
   const arbitrateLayers = (
     utcefProbe: (l: Layer) => UtcefCurrentStation | null,
     gribProbe: (l: Layer) => boolean,
+    legacyProbe: () => IdxStation | null,
   ): Win => {
     for (const l of layers) {
       if (l.type === 'grib2') {
@@ -797,6 +810,9 @@ function gridPoints(
         if (!index) continue;
         const st = utcefProbe(l);
         if (st) return st;
+      } else if (legacy) {
+        const st = legacyProbe();
+        if (st) return { legacy: st };
       }
     }
     return null;
@@ -812,6 +828,7 @@ function gridPoints(
     arbitrateLayers(
       (l) => index!.stationAt(lat, lon, l.utcefMaxKm, l.files),
       (l) => !l.files || intersects(l.files, sampleFiles) || gribVectorAt(g!, lat, lon, time, l.files) !== null,
+      () => legacy!.stationAt(lat, lon, REST_FALLBACK_MAX_KM),
     );
   // Station position: GRIB coverage memoised per (station, layer files) on the
   // bracketing slot pairs, so frames within the same pair skip the sampling.
@@ -839,7 +856,23 @@ function gridPoints(
     arbitrateLayers(
       (l) => index!.stationAtStation(s, l.utcefMaxKm, l.files, l.filesKey),
       (l) => gribCoversStation(s, l),
+      () => legacy!.stationAt(s.latitude, s.longitude, REST_FALLBACK_MAX_KM),
     );
+  // Legacy station position: GRIB coverage via the same memoised path is
+  // keyed by UtcefCurrentStation, so probe pairs directly here.
+  const winnerAtLegacy = (s: IdxStation): Win =>
+    arbitrateLayers(
+      (l) => index!.stationAt(s.latitude, s.longitude, l.utcefMaxKm, l.files),
+      (l) => gribPairsCover(pairsFor(l), s.latitude, s.longitude),
+      () => legacy!.stationAt(s.latitude, s.longitude, REST_FALLBACK_MAX_KM),
+    );
+  const legacySamples = new Map<IdxStation, ReturnType<typeof currentSampleAt>>();
+  const legacyPoint = (s: IdxStation, lat: number, lon: number): GridPoint | null => {
+    let sample = legacySamples.get(s);
+    if (sample === undefined) legacySamples.set(s, (sample = currentSampleAt(legacyData!, s, time)));
+    if (!sample || sample.u === null || sample.v === null || sample.direction === null) return null;
+    return { latitude: lat, longitude: lon, speedKn: Math.abs(sample.speedKn), direction: sample.direction, u: sample.u, v: sample.v, source: 'station', stationId: s.id };
+  };
 
   const samples = new Map<UtcefCurrentStation, ReturnType<typeof utcefSampleAt>>();
   const utcefPoint = (s: UtcefCurrentStation, lat: number, lon: number): GridPoint => {
@@ -863,18 +896,36 @@ function gridPoints(
       else if ('grib' in w) {
         // A winning stack layer over other files: its own lattice covers here.
         if (!w.grib.files || intersects(w.grib.files, files)) lattice.push({ ...p, source: 'grib' });
+      } else if ('legacy' in w) {
+        const lp = legacyPoint(w.legacy, p.latitude, p.longitude);
+        if (lp) lattice.push(lp);
       } else lattice.push(utcefPoint(w, p.latitude, p.longitude));
     }
   }
-  if (!u) return lattice;
+  if (!u && !legacy) return lattice;
 
   // In-view stations that win their own position, filtered BEFORE thinning so
   // the budget goes to stations that actually show.
-  const winners: Array<{ lat: number; lon: number; s: UtcefCurrentStation }> = [];
-  for (const s of utcefStationsInBbox(u, bbox)) {
-    if (winnerAtStation(s) === s) winners.push({ lat: s.latitude, lon: s.longitude, s });
+  const winners: Array<{ lat: number; lon: number; s?: UtcefCurrentStation; l?: IdxStation }> = [];
+  if (u) {
+    for (const s of utcefStationsInBbox(u, bbox)) {
+      if (winnerAtStation(s) === s) winners.push({ lat: s.latitude, lon: s.longitude, s });
+    }
   }
-  const utcefThin = thinByCellLadder(winners, Math.max(0, maxPoints - lattice.length));
-  for (const { s } of utcefThin) lattice.push(utcefPoint(s, s.latitude, s.longitude));
+  if (legacy) {
+    for (const { station, vectorCapable } of stationsInBbox(legacyData!, bbox.west, bbox.south, bbox.east, bbox.north, Infinity)) {
+      if (!vectorCapable) continue;
+      const w = winnerAtLegacy(station);
+      if (w && 'legacy' in w && w.legacy === station) winners.push({ lat: station.latitude, lon: station.longitude, l: station });
+    }
+  }
+  const thin = thinByCellLadder(winners, Math.max(0, maxPoints - lattice.length));
+  for (const w of thin) {
+    if (w.s) lattice.push(utcefPoint(w.s, w.lat, w.lon));
+    else {
+      const lp = legacyPoint(w.l!, w.lat, w.lon);
+      if (lp) lattice.push(lp);
+    }
+  }
   return lattice;
 }

@@ -241,3 +241,75 @@ export function stationsInBbox(
   }
   return result;
 }
+
+/**
+ * Spatial index over a dataset's current + resolvable legacy stations (same
+ * cell scheme as utcefCoverageIndex: 0.5° cells, antimeridian-wrapped keys).
+ * `stationAt` returns EXACTLY the station api.ts `stationVectorAt` picks:
+ * nearestCurrentStations(…, 10) filtered by `vectorCapable && distanceKm <=
+ * maxKm`, first element.
+ *
+ * Why only stations within maxKm matter: that result is the first capable
+ * station among the 10 nearest, restricted to d <= maxKm. Sorted by rounded
+ * distance, every station with d <= maxKm precedes every station beyond it,
+ * so the top-10 restricted to d <= maxKm is just the first 10 of the
+ * within-maxKm stations. Stations beyond maxKm can occupy top-10 slots only
+ * after all within-range ones, so they never block a capable one. Hence we
+ * gather all stations within maxKm (padded box + exact rounded-distance test),
+ * sort by (distance, array order — the stable-sort tie-break), keep 10, then
+ * take the first vector-capable one.
+ */
+export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
+  const stations = data.stations.filter((s) => s.isCurrent && isStationResolvable(data, s));
+  const capable = (s: IdxStation) => !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null);
+  const rank = new Map<IdxStation, number>();
+  stations.forEach((s, i) => rank.set(s, i));
+  const nLon = Math.round(360 / cellDeg);
+  const key = (j: number, i: number) => `${j}:${((i % nLon) + nLon) % nLon}`;
+  const cells = new Map<string, IdxStation[]>();
+  for (const s of stations) {
+    const k = key(Math.floor(s.latitude / cellDeg), Math.floor(s.longitude / cellDeg));
+    const l = cells.get(k);
+    if (l) l.push(s);
+    else cells.set(k, [s]);
+  }
+  return {
+    stationAt(lat: number, lon: number, maxKm: number): IdxStation | null {
+      const cand: Array<{ s: IdxStation; d: number }> = [];
+      const consider = (s: IdxStation) => {
+        const d = Math.round(distanceKm(lat, lon, s.latitude, s.longitude) * 100) / 100;
+        if (d <= maxKm) cand.push({ s, d });
+      };
+      let linear = !Number.isFinite(maxKm);
+      if (!linear) {
+        const dLat = maxKm / 110;
+        // Exact angular half-width of a radius-d circle: asin(sin d / cos(lat))
+        // (the small-angle d/cos(lat) under-covers close to a pole).
+        const cosP = Math.cos((Math.abs(lat) + dLat) * DEG2RAD);
+        const ratio = cosP > 0 ? Math.sin(dLat * DEG2RAD) / cosP : 2;
+        const polar = Math.abs(lat) + dLat >= 90 || ratio >= 1;
+        const dLon = polar ? 360 : (Math.asin(ratio) / DEG2RAD) * 1.01 + 1e-6;
+        const j0 = Math.floor((lat - dLat) / cellDeg);
+        const j1 = Math.floor((lat + dLat) / cellDeg);
+        const i0 = Math.floor((lon - dLon) / cellDeg);
+        const i1 = polar ? i0 + nLon - 1 : Math.min(Math.floor((lon + dLon) / cellDeg), i0 + nLon - 1);
+        if ((j1 - j0 + 1) * (i1 - i0 + 1) > stations.length) linear = true;
+        else {
+          for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) for (const s of cells.get(key(j, i)) ?? []) consider(s);
+        }
+      }
+      if (linear) for (const s of stations) consider(s);
+      cand.sort((a, b) => a.d - b.d || rank.get(a.s)! - rank.get(b.s)!);
+      for (const c of cand.slice(0, 10)) if (capable(c.s)) return c.s;
+      return null;
+    },
+  };
+}
+
+const legacyIndexCache = new WeakMap<HarmonicsData, ReturnType<typeof legacyCoverageIndex>>();
+/** legacyCoverageIndex memoised per loaded HarmonicsData (a reload yields a new object). */
+export function legacyCoverageIndexFor(data: HarmonicsData): ReturnType<typeof legacyCoverageIndex> {
+  let index = legacyIndexCache.get(data);
+  if (!index) legacyIndexCache.set(data, (index = legacyCoverageIndex(data)));
+  return index;
+}

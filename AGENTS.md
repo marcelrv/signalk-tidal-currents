@@ -117,7 +117,13 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   stack entries, then the type rank; cached per `datasetRank()` array
   identity + rank + maxStationKm, one stable `Set` per stack entry so
   Set-keyed caches such as `slotsForFiles` hit), skipping harmonic layers
-  (legacy stations are not an overlay source and claim no positions). A
+  by default (legacy stations claim no positions; clients use
+  `/stations?bbox=`). Opt-in `stations=1` (`includeStations`) lets harmonic
+  layers participate: probe = `legacyCoverageIndexFor(data).stationAt`
+  (exactly `stationVectorAt`'s pick; see its comment for why top-10
+  parity only needs stations within maxKm), lattice samples won become
+  `source:'station'` vectors, and in-view vector-capable winners are
+  thinned together with UTCEF winners in one `thinByCellLadder` call. A
   lattice sample won by UTCEF station S is ALWAYS emitted as S's vector at
   the sample position (`source:'utcef'`, `stationId`), whether or not S is
   drawn; in-view stations are drawn only where they win, thinned by

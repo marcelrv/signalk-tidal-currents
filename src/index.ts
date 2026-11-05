@@ -592,12 +592,14 @@ const openApiSpec = {
         summary:
           'Current vectors over a bbox for a flow-field overlay: GRIB lattice samples merged with UTCEF ' +
           'stations, each point kept only where its source wins the configured source priority (same ' +
-          'order as /vector). Every point carries `source` ("grib" | "utcef", plus `stationId` for UTCEF). ' +
+          'order as /vector). Every point carries `source` ("grib" | "utcef" | "station", plus `stationId` for stations). ' +
+          'Legacy harmonic stations are skipped unless stations=1. ' +
           'maxPoints caps the count via stable thinning — same zoom-out/zoom-in density control as /stations viewport mode.',
         parameters: [
           { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: '"west,south,east,north"' },
           { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
           { name: 'maxPoints', in: 'query', schema: { type: 'integer', default: 400, maximum: 5000 } },
+          { name: 'stations', in: 'query', schema: { type: 'boolean', default: false }, description: 'Opt in: legacy harmonic (vector-capable) stations take part in the source arbitration and are returned with source "station".' },
         ],
         responses: { '200': { description: 'OK' }, '503': { description: 'Neither GRIB nor UTCEF current data loaded' } },
       },

@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { registerRoutes, resolveVector, orderedLayers, ApiState } from '../dist/api.js';
 import { createGribSource, gribVectorAt } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
-import { distanceKm } from '../dist/predict.js';
+import { distanceKm, legacyCoverageIndexFor, nearestCurrentStations } from '../dist/predict.js';
 import { createUtcefSource, utcefCoverageIndex, utcefVectorAt, utcefSampleAt } from '../dist/utcef.js';
 import { encodeGrib2File, EncodeField } from './grib2-testutil.js';
 
@@ -453,4 +453,98 @@ test('/grid: UTCEF ranked above GRIB still halves the lattice request', (t) => {
   assert.ok(pts.some((p) => p.source === 'utcef' && p.stationId?.startsWith('R')));
   const latticeOnly = gridCall(null, true, nlBbox, 200).length;
   assert.ok(latticeOnly <= 200);
+});
+
+// ---- /grid?stations=1: legacy harmonic stations in the arbitration ----
+const legacyData = loadHarmonicsDir(FIXTURES);
+const stationsState = (utcefDir: string, preferGrib: boolean): ApiState => ({
+  data: legacyData, error: null, grib: bigGrib(), utcef: createUtcefSource(utcefDir, 0), preferGrib,
+});
+const farUtcef = () => writeUtcefDir({ 'far.utcef': [['FAR', 10, -60]] });
+const stGrid = (state: ApiState, extra: Record<string, unknown>, maxPoints = 400) =>
+  makeApi(state)('/grid', { bbox: nlBbox, time: gridTime, maxPoints: String(maxPoints), ...extra });
+
+test('/grid stations=1: legacy station wins like /vector with preferGrib=false', (t) => {
+  const far = farUtcef();
+  t.after(() => fs.rmSync(far, { recursive: true, force: true }));
+  const state = stationsState(far, false);
+  const r = resolveVector(state, 53.2, 5.2, T0);
+  assert.equal(r?.source, 'station');
+  const pts: P[] = stGrid(state, { stations: '1' }).points;
+  const own = pts.find((p) => p.latitude === 53.2 && p.longitude === 5.2)!;
+  assert.ok(own);
+  assert.equal(own.source, 'station');
+  assert.equal(own.u, r!.sample.u);
+  assert.equal(own.v, r!.sample.v);
+  let checked = 0;
+  for (const p of pts) {
+    const rv = resolveVector(state, p.latitude, p.longitude, T0)!;
+    const src = rv.source === 'utcef' ? 'utcef' : rv.source;
+    assert.equal(p.source, src, `${p.latitude},${p.longitude}`);
+    checked++;
+  }
+  assert.ok(checked > 10);
+  assert.ok(pts.some((p) => p.source === 'station' && p.stationId !== undefined));
+});
+
+test('/grid without stations (absent or 0): no station points, identical output', (t) => {
+  const far = farUtcef();
+  t.after(() => fs.rmSync(far, { recursive: true, force: true }));
+  const state = stationsState(far, false);
+  const a = stGrid(state, {});
+  const b = stGrid(state, { stations: '0' });
+  assert.deepEqual(a, b);
+  assert.ok(!a.points.some((p: P) => p.source === 'station'));
+  assert.ok(a.points.some((p: P) => p.source === 'grib'));
+});
+
+test('/grid stations=1 with preferGrib=true: GRIB still wins where it covers', (t) => {
+  const far = farUtcef();
+  t.after(() => fs.rmSync(far, { recursive: true, force: true }));
+  const pts: P[] = stGrid(stationsState(far, true), { stations: 'true' }).points;
+  assert.ok(pts.length > 0);
+  assert.ok(!pts.some((p) => p.source === 'station'));
+});
+
+test('/grid stations=1: total <= maxPoints with UTCEF and legacy stations in view', (t) => {
+  const st: Array<[string, number, number]> = [];
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) st.push([`Z${i}-${j}`, 52.9 + i * 0.06, 4.9 + j * 0.06]);
+  const dir = writeUtcefDir({ 'z.utcef': st });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const mp of [5, 20, 60]) {
+    const pts: P[] = stGrid(stationsState(dir, false), { stations: '1' }, mp).points;
+    assert.ok(pts.length <= mp, `${pts.length} > ${mp}`);
+  }
+});
+
+test('legacyCoverageIndexFor.stationAt matches stationVectorAt\'s selection (top-10 then capable)', () => {
+  const rand = rng(12345);
+  const ref = legacyData.stations.find((s) => s.isCurrent && !s.isSubordinate)!;
+  const sub = legacyData.stations.find((s) => s.isCurrent && s.offsets && s.offsets.floodDir !== null)!;
+  const mk = (i: number, lat: number, lon: number, capable: boolean) => ({
+    ...(capable ? sub : ref), id: `S${i}`, latitude: lat, longitude: lon,
+  });
+  const stations: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  // dense cluster of non-capable stations around (53,5) hides capable ones; plus global scatter
+  for (let i = 0; i < 40; i++) stations.push(mk(i, 53 + Math.round((rand() - 0.5) * 20) / 100, 5 + Math.round((rand() - 0.5) * 20) / 100, false));
+  for (let i = 40; i < 80; i++) stations.push(mk(i, 53 + (rand() - 0.5) * 3, 5 + (rand() - 0.5) * 3, rand() < 0.5));
+  for (let i = 80; i < 200; i++) stations.push(mk(i, (rand() - 0.5) * 180, (rand() - 0.5) * 360, rand() < 0.5));
+  for (let i = 200; i < 230; i++) stations.push(mk(i, 89 + rand(), (rand() - 0.5) * 360, rand() < 0.5));
+  for (let i = 230; i < 260; i++) stations.push(mk(i, (rand() - 0.5) * 20, 179.5 + rand() * 1 - (rand() < 0.5 ? 0 : 360) , rand() < 0.5));
+  const data = { ...legacyData, stations };
+  const idx = legacyCoverageIndexFor(data);
+  assert.equal(legacyCoverageIndexFor(data), idx);
+  let found = 0;
+  for (let n = 0; n < 600; n++) {
+    const k = n % 4;
+    const lat = k === 0 ? 53 + (rand() - 0.5) * 2 : k === 1 ? 89 + rand() : k === 2 ? (rand() - 0.5) * 20 : (rand() - 0.5) * 170;
+    const lon = k === 0 ? 5 + (rand() - 0.5) * 2 : k === 2 ? 179 + rand() * 2 : (rand() - 0.5) * 360;
+    for (const maxKm of [5, 50, 300, 5000, Infinity]) {
+      const expected = nearestCurrentStations(data, lat, lon, 10).filter((x) => x.vectorCapable && x.distanceKm <= maxKm)[0]?.station ?? null;
+      const got = idx.stationAt(lat, lon, maxKm);
+      assert.equal(got, expected, `probe ${lat},${lon} maxKm=${maxKm}`);
+      if (got) found++;
+    }
+  }
+  assert.ok(found > 100);
 });
