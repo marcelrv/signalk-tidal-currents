@@ -482,6 +482,7 @@ export interface UtcefSample extends CurrentSample {
 let termsTimeMs = NaN;
 let terms = new Map<string, { base: number; f: number } | null>();
 
+/** Memoized base phase and nodal factor for a constituent at timeMs; null if unknown. */
 function constituentTerms(timeMs: number, name: string): { base: number; f: number } | null {
   if (timeMs !== termsTimeMs) {
     termsTimeMs = timeMs;
@@ -725,6 +726,7 @@ function pointInArea(area: number[][][], lat: number, lon: number): boolean {
   return pointInRing(area, lat, lon) || pointInRing(area, lat, lon + 360) || pointInRing(area, lat, lon - 360);
 }
 
+/** Even-odd ray-cast test of a point against the outer ring (area[0]); false for degenerate rings. */
 function pointInRing(area: number[][][], lat: number, lon: number): boolean {
   const ring = area[0];
   if (!ring || ring.length < 4) return false;

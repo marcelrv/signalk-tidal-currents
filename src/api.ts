@@ -191,6 +191,10 @@ export function orderedLayers(state: ApiState, maxStationKm: number): readonly L
   return layers;
 }
 
+/**
+ * Legacy-harmonics fallback: nearest vector-capable station within maxStationKm
+ * sampled at timeMs, or null when none qualifies or the sample is unavailable.
+ */
 function stationVectorAt(
   state: ApiState,
   lat: number,

@@ -250,6 +250,7 @@ function sampleSlot(slot: TimeSlot, lat: number, lon: number): { u: number; v: n
 // Merged slot list per (data, files set): callers probing many positions
 // reuse one Set instance, so the filter+merge+sort runs once, not per probe.
 const filesSlotsCache = new WeakMap<GribCurrentsData, WeakMap<ReadonlySet<string>, TimeSlot[]>>();
+/** Time-sorted slots merged from the given files, cached per (data, Set identity). */
 function slotsForFiles(data: GribCurrentsData, files: ReadonlySet<string>): TimeSlot[] {
   let perData = filesSlotsCache.get(data);
   if (!perData) filesSlotsCache.set(data, (perData = new WeakMap()));
@@ -348,6 +349,10 @@ export function gribPairsCover(pairs: readonly { s0: TimeSlot; s1: TimeSlot }[],
   return false;
 }
 
+/**
+ * Bilinear-in-space, linear-in-time current at a point from a sorted slot list;
+ * null when the time is outside the slots or the point is uncovered.
+ */
 function vectorAtSlots(slots: TimeSlot[], lat: number, lon: number, timeMs: number): CurrentSample | null {
   const br = bracketSlots(slots, timeMs);
   if (!br) return null;
@@ -427,6 +432,7 @@ function gridGroups(data: GribCurrentsData): GridGroup[] {
   if (!cached) gridGroupsCache.set(data, (cached = computeGridGroups(data)));
   return cached;
 }
+/** Groups source files by identical grid geometry (uncached; use gridGroups). */
 function computeGridGroups(data: GribCurrentsData): GridGroup[] {
   const groups: { grid: Grib2Grid; files: Set<string> }[] = [];
   for (const [file, slots] of Object.entries(data.slotsByFile)) {
