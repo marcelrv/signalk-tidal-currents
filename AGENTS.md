@@ -75,14 +75,20 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   counted as unsupported (needs reference-port HW/range-ratio — deferred).
   Canonical id is the top-level `Feature.id`; `station_id` is only an
   alias. Rejects unknown schema **major** versions. `utcefVectorAt` prefers
-  a station whose `representative_area` polygon contains the point, else
-  nearest within `maxKm`. `createUtcefSource(dir)` mirrors the GRIB source's
+  a station whose `representative_area` polygon contains the point (first in
+  array order), else nearest within `maxKm` (ties: earliest in array). A
+  finite `maxKm` goes through `utcefCoverageIndexFor(data).stationAt()` (cell
+  buckets for stations and small polygons; polygons whose bbox spans > 64
+  cells live in a rank-ordered `largeAreas` list with a bbox pre-test, mind
+  the ±360 frames); `Infinity` keeps the linear scan. A parity test pins the
+  index path to the linear algorithm. `createUtcefSource(dir)` mirrors the GRIB source's
   1×/min reload and per-file parse cache.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).
-  `resolveVector()` picks a source in preference order GRIB → UTCEF →
-  legacy station (or UTCEF → station → GRIB when `preferGrib` is false);
+  `resolveVector()` walks `orderedLayers()` (dataset stack, then type rank
+  GRIB → UTCEF → legacy station, or UTCEF → station → GRIB when `preferGrib`
+  is false; a stack UTCEF probe's nearest radius is clamped to 50 km);
   `/timeline` (positional) selects the source **per sample** so windows
   past the GRIB horizon degrade to the other sources. Station endpoints
   (`/stations`, `/stations/:id[/timeline]`) serve **both** harmonics and
@@ -100,23 +106,24 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   arrows); zoomed-in passes more, or a small bbox where everything fits and
   nothing is thinned. This replaced the old first-500-in-array-order
   truncation (arbitrary, reshuffled on pan). `/grid?bbox=…` is the gridded
-  equivalent (`gribGridSamples()` in `gribcurrents.ts`):
-  GRIB samples are chosen from the source grid's own fixed (i, j) index
-  lattice at a stride targeting `maxPoints` (never finer than native
+  equivalent for GRIB coverage (`gribGridSamples()` in `gribcurrents.ts`):
+  samples are chosen from the source grid's own fixed (i, j) index
+  lattice at a stride targeting the request (never finer than native
   resolution) — same stable-across-pan/zoom philosophy, applied to the
-  regular lattice instead of irregular stations. UTCEF stations in the bbox
-  are merged in (`gridPoints()` in `api.ts`): each candidate survives only
-  where its own source is the first layer of the resolveVector order
-  (dataset stack, then type rank) that covers it, so the overlay agrees with
-  `/vector` wherever GRIB or UTCEF wins, and partial GRIB coverage doesn't
-  hide UTCEF elsewhere. A UTCEF candidate must be the very station the
-  winning layer returns (so overlapping datasets match `/vector`); a GRIB
-  lattice sample won by an off-viewport UTCEF station (area reaching in) is
-  emitted as a UTCEF point at the sample position, not left blank. The
-  point budget is split between the two sources (each thinned its own way). Points carry `source`. Legacy harmonic
-  stations are not part of `/grid` and don't claim positions there, so near
-  one that `/vector` would pick, `/grid` still shows GRIB/UTCEF.
-  Both `/stations?bbox=` and
+  regular lattice instead of irregular stations. `/grid` arbitrates with the
+  SAME ordered layer list as `resolveVector` (`orderedLayers()` — per-dataset
+  stack entries, then the type rank; cached per `datasetRank()` array
+  identity + rank + maxStationKm, one stable `Set` per stack entry so
+  Set-keyed caches such as `slotsForFiles` hit), skipping harmonic layers
+  (legacy stations are not an overlay source and claim no positions). A
+  lattice sample won by UTCEF station S is ALWAYS emitted as S's vector at
+  the sample position (`source:'utcef'`, `stationId`), whether or not S is
+  drawn; in-view stations are drawn only where they win, thinned by
+  `thinByCellLadder` into `maxPoints − lattice.length`. The GRIB request is
+  `ceil(maxPoints/2)` whenever any UTCEF current-station data is loaded
+  (else `maxPoints`) — independent of the view, so the stride and every
+  arrow position stay put while panning; total ≤ `maxPoints`. Single pass:
+  each lattice sample's winner is evaluated once. Both `/stations?bbox=` and
   `/grid?bbox=` exist so a map can show full-viewport current coverage
   instead of a fixed nearest-N station list.
 - `src/index.ts` — plugin entry. Publishes `environment.current` deltas

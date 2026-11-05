@@ -29,11 +29,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 
 import { astronomicalArgs, equilibriumArg, isKnownConstituent, nodeFactors } from './astro.js';
-import { CurrentSample, distanceKm, KNOTS_TO_MS, lonInSpan, lonSpansOverlap } from './predict.js';
-
-// Re-exported: the longitude-wrap helpers live in predict.ts (shared with the
-// legacy harmonic bbox filter) but are part of the UTCEF viewport API too.
-export { lonInSpan, lonSpansOverlap };
+import { CurrentSample, distanceKm, KNOTS_TO_MS, lonInSpan } from './predict.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -572,24 +568,35 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
   const key = (j: number, i: number) => `${j}:${((i % nLon) + nLon) % nLon}`;
   const cells = new Map<string, UtcefCurrentStation[]>();
   const areaCells = new Map<string, UtcefCurrentStation[]>();
+  // Polygons whose bbox covers more than MAX_AREA_CELLS cells would be pushed
+  // into every one of them (huge fan-out for basin-sized areas); they go in
+  // this array-ordered list instead and are bbox-pretested per probe.
+  const largeAreas: Array<{ s: UtcefCurrentStation; rank: number; b: { west: number; south: number; east: number; north: number } }> = [];
+  const MAX_AREA_CELLS = 64;
   const push = (m: Map<string, UtcefCurrentStation[]>, key: string, s: UtcefCurrentStation) => {
     const list = m.get(key);
     if (list) list.push(s);
     else m.set(key, [s]);
   };
+  const rank = new Map<UtcefCurrentStation, number>();
+  stations.forEach((s, i) => rank.set(s, i));
   for (const s of stations) {
     push(cells, key(Math.floor(s.latitude / cellDeg), Math.floor(s.longitude / cellDeg)), s);
     const b = utcefAreaBounds(s);
     if (b) {
       const i0 = Math.floor(b.west / cellDeg);
       const i1 = Math.min(Math.floor(b.east / cellDeg), i0 + nLon - 1);
-      for (let j = Math.floor(b.south / cellDeg); j <= Math.floor(b.north / cellDeg); j++) {
+      const j0 = Math.floor(b.south / cellDeg);
+      const j1 = Math.floor(b.north / cellDeg);
+      if ((j1 - j0 + 1) * (i1 - i0 + 1) > MAX_AREA_CELLS) {
+        largeAreas.push({ s, rank: rank.get(s)!, b });
+        continue;
+      }
+      for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) push(areaCells, key(j, i), s);
       }
     }
   }
-  const rank = new Map<UtcefCurrentStation, number>();
-  stations.forEach((s, i) => rank.set(s, i));
   // stationAt() probed AT a station's own position is time- and
   // viewport-independent, so it is memoised per (station, maxKm, files) —
   // /grid re-asks it for every in-view station on every animation frame.
@@ -611,9 +618,31 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
     },
     /** The station utcefVectorAt would pick (containing area first, else nearest within maxKm). */
     stationAt(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): UtcefCurrentStation | null {
+      // Containment = the first matching station in array order (rank), across
+      // the per-cell list (rank-ordered) and the large-area list (rank-ordered).
+      let contained: UtcefCurrentStation | null = null;
+      let containedRank = Infinity;
       for (const s of areaCells.get(key(Math.floor(lat / cellDeg), Math.floor(lon / cellDeg))) ?? []) {
-        if (inFiles(s, files) && pointInArea(s.representativeArea!, lat, lon)) return s;
+        if (inFiles(s, files) && pointInArea(s.representativeArea!, lat, lon)) {
+          contained = s;
+          containedRank = rank.get(s)!;
+          break;
+        }
       }
+      for (const a of largeAreas) {
+        if (a.rank > containedRank) break;
+        const b = a.b;
+        if (lat < b.south || lat > b.north) continue;
+        // Rings may be unwrapped past ±180: mirror pointInArea's three frames.
+        if (
+          !((lon >= b.west && lon <= b.east) || (lon + 360 >= b.west && lon + 360 <= b.east) || (lon - 360 >= b.west && lon - 360 <= b.east))
+        ) continue;
+        if (inFiles(a.s, files) && pointInArea(a.s.representativeArea!, lat, lon)) {
+          contained = a.s;
+          break;
+        }
+      }
+      if (contained) return contained;
       let best: UtcefCurrentStation | null = null;
       let bestD = Infinity;
       // Same tie-break as utcefVectorAt: among equal (rounded) distances the
@@ -651,8 +680,10 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
       }
       if (bestD === 0) return best;
 
-      const dLat = maxKm / 111.32;
-      const dLon = dLat / Math.max(Math.cos(lat * DEG2RAD), 0.01);
+      // Padded (110 km/deg < the true ~111.19) and the longitude span taken at
+      // the poleward edge, so the box never under-covers; consider() is exact.
+      const dLat = maxKm / 110;
+      const dLon = dLat / Math.max(Math.cos(Math.min(90, Math.abs(lat) + dLat) * DEG2RAD), 0.01);
       const j0 = Math.floor((lat - dLat) / cellDeg);
       const j1 = Math.floor((lat + dLat) / cellDeg);
       const i0 = Math.floor((lon - dLon) / cellDeg);
@@ -721,6 +752,7 @@ export function nearestUtcefStations(
  * Best current vector at a position/time: prefer a station whose
  * `representative_area` contains the point; otherwise fall back to the
  * nearest station within `maxKm`. Returns null when nothing qualifies.
+ * A finite `maxKm` uses the cached coverage index; Infinity a linear scan.
  * `files` restricts the search to stations loaded from those files —
  * how per-dataset priority (PRD §5.3 Phase 3) probes one installed
  * dataset at a time instead of the whole merged directory.
@@ -733,6 +765,18 @@ export function utcefVectorAt(
   maxKm = Infinity,
   files?: ReadonlySet<string>,
 ): { station: UtcefCurrentStation; distanceKm: number; sample: CurrentSample } | null {
+  if (Number.isFinite(maxKm)) {
+    // Bounded probe: the cached coverage index (cell buckets + polygon bboxes)
+    // picks the same station as the linear scan below, without touching every
+    // station. An unbounded probe keeps the scan (the index is radius-bounded).
+    const st = utcefCoverageIndexFor(data).stationAt(lat, lon, maxKm, files);
+    if (!st) return null;
+    return {
+      station: st,
+      distanceKm: Math.round(distanceKm(lat, lon, st.latitude, st.longitude) * 100) / 100,
+      sample: utcefSampleAt(st, timeMs),
+    };
+  }
   const stations = files
     ? data.currentStations.filter((s) => s.file !== undefined && files.has(s.file))
     : data.currentStations;

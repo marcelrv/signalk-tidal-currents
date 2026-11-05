@@ -18,7 +18,8 @@ import {
   GRIB_TIME_SLACK_MS,
 } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
-import { createUtcefSource, lonInSpan, utcefCoverageIndex, utcefVectorAt } from '../dist/utcef.js';
+import { lonInSpan } from '../dist/predict.js';
+import { createUtcefSource, utcefCoverageIndex, utcefVectorAt } from '../dist/utcef.js';
 import { encodeGrib2File, EncodeField } from './grib2-testutil.js';
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -367,10 +368,11 @@ test('GET /grid merges GRIB and UTCEF per point by source priority', (t) => {
   assert.deepEqual(a.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId), ['K']); // eslint-disable-line @typescript-eslint/no-explicit-any
 
   // UTCEF first: G wins its 50 km neighbourhood (the whole small GRIB box), so
-  // no GRIB arrows remain there; both stations are shown.
+  // no GRIB arrows remain there; the lattice samples there are filled with G's
+  // vector (all tagged G), and both stations are shown.
   const utcefFirst = makeApi({ data: null, error: null, grib, utcef, preferGrib: false });
   const b = utcefFirst('/grid', { bbox, time: gridTime, maxPoints: '200' }).body.points;
-  assert.deepEqual(b.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId).sort(), ['G', 'K']); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.deepEqual([...new Set(b.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId))].sort(), ['G', 'K']); // eslint-disable-line @typescript-eslint/no-explicit-any
   assert.equal(b.filter((p: any) => p.source === 'grib').length, 0); // eslint-disable-line @typescript-eslint/no-explicit-any
 
   // Dataset stack outranks the type rank: g.utcef stacked on top wins inside

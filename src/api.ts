@@ -117,6 +117,98 @@ export function resolvedStationName(r: ResolvedVector): string | null {
 }
 
 /**
+ * One probe of the resolution order: a source type, optionally restricted to
+ * one dataset's files, with the nearest-station radius that probe uses for
+ * UTCEF. Stack layers (per-dataset priority, PRD §5.3 Phase 3) come first,
+ * then one layer per source type in sourcePriority order.
+ */
+export interface Layer {
+  type: SourceType;
+  /** Stack layers only: the dataset's own files (one stable Set per rank snapshot, so per-file caches keyed by Set identity hit). */
+  files?: ReadonlySet<string>;
+  /** Sorted file names joined by '\n' ('' for type-rank layers) — identifies `files` for memoisation. */
+  filesKey: string;
+  /** Nearest-station radius for a UTCEF probe: a stack layer is clamped to UTCEF_DATASET_FALLBACK_MAX_KM, a type-rank layer uses maxStationKm. */
+  utcefMaxKm: number;
+  /** True for a per-dataset stack layer, false for a type-rank (fallback) layer. */
+  stack: boolean;
+}
+
+const NO_STACK: DatasetRankEntry[] = [];
+const RANK_GRIB_FIRST: SourceType[] = ['grib2', 'utcef', 'harmonic'];
+const RANK_STATIONS_FIRST: SourceType[] = ['utcef', 'harmonic', 'grib2'];
+
+/**
+ * Source-type rank to try in order: an explicit `sourcePriority` (PRD §5.3
+ * Phase 1) wins when set; otherwise falls back to the legacy `preferGrib`
+ * boolean so existing saved configs keep behaving the same way.
+ */
+function sourceRank(state: ApiState): SourceType[] {
+  return state.sourcePriority ?? (state.preferGrib === false ? RANK_STATIONS_FIRST : RANK_GRIB_FIRST);
+}
+
+interface LayerCacheEntry {
+  rank: SourceType[];
+  maxStationKm: number;
+  layers: Layer[];
+}
+// Keyed by the identity of the array datasetRank() returns (the provider
+// memoises it until the stack changes), so the layer list — including one
+// Set per stack entry — is built once per stack snapshot, not per probe.
+const layerCache = new WeakMap<DatasetRankEntry[], LayerCacheEntry[]>();
+
+/**
+ * THE resolution order shared by resolveVector and /grid: per-dataset stack
+ * layers first (restricted to their files), then the type-rank fallback
+ * layers. Cached per (stack array identity, rank, maxStationKm); a missing
+ * datasetRank maps to a shared empty-stack sentinel so it is cached too.
+ */
+export function orderedLayers(state: ApiState, maxStationKm: number): readonly Layer[] {
+  const stack = state.datasetRank?.() ?? NO_STACK;
+  const rank = sourceRank(state);
+  let entries = layerCache.get(stack);
+  if (!entries) layerCache.set(stack, (entries = []));
+  for (const e of entries) {
+    if (e.maxStationKm !== maxStationKm || e.rank.length !== rank.length) continue;
+    let same = true;
+    for (let i = 0; i < rank.length; i++) if (e.rank[i] !== rank[i]) { same = false; break; }
+    if (same) return e.layers;
+  }
+  const stackKm = Math.min(maxStationKm, UTCEF_DATASET_FALLBACK_MAX_KM);
+  const layers: Layer[] = [];
+  for (const entry of stack) {
+    layers.push({
+      type: entry.type,
+      files: new Set(entry.files),
+      filesKey: [...entry.files].sort().join('\n'),
+      utcefMaxKm: stackKm,
+      stack: true,
+    });
+  }
+  for (const type of rank) layers.push({ type, filesKey: '', utcefMaxKm: maxStationKm, stack: false });
+  entries.push({ rank: rank.slice(), maxStationKm, layers });
+  if (entries.length > 8) entries.shift();
+  return layers;
+}
+
+function stationVectorAt(
+  state: ApiState,
+  lat: number,
+  lon: number,
+  timeMs: number,
+  maxStationKm: number,
+): ResolvedVector | null {
+  if (!state.data) return null;
+  const near = nearestCurrentStations(state.data, lat, lon, 10).filter(
+    (n) => n.vectorCapable && n.distanceKm <= maxStationKm,
+  );
+  if (near.length === 0) return null;
+  const sample = currentSampleAt(state.data, near[0].station, timeMs);
+  if (!sample) return null;
+  return { source: 'station', sample, station: near[0].station, distanceKm: near[0].distanceKm };
+}
+
+/**
  * Vector at a position/time from the best available source. GRIB (a forecast
  * grid) wins when it covers the position/time unless preferGrib is false;
  * among station-type sources the modern UTCEF vector data is tried before the
@@ -124,6 +216,17 @@ export function resolvedStationName(r: ResolvedVector): string | null {
  * (REST_FALLBACK_MAX_KM for the REST API, the configured limit for delta
  * publishing — never truly unbounded, so a query far from any coverage
  * returns "no data" instead of a station on the other side of the planet).
+ *
+ * Probes orderedLayers(): the per-dataset stack first (each dataset only its
+ * own files, so a small high-res coastal model ranked above a global one wins
+ * where they overlap — even across source types), then the type rank, which
+ * catches everything without a stack entry (orphan files, the legacy pair,
+ * no manifest). A single dataset's UTCEF probe must not use the unlimited
+ * nearest-station fallback of the merged pass ("nearest station within this
+ * one file" matches ANY position on earth), so its radius is clamped to
+ * UTCEF_DATASET_FALLBACK_MAX_KM; containment (representative_area) still
+ * applies at any range. A harmonic layer probes the whole legacy source (it
+ * has no per-file provenance).
  */
 export function resolveVector(
   state: ApiState,
@@ -132,73 +235,25 @@ export function resolveVector(
   timeMs: number,
   maxStationKm = REST_FALLBACK_MAX_KM,
 ): ResolvedVector | null {
-  const fromGrib = (files?: ReadonlySet<string>): ResolvedVector | null => {
-    const g = state.grib?.get();
-    if (!g) return null;
-    const sample = gribVectorAt(g, lat, lon, timeMs, files);
-    return sample ? { source: 'grib', sample } : null;
-  };
-  const fromUtcef = (files?: ReadonlySet<string>, maxKm = maxStationKm): ResolvedVector | null => {
-    const u = state.utcef?.get();
-    if (!u) return null;
-    const hit = utcefVectorAt(u, lat, lon, timeMs, maxKm, files);
-    return hit
-      ? { source: 'utcef', sample: hit.sample, utcefStation: hit.station, distanceKm: hit.distanceKm }
-      : null;
-  };
-  // A SINGLE dataset's probe must not use the unlimited nearest-station
-  // fallback the merged pass enjoys: "nearest station within this one file"
-  // matches ANY position on earth, so a stacked Caribbean dataset would
-  // claim a query in the North Sea just by being ranked and non-empty.
-  // Containment (representative_area) still applies at any range; only the
-  // nearest-fallback radius is clamped.
-  const fromUtcefDataset = (files: ReadonlySet<string>): ResolvedVector | null =>
-    fromUtcef(files, Math.min(maxStationKm, UTCEF_DATASET_FALLBACK_MAX_KM));
-  const fromStation = (): ResolvedVector | null => {
-    if (!state.data) return null;
-    const near = nearestCurrentStations(state.data, lat, lon, 10).filter(
-      (n) => n.vectorCapable && n.distanceKm <= maxStationKm,
-    );
-    if (near.length === 0) return null;
-    const sample = currentSampleAt(state.data, near[0].station, timeMs);
-    if (!sample) return null;
-    return { source: 'station', sample, station: near[0].station, distanceKm: near[0].distanceKm };
-  };
-
-  // Per-dataset stack first (PRD §5.3 Phase 3): probe each installed dataset
-  // in stack order, restricted to its own files, so a small high-res coastal
-  // model ranked above a global one actually wins where they overlap — even
-  // across source types, which the type rank below cannot express. The
-  // legacy harmonic pair has no per-file provenance; a harmonic dataset
-  // probes the whole legacy station source.
-  for (const entry of state.datasetRank?.() ?? []) {
-    const files = new Set(entry.files);
-    const r =
-      entry.type === 'grib2'
-        ? fromGrib(files)
-        : entry.type === 'utcef'
-          ? fromUtcefDataset(files)
-          : fromStation();
-    if (r) return r;
-  }
-
-  // Type-rank fallback: catches everything without a stack entry — orphan
-  // (manually dropped) files, the legacy pair, or no manifest at all.
-  const fns: Record<SourceType, () => ResolvedVector | null> = { grib2: fromGrib, utcef: fromUtcef, harmonic: fromStation };
-  for (const key of sourceRank(state)) {
-    const r = fns[key]();
-    if (r) return r;
+  const layers = orderedLayers(state, maxStationKm);
+  for (let i = 0; i < layers.length; i++) {
+    const l = layers[i];
+    if (l.type === 'grib2') {
+      const g = state.grib?.get();
+      if (!g) continue;
+      const sample = gribVectorAt(g, lat, lon, timeMs, l.files);
+      if (sample) return { source: 'grib', sample };
+    } else if (l.type === 'utcef') {
+      const u = state.utcef?.get();
+      if (!u) continue;
+      const hit = utcefVectorAt(u, lat, lon, timeMs, l.utcefMaxKm, l.files);
+      if (hit) return { source: 'utcef', sample: hit.sample, utcefStation: hit.station, distanceKm: hit.distanceKm };
+    } else {
+      const r = stationVectorAt(state, lat, lon, timeMs, maxStationKm);
+      if (r) return r;
+    }
   }
   return null;
-}
-
-/**
- * Source-type rank to try in order: an explicit `sourcePriority` (PRD §5.3
- * Phase 1) wins when set; otherwise falls back to the legacy `preferGrib`
- * boolean so existing saved configs keep behaving the same way.
- */
-function sourceRank(state: ApiState): SourceType[] {
-  return state.sourcePriority ?? (state.preferGrib === false ? ['utcef', 'harmonic', 'grib2'] : ['grib2', 'utcef', 'harmonic']);
 }
 
 function stationInfo(s: IdxStation, extra: Record<string, unknown> = {}) {
@@ -548,26 +603,30 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     const sourceLabel: Record<SourceType, 'grib' | 'utcef' | 'station'> = { grib2: 'grib', utcef: 'utcef', harmonic: 'station' };
     // A stack dataset's UTCEF station is resolved ONCE (containment/nearest
     // doesn't depend on time), then sampled per-t like the fallback path.
-    const stackCandidates = (state.datasetRank?.() ?? []).map((entry) => {
-      const files = new Set(entry.files);
-      if (entry.type === 'grib2') {
-        return { source: 'grib' as const, fn: (t: number) => (g ? gribVectorAt(g, pos.lat, pos.lon, t, files) : null) };
-      }
-      if (entry.type === 'utcef') {
-        // Same clamped nearest-fallback radius as resolveVector's per-dataset probe.
-        const hit = u ? utcefVectorAt(u, pos.lat, pos.lon, win.start, UTCEF_DATASET_FALLBACK_MAX_KM, files) : null;
-        return {
-          source: 'utcef' as const,
-          fn: (t: number) => {
-            if (!hit) return null;
-            const s = utcefSampleAt(hit.station, t);
-            if (s) utcefUsed ??= hit;
-            return s;
-          },
-        };
-      }
-      return { source: 'station' as const, fn: fromStation };
-    });
+    // Stack layers (and their stable file Sets) come from the shared
+    // orderedLayers() list, so slot caches keyed by Set identity keep hitting.
+    const stackCandidates = orderedLayers(state, REST_FALLBACK_MAX_KM)
+      .filter((l) => l.stack)
+      .map((l) => {
+        const files = l.files!;
+        if (l.type === 'grib2') {
+          return { source: 'grib' as const, fn: (t: number) => (g ? gribVectorAt(g, pos.lat, pos.lon, t, files) : null) };
+        }
+        if (l.type === 'utcef') {
+          // Same clamped nearest-fallback radius as resolveVector's per-dataset probe.
+          const hit = u ? utcefVectorAt(u, pos.lat, pos.lon, win.start, l.utcefMaxKm, files) : null;
+          return {
+            source: 'utcef' as const,
+            fn: (t: number) => {
+              if (!hit) return null;
+              const s = utcefSampleAt(hit.station, t);
+              if (s) utcefUsed ??= hit;
+              return s;
+            },
+          };
+        }
+        return { source: 'station' as const, fn: fromStation };
+      });
     const candidates: Array<{ source: 'grib' | 'utcef' | 'station'; fn: (t: number) => CurrentSample | null }> = [
       ...stackCandidates,
       ...sourceRank(state).map((key) => ({ source: sourceLabel[key], fn: fns[key] })),
@@ -634,15 +693,14 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
 
   // Current vector field over a viewport for map overlays — the gridded
   // equivalent of /stations?bbox=…. Candidates are the GRIB lattice samples
-  // (gribGridSamples) and the UTCEF 2D-vector stations in the bbox; each
-  // candidate is kept only where its own source is the one resolveVector
-  // would pick there (same dataset stack / sourcePriority / preferGrib), so
-  // the map agrees with /vector and the published deltas wherever GRIB or
-  // UTCEF is the winning source, and a viewport only partly covered by GRIB
-  // still shows UTCEF arrows in the rest of it. The point budget is split
-  // between the two sources. Legacy harmonic stations are not included (not
-  // an overlay source here) and do not claim positions: where /vector would
-  // resolve to a legacy station, /grid still shows the best GRIB/UTCEF point.
+  // (gribGridSamples) and the UTCEF 2D-vector stations in the bbox, arbitrated
+  // with resolveVector's own layer order (dataset stack / sourcePriority /
+  // preferGrib), so the map agrees with /vector and the published deltas
+  // wherever GRIB or UTCEF wins. Lattice samples won by a UTCEF station are
+  // always filled with that station's vector; stations are drawn only where
+  // they win. The GRIB request is half the budget whenever UTCEF station data
+  // is loaded (else all of it), independent of the view. Legacy harmonic
+  // stations are not an overlay source and claim no positions. See gridPoints.
   router.get('/grid', (req, res) => {
     const g = gribData();
     const u = utcefData();
@@ -674,14 +732,26 @@ export type GridPoint = GridSample & { source: 'grib' | 'utcef'; stationId?: str
 type Bbox = { west: number; south: number; east: number; north: number };
 
 /**
- * /grid candidates merged by source priority. A "layer" is one probe of the
- * resolveVector order: per-dataset stack entries first (restricted to their
- * files), then the type rank (harmonic layers are skipped — see the route
- * comment). A candidate survives only if the first layer that claims its
- * position is of the candidate's own source type. Every candidate is claimed
- * by its own type layer at least (a GRIB sample has GRIB data there; a UTCEF
- * station is at distance 0 from itself), so a candidate is dropped only where
- * a higher-ranked source of the other type covers it.
+ * /grid points merged by source priority. Uses the SAME ordered layer list as
+ * resolveVector (orderedLayers) except that harmonic layers are skipped
+ * (legacy stations are not an overlay source and claim no positions). The
+ * first remaining layer that claims a position wins; a UTCEF layer names its
+ * station.
+ *
+ * - GRIB lattice samples (gribGridSamples) where GRIB wins stay GRIB. A
+ *   sample won by a UTCEF station S ALWAYS becomes S's vector at the sample
+ *   position (source 'utcef', stationId S.id), whether or not S itself is
+ *   drawn — so the overlay never depends on which stations are in view or
+ *   thinned.
+ * - In-view UTCEF stations are drawn at their own position only when they win
+ *   it (the winning layer returns that very station), thinned with the cell
+ *   ladder into whatever budget the lattice leaves.
+ * - Budget: GRIB asks for ceil(maxPoints/2) lattice samples whenever any
+ *   UTCEF current-station data is loaded (else maxPoints) — independent of
+ *   what is in view, so the lattice stride (and every arrow's position) does
+ *   not jump while panning. The lattice output never exceeds that request, so
+ *   UTCEF gets maxPoints minus the lattice output and the total is
+ *   <= maxPoints. Each lattice sample's winner is evaluated once.
  */
 function gridPoints(
   state: ApiState,
@@ -691,106 +761,60 @@ function gridPoints(
   time: number,
   maxPoints: number,
 ): GridPoint[] {
-  // Every station that can claim a point here is in the cached all-stations
-  // coverage index (built once per loaded dataset, not per request), so only
-  // the in-view stations need gathering.
-  const inView = u ? utcefStationsInBbox(u, bbox) : [];
+  const layers = u ? orderedLayers(state, REST_FALLBACK_MAX_KM) : [];
+  const index = u ? utcefCoverageIndexFor(u) : null;
 
-  // Priority arbitration (null = no UTCEF, nothing to arbitrate). Runs even
-  // without GRIB: overlapping UTCEF datasets must still resolve to the
-  // station /vector would return. winner() mirrors resolveVector: the first
-  // layer that claims a position wins, and a UTCEF layer names its station.
-  let winner: ((lat: number, lon: number) => { type: GridPoint['source']; station?: UtcefCurrentStation } | undefined) | null = null;
-  let winnerAtStation: ((s: UtcefCurrentStation) => { type: GridPoint['source']; station?: UtcefCurrentStation } | undefined) | null = null;
-  if (u) {
-    const index = utcefCoverageIndexFor(u);
-    type Win = { type: GridPoint['source']; station?: UtcefCurrentStation };
-    // Each layer answers at an arbitrary point (GRIB lattice samples) and at a
-    // station's own position (in-view stations — memoised for UTCEF layers).
-    type Layer = { at(lat: number, lon: number): Win | undefined; atStation(s: UtcefCurrentStation): Win | undefined };
-    const layers: Layer[] = [];
-    const gribLayer = (grib: GribCurrentsData, files?: ReadonlySet<string>): Layer => {
-      const at = (la: number, lo: number): Win | undefined =>
-        gribVectorAt(grib, la, lo, time, files) !== null ? { type: 'grib' } : undefined;
-      return { at, atStation: (s) => at(s.latitude, s.longitude) };
-    };
-    const utcefLayer = (maxKm: number, files?: ReadonlySet<string>): Layer => {
-      const filesKey = files ? [...files].sort().join('\n') : '';
-      const win = (station: UtcefCurrentStation | null): Win | undefined => (station ? { type: 'utcef', station } : undefined);
-      return {
-        at: (la, lo) => win(index.stationAt(la, lo, maxKm, files)),
-        atStation: (s) => win(index.stationAtStation(s, maxKm, files, filesKey)),
-      };
-    };
-    for (const entry of state.datasetRank?.() ?? []) {
-      const files = new Set(entry.files);
-      if (entry.type === 'grib2' && g) layers.push(gribLayer(g, files));
-      else if (entry.type === 'utcef') layers.push(utcefLayer(UTCEF_DATASET_FALLBACK_MAX_KM, files));
-    }
-    for (const key of sourceRank(state)) {
-      if (key === 'grib2' && g) layers.push(gribLayer(g));
-      else if (key === 'utcef') layers.push(utcefLayer(REST_FALLBACK_MAX_KM));
-    }
-    winner = (lat, lon) => {
-      for (const l of layers) {
-        const w = l.at(lat, lon);
-        if (w) return w;
+  // Winner at an arbitrary point: 'grib', a UTCEF station, or null.
+  const winnerAt = (lat: number, lon: number): 'grib' | UtcefCurrentStation | null => {
+    for (const l of layers) {
+      if (l.type === 'grib2') {
+        if (g && gribVectorAt(g, lat, lon, time, l.files) !== null) return 'grib';
+      } else if (l.type === 'utcef') {
+        const st = index!.stationAt(lat, lon, l.utcefMaxKm, l.files);
+        if (st) return st;
       }
-      return undefined;
-    };
-    winnerAtStation = (st) => {
-      for (const l of layers) {
-        const w = l.atStation(st);
-        if (w) return w;
+    }
+    return null;
+  };
+  // Same at a station's own position (UTCEF layers memoised per station).
+  const winnerAtStation = (s: UtcefCurrentStation): 'grib' | UtcefCurrentStation | null => {
+    for (const l of layers) {
+      if (l.type === 'grib2') {
+        if (g && gribVectorAt(g, s.latitude, s.longitude, time, l.files) !== null) return 'grib';
+      } else if (l.type === 'utcef') {
+        const st = index!.stationAtStation(s, l.utcefMaxKm, l.files, l.filesKey);
+        if (st) return st;
       }
-      return undefined;
-    };
-  }
-
-  // A UTCEF station is kept only if it is the very station the winning layer
-  // returns at its position (not merely "some UTCEF wins here"), so
-  // overlapping datasets agree with /vector on which file's station shows.
-  // Filtering happens BEFORE thinning, so the budget goes to stations that
-  // actually win their position. (Pre-thinning first would let a cell's
-  // representative be a station GRIB outranks, hiding the eligible ones.)
-  const utcefWinners = (winnerAtStation ? inView.filter((s) => winnerAtStation!(s)?.station === s) : inView).map((s) => ({
-    lat: s.latitude,
-    lon: s.longitude,
-    s,
-  }));
+    }
+    return null;
+  };
 
   const utcefPoint = (s: UtcefCurrentStation, lat: number, lon: number): GridPoint => {
     const sample = utcefSampleAt(s, time);
     return { latitude: lat, longitude: lon, speedKn: sample.speedKn, direction: sample.direction, u: sample.u, v: sample.v, source: 'utcef', stationId: s.id };
   };
 
-  // GRIB lattice samples where GRIB wins stay GRIB. Where a UTCEF station
-  // that is NOT drawn wins (its representative_area reaches in from afar, or
-  // thinning dropped it), the sample position gets that station's vector, as
-  // /vector would return there — else the area would be blank.
-  const gribPoints = (samples: GridSample[], shown: ReadonlySet<UtcefCurrentStation>): GridPoint[] => {
-    const out: GridPoint[] = [];
-    for (const p of samples) {
-      const w = winner?.(p.latitude, p.longitude);
-      if (!w || w.type === 'grib') out.push({ ...p, source: 'grib' });
-      else if (w.station && !shown.has(w.station)) out.push(utcefPoint(w.station, p.latitude, p.longitude));
+  // Lattice first (its request depends only on maxPoints and on whether UTCEF
+  // data is loaded at all), single pass.
+  const gribRequest = u ? Math.max(1, Math.ceil(maxPoints / 2)) : maxPoints;
+  const lattice: GridPoint[] = [];
+  if (g) {
+    for (const p of gribGridSamples(g, bbox, time, gribRequest)) {
+      const w = u ? winnerAt(p.latitude, p.longitude) : null;
+      if (w === null || w === 'grib') lattice.push({ ...p, source: 'grib' });
+      else lattice.push(utcefPoint(w, p.latitude, p.longitude));
     }
-    return out;
-  };
+  }
+  if (!u) return lattice;
 
-  // Split the budget: each source thinned on its own (GRIB by its lattice
-  // stride, UTCEF by the cell ladder). The GRIB request depends only on
-  // maxPoints and whether any UTCEF station is in play — never on how many —
-  // so the lattice stride (and every GRIB arrow's position) stays put while
-  // panning at a fixed zoom.
-  const gribRequest = utcefWinners.length > 0 ? Math.max(1, Math.ceil(maxPoints / 2)) : maxPoints;
-  const rawGrib = g ? gribGridSamples(g, bbox, time, gribRequest) : [];
-  const gribEstimate = gribPoints(rawGrib, new Set(utcefWinners.map((w) => w.s))).length;
-  const utcefThin = thinByCellLadder(utcefWinners, Math.max(0, maxPoints - gribEstimate));
-  // Re-resolve against the stations actually drawn: lattice points whose
-  // winner was thinned away get that station's vector instead of vanishing.
-  const grib = gribPoints(rawGrib, new Set(utcefThin.map((w) => w.s))).slice(0, Math.max(0, maxPoints - utcefThin.length));
-
-  const utcef: GridPoint[] = utcefThin.map(({ s }) => utcefPoint(s, s.latitude, s.longitude));
-  return [...grib, ...utcef];
+  // In-view stations that win their own position, filtered BEFORE thinning so
+  // the budget goes to stations that actually show.
+  const winners: Array<{ lat: number; lon: number; s: UtcefCurrentStation }> = [];
+  for (const s of utcefStationsInBbox(u, bbox)) {
+    if (winnerAtStation(s) === s) winners.push({ lat: s.latitude, lon: s.longitude, s });
+  }
+  const utcefThin = thinByCellLadder(winners, Math.max(0, maxPoints - lattice.length));
+  const out = lattice;
+  for (const { s } of utcefThin) out.push(utcefPoint(s, s.latitude, s.longitude));
+  return out;
 }
