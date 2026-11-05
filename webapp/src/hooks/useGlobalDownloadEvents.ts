@@ -16,6 +16,7 @@ import { DownloadJob } from '../api/types';
  */
 export function useGlobalDownloadEvents(): void {
   const setDownloadJob = useAppStore((s) => s.setDownloadJob);
+  const access = useAppStore((s) => s.access);
   const [fellBack, setFellBack] = useState(false);
 
   useEffect(() => {
@@ -37,7 +38,8 @@ export function useGlobalDownloadEvents(): void {
       source.close();
     };
     return () => source.close();
-  }, [setDownloadJob]);
+    // `access` is a dependency so a login (read-only -> admin) reopens a feed that was refused or dropped to polling.
+  }, [setDownloadJob, access]);
 
   usePollingFallback(fellBack, setDownloadJob);
 }

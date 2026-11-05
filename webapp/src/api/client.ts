@@ -81,17 +81,17 @@ export const api = {
   getLoginStatus: async (): Promise<LoginStatus> => {
     // Bounded: a hung request would otherwise block dataset loading (which
     // waits on the access check) forever. The abort rejects with a non-ApiError,
-    // i.e. a transient failure the caller retries.
+    // i.e. a transient failure the caller retries. The timer stays armed through
+    // the body read, since a body can stall after the headers have arrived.
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 10_000);
-    let resp: Response;
     try {
-      resp = await fetch('/skServer/loginStatus', { credentials: 'same-origin', signal: ctrl.signal });
+      const resp = await fetch('/skServer/loginStatus', { credentials: 'same-origin', signal: ctrl.signal });
+      if (!resp.ok) throw new ApiError(`HTTP ${resp.status}`, resp.status);
+      return (await resp.json()) as LoginStatus;
     } finally {
       clearTimeout(timer);
     }
-    if (!resp.ok) throw new ApiError(`HTTP ${resp.status}`, resp.status);
-    return (await resp.json()) as LoginStatus;
   },
 
   // Vessel position comes from the SignalK server itself, not this plugin.
