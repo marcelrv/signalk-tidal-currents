@@ -38,6 +38,8 @@ import {
   UtcefData,
   UtcefSource,
   nearestUtcefStations,
+  lonInSpan,
+  lonSpansOverlap,
   utcefAreaBounds,
   utcefCoverageIndex,
   utcefSampleAt,
@@ -704,16 +706,15 @@ function gridPoints(
       const inPad =
         s.latitude >= bbox.south - padLat &&
         s.latitude <= bbox.north + padLat &&
-        s.longitude >= bbox.west - padLon &&
-        s.longitude <= bbox.east + padLon;
+        lonInSpan(s.longitude, bbox.west - padLon, bbox.east + padLon);
       const a = inPad ? null : utcefAreaBounds(s);
-      if (inPad || (a && a.west <= bbox.east && a.east >= bbox.west && a.south <= bbox.north && a.north >= bbox.south)) {
+      if (inPad || (a && a.south <= bbox.north && a.north >= bbox.south && lonSpansOverlap(a.west, a.east, bbox.west, bbox.east))) {
         nearby.push(s);
       }
     }
   }
   const inView = nearby.filter(
-    (s) => s.latitude >= bbox.south && s.latitude <= bbox.north && s.longitude >= bbox.west && s.longitude <= bbox.east,
+    (s) => s.latitude >= bbox.south && s.latitude <= bbox.north && lonInSpan(s.longitude, bbox.west, bbox.east),
   );
 
   // Priority filter; null = nothing to arbitrate (only one source present).

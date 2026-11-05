@@ -496,13 +496,28 @@ export function utcefSampleAt(station: UtcefCurrentStation, timeMs: number): Utc
   };
 }
 
-/** UTCEF current stations inside a lon/lat box (inclusive). No cap: callers thin the result, and stopping early in array order would make the thinned set depend on file load order. */
+/**
+ * True when the longitude spans [w1, e1] and [w2, e2] overlap modulo 360 —
+ * map clients (Freeboard) send viewports past ±180 (e.g. 170…190 across the
+ * antimeridian) while stations are stored in −180…180.
+ */
+export function lonSpansOverlap(w1: number, e1: number, w2: number, e2: number): boolean {
+  const k = Math.ceil((w2 - e1) / 360);
+  return w1 + 360 * k <= e2;
+}
+
+/** True when `lon` (any range) falls inside [west, east] modulo 360. */
+export function lonInSpan(lon: number, west: number, east: number): boolean {
+  return lonSpansOverlap(lon, lon, west, east);
+}
+
+/** UTCEF current stations inside a lon/lat box (inclusive; longitudes compared modulo 360). No cap: callers thin the result, and stopping early in array order would make the thinned set depend on file load order. */
 export function utcefStationsInBbox(
   data: UtcefData,
   bbox: { west: number; south: number; east: number; north: number },
 ): UtcefCurrentStation[] {
   return data.currentStations.filter(
-    (s) => s.latitude >= bbox.south && s.latitude <= bbox.north && s.longitude >= bbox.west && s.longitude <= bbox.east,
+    (s) => s.latitude >= bbox.south && s.latitude <= bbox.north && lonInSpan(s.longitude, bbox.west, bbox.east),
   );
 }
 
@@ -537,6 +552,10 @@ export function utcefAreaBounds(s: UtcefCurrentStation): { west: number; south: 
  * dataset's stations, as utcefVectorAt does.
  */
 export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.5) {
+  // Longitude cell indices wrap modulo 360 so probes near the antimeridian
+  // find stations/polygons on the other side of it.
+  const nLon = Math.round(360 / cellDeg);
+  const key = (j: number, i: number) => `${j}:${((i % nLon) + nLon) % nLon}`;
   const cells = new Map<string, UtcefCurrentStation[]>();
   const areaCells = new Map<string, UtcefCurrentStation[]>();
   const push = (m: Map<string, UtcefCurrentStation[]>, key: string, s: UtcefCurrentStation) => {
@@ -545,11 +564,13 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
     else m.set(key, [s]);
   };
   for (const s of stations) {
-    push(cells, `${Math.floor(s.latitude / cellDeg)}:${Math.floor(s.longitude / cellDeg)}`, s);
+    push(cells, key(Math.floor(s.latitude / cellDeg), Math.floor(s.longitude / cellDeg)), s);
     const b = utcefAreaBounds(s);
     if (b) {
+      const i0 = Math.floor(b.west / cellDeg);
+      const i1 = Math.min(Math.floor(b.east / cellDeg), i0 + nLon - 1);
       for (let j = Math.floor(b.south / cellDeg); j <= Math.floor(b.north / cellDeg); j++) {
-        for (let i = Math.floor(b.west / cellDeg); i <= Math.floor(b.east / cellDeg); i++) push(areaCells, `${j}:${i}`, s);
+        for (let i = i0; i <= i1; i++) push(areaCells, key(j, i), s);
       }
     }
   }
@@ -557,18 +578,20 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
     !files || (s.file !== undefined && files.has(s.file));
   return {
     covers(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): boolean {
-      for (const s of areaCells.get(`${Math.floor(lat / cellDeg)}:${Math.floor(lon / cellDeg)}`) ?? []) {
-        if (inFiles(s, files) && pointInArea(s.representativeArea!, lat, lon)) return true;
+      for (const s of areaCells.get(key(Math.floor(lat / cellDeg), Math.floor(lon / cellDeg))) ?? []) {
+        if (!inFiles(s, files)) continue;
+        // The polygon may be written past ±180; try the probe in each frame.
+        for (const l of [lon, lon + 360, lon - 360]) if (pointInArea(s.representativeArea!, lat, l)) return true;
       }
       const dLat = maxKm / 111.32;
       const dLon = dLat / Math.max(Math.cos(lat * DEG2RAD), 0.01);
       const j0 = Math.floor((lat - dLat) / cellDeg);
       const j1 = Math.floor((lat + dLat) / cellDeg);
       const i0 = Math.floor((lon - dLon) / cellDeg);
-      const i1 = Math.floor((lon + dLon) / cellDeg);
+      const i1 = Math.min(Math.floor((lon + dLon) / cellDeg), i0 + nLon - 1);
       for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) {
-          for (const s of cells.get(`${j}:${i}`) ?? []) {
+          for (const s of cells.get(key(j, i)) ?? []) {
             if (inFiles(s, files) && distanceKm(lat, lon, s.latitude, s.longitude) <= maxKm) return true;
           }
         }

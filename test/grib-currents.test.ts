@@ -18,7 +18,7 @@ import {
   GRIB_TIME_SLACK_MS,
 } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
-import { createUtcefSource } from '../dist/utcef.js';
+import { createUtcefSource, lonInSpan, utcefCoverageIndex } from '../dist/utcef.js';
 import { encodeGrib2File, EncodeField } from './grib2-testutil.js';
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -421,6 +421,39 @@ test('GET /grid splits the budget between sources instead of collapsing density'
   assert.ok(pts.length >= 30, `density collapsed to ${pts.length}`);
   assert.ok(pts.some((p: any) => p.source === 'grib')); // eslint-disable-line @typescript-eslint/no-explicit-any
   assert.ok(pts.some((p: any) => p.source === 'utcef')); // eslint-disable-line @typescript-eslint/no-explicit-any
+});
+
+test('GET /grid and /stations?bbox find UTCEF stations in viewports past ±180', (t) => {
+  // Fiji-ish station east of the antimeridian (stored as −179.5) and a NZ one west of it.
+  const dir = writeUtcefDir({ 'pac.utcef': [['E', -17, -179.5], ['W', -36, 174.8]] });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const utcef = createUtcefSource(dir, 0);
+  const call = makeApi({ data: null, error: null, grib: null, utcef, preferGrib: true });
+  const ids = (r: Captured) => r.body.points.map((p: any) => p.stationId).sort(); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+  // Viewport written east-positive across the antimeridian (Freeboard style).
+  assert.deepEqual(ids(call('/grid', { bbox: '170,-40,190,-10', time: gridTime })), ['E', 'W']);
+  // Same area written west-negative.
+  assert.deepEqual(ids(call('/grid', { bbox: '-190,-40,-170,-10', time: gridTime })), ['E', 'W']);
+  // Returned longitudes stay normalised to −180…180, like GRIB samples.
+  const e = call('/grid', { bbox: '170,-40,190,-10', time: gridTime }).body.points.find((p: any) => p.stationId === 'E'); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(e.longitude, -179.5);
+  // A plain viewport still excludes the far side.
+  assert.deepEqual(ids(call('/grid', { bbox: '170,-40,179,-10', time: gridTime })), ['W']);
+
+  const st = call('/stations', { bbox: '170,-40,190,-10' });
+  assert.deepEqual(st.body.map((s: any) => s.id).sort(), ['E', 'W']); // eslint-disable-line @typescript-eslint/no-explicit-any
+});
+
+test('lonInSpan / utcefCoverageIndex wrap across the antimeridian', () => {
+  assert.ok(lonInSpan(-175, 170, 190));
+  assert.ok(lonInSpan(185, -180, -170));
+  assert.ok(!lonInSpan(-175, 170, 179));
+  assert.ok(lonInSpan(10, -1000, 1000)); // wider than the globe
+  const station = { id: 'A', name: 'A', latitude: -17, longitude: 179.95, meanU: 0, meanV: 0, constituents: [] };
+  const index = utcefCoverageIndex([station]);
+  assert.ok(index.covers(-17, -179.95, 50)); // ~11 km away, across ±180
+  assert.ok(!index.covers(-17, -175, 50));
 });
 
 test('GET /grid thins UTCEF points to maxPoints', (t) => {
