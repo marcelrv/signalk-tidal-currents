@@ -29,7 +29,11 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 
 import { astronomicalArgs, equilibriumArg, isKnownConstituent, nodeFactors } from './astro.js';
-import { CurrentSample, distanceKm, KNOTS_TO_MS } from './predict.js';
+import { CurrentSample, distanceKm, KNOTS_TO_MS, lonInSpan, lonSpansOverlap } from './predict.js';
+
+// Re-exported: the longitude-wrap helpers live in predict.ts (shared with the
+// legacy harmonic bbox filter) but are part of the UTCEF viewport API too.
+export { lonInSpan, lonSpansOverlap };
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -494,21 +498,6 @@ export function utcefSampleAt(station: UtcefCurrentStation, timeMs: number): Utc
     u: Math.round(u * 1000) / 1000,
     v: Math.round(v * 1000) / 1000,
   };
-}
-
-/**
- * True when the longitude spans [w1, e1] and [w2, e2] overlap modulo 360 —
- * map clients (Freeboard) send viewports past ±180 (e.g. 170…190 across the
- * antimeridian) while stations are stored in −180…180.
- */
-export function lonSpansOverlap(w1: number, e1: number, w2: number, e2: number): boolean {
-  const k = Math.ceil((w2 - e1) / 360);
-  return w1 + 360 * k <= e2;
-}
-
-/** True when `lon` (any range) falls inside [west, east] modulo 360. */
-export function lonInSpan(lon: number, west: number, east: number): boolean {
-  return lonSpansOverlap(lon, lon, west, east);
 }
 
 /** UTCEF current stations inside a lon/lat box (inclusive; longitudes compared modulo 360). No cap: callers thin the result, and stopping early in array order would make the thinned set depend on file load order. */

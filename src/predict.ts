@@ -200,6 +200,21 @@ export function nearestCurrentStations(
 }
 
 /**
+ * True when the longitude spans [w1, e1] and [w2, e2] overlap modulo 360 —
+ * map clients (Freeboard) send viewports past ±180 (e.g. 170…190 across the
+ * antimeridian) while stations are stored in −180…180.
+ */
+export function lonSpansOverlap(w1: number, e1: number, w2: number, e2: number): boolean {
+  const k = Math.ceil((w2 - e1) / 360);
+  return w1 + 360 * k <= e2;
+}
+
+/** True when `lon` (any range) falls inside [west, east] modulo 360. */
+export function lonInSpan(lon: number, west: number, east: number): boolean {
+  return lonSpansOverlap(lon, lon, west, east);
+}
+
+/**
  * All current stations inside a lat/lon bounding box (no distance sort or
  * nearest-N cutoff — the point is to cover every station a map viewport can
  * see, not just the closest handful to one reference point). `limit` is
@@ -216,7 +231,7 @@ export function stationsInBbox(
   const result: Array<{ station: IdxStation; vectorCapable: boolean }> = [];
   for (const s of data.stations) {
     if (!s.isCurrent) continue;
-    if (s.latitude < south || s.latitude > north || s.longitude < west || s.longitude > east) continue;
+    if (s.latitude < south || s.latitude > north || !lonInSpan(s.longitude, west, east)) continue;
     if (!isStationResolvable(data, s)) continue;
     result.push({
       station: s,
