@@ -18,7 +18,7 @@ import {
   GRIB_TIME_SLACK_MS,
 } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
-import { createUtcefSource, lonInSpan, utcefCoverageIndex } from '../dist/utcef.js';
+import { createUtcefSource, lonInSpan, utcefCoverageIndex, utcefVectorAt } from '../dist/utcef.js';
 import { encodeGrib2File, EncodeField } from './grib2-testutil.js';
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -407,6 +407,60 @@ test('GET /grid honours a distant station whose representative_area covers the v
   assert.equal(call('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.source, 'utcef');
   const pts = call('/grid', { bbox: '5.0,53.0,5.4,53.4', time: gridTime }).body.points;
   assert.equal(pts.filter((p: any) => p.source === 'grib').length, 0); // eslint-disable-line @typescript-eslint/no-explicit-any
+  // The lattice positions are not left blank: they carry the distant
+  // station's vector, as /vector returns there.
+  assert.ok(pts.length > 0);
+  assert.ok(pts.every((p: any) => p.source === 'utcef' && p.stationId === 'F')); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.ok(pts.every((p: any) => p.latitude >= 53.0 && p.latitude <= 53.4 && p.longitude >= 5.0 && p.longitude <= 5.4)); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const vec = call('/vector', { latitude: String(pts[0].latitude), longitude: String(pts[0].longitude), time: gridTime }).body.sample;
+  assert.ok(Math.abs(vec.u - pts[0].u) < 1e-9 && Math.abs(vec.v - pts[0].v) < 1e-9);
+});
+
+test('malformed representative_area is ignored instead of crashing probes', (t) => {
+  const dir = writeUtcefDir({ 'bad.utcef': [['B', 52.0, 5.0, [[null, null, null, null]] as any]] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const utcef = createUtcefSource(dir, 0);
+  const data = utcef.get()!;
+  assert.equal(data.currentStations.length, 1);
+  assert.equal(data.currentStations[0].representativeArea, undefined);
+  assert.equal(utcefVectorAt(data, 52.01, 5.0, T0, 50)!.station.id, 'B');
+  const call = makeApi({ data: null, error: null, grib: createGribSource(uvDir, 0), utcef, preferGrib: true });
+  const r = call('/grid', { bbox: '4.9,51.9,5.1,52.1', time: gridTime });
+  assert.equal(r.code, 200);
+  assert.ok(r.body.points.some((p: any) => p.stationId === 'B')); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(call('/vector', { latitude: '52.01', longitude: '5.0', time: gridTime }).code, 200);
+});
+
+test('representative_area written past 180 matches in /vector and /grid', (t) => {
+  const area = [[[170, -20], [190, -20], [190, -10], [170, -10], [170, -20]]];
+  const dir = writeUtcefDir({ 'am.utcef': [['A', -15, 175, area]] });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const utcef = createUtcefSource(dir, 0);
+  assert.equal(utcefVectorAt(utcef.get()!, -15, -175, T0)!.station.id, 'A'); // contained, ~1900 km away
+  const call = makeApi({ data: null, error: null, grib: createGribSource(uvDir, 0), utcef, preferGrib: false });
+  assert.equal(call('/vector', { latitude: '-15', longitude: '-175', time: gridTime }).body.station.id, 'A');
+  // /grid's coverage index uses the same containment test (no GRIB lattice exists out here to show it).
+  assert.equal(utcefCoverageIndex(utcef.get()!.currentStations).covers(-15, -175, 10), true);
+});
+
+test('GET /grid keeps only the higher-ranked dataset when UTCEF files overlap', (t) => {
+  const dir = writeUtcefDir({ 'a.utcef': [['SA', 53.2, 5.2]], 'b.utcef': [['SB', 53.21, 5.2]] });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const call = makeApi({
+    data: null,
+    error: null,
+    grib: createGribSource(uvDir, 0),
+    utcef: createUtcefSource(dir, 0),
+    preferGrib: false,
+    datasetRank: () => [
+      { id: 'b', type: 'utcef', files: ['b.utcef'] },
+      { id: 'a', type: 'utcef', files: ['a.utcef'] },
+    ],
+  });
+  assert.equal(call('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.station.id, 'SB');
+  const pts = call('/grid', { bbox: '5.0,53.0,5.4,53.4', time: gridTime }).body.points;
+  const ids = new Set(pts.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId)); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.deepEqual([...ids], ['SB']);
 });
 
 test('GET /grid splits the budget between sources instead of collapsing density', (t) => {

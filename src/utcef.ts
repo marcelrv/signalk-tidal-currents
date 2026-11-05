@@ -198,11 +198,21 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
     }
 
     const mean = props.mean_offset ?? {};
-    const area =
-      props.representative_area?.type === 'Polygon' &&
-      Array.isArray(props.representative_area.coordinates)
-        ? (props.representative_area.coordinates as number[][][])
-        : undefined;
+    // Accept the area only if the outer ring is >= 4 positions with finite
+    // lon/lat; a malformed polygon would otherwise throw in every point probe.
+    let area: number[][][] | undefined;
+    if (props.representative_area?.type === 'Polygon' && Array.isArray(props.representative_area.coordinates)) {
+      const ring = props.representative_area.coordinates[0];
+      if (
+        Array.isArray(ring) &&
+        ring.length >= 4 &&
+        ring.every((p: unknown) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+      ) {
+        area = props.representative_area.coordinates as number[][][];
+      } else {
+        warnings.push(`${sourceLabel}: station "${id}" has a malformed representative_area — ignored`);
+      }
+    }
 
     currentStations.push({
       id,
@@ -566,11 +576,10 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
   const inFiles = (s: UtcefCurrentStation, files?: ReadonlySet<string>) =>
     !files || (s.file !== undefined && files.has(s.file));
   return {
-    covers(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): boolean {
+    /** The station utcefVectorAt would pick (containing area first, else nearest within maxKm). */
+    stationAt(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): UtcefCurrentStation | null {
       for (const s of areaCells.get(key(Math.floor(lat / cellDeg), Math.floor(lon / cellDeg))) ?? []) {
-        if (!inFiles(s, files)) continue;
-        // The polygon may be written past ±180; try the probe in each frame.
-        for (const l of [lon, lon + 360, lon - 360]) if (pointInArea(s.representativeArea!, lat, l)) return true;
+        if (inFiles(s, files) && pointInArea(s.representativeArea!, lat, lon)) return s;
       }
       const dLat = maxKm / 111.32;
       const dLon = dLat / Math.max(Math.cos(lat * DEG2RAD), 0.01);
@@ -578,20 +587,37 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
       const j1 = Math.floor((lat + dLat) / cellDeg);
       const i0 = Math.floor((lon - dLon) / cellDeg);
       const i1 = Math.min(Math.floor((lon + dLon) / cellDeg), i0 + nLon - 1);
+      let best: UtcefCurrentStation | null = null;
+      let bestD = Infinity;
       for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) {
           for (const s of cells.get(key(j, i)) ?? []) {
-            if (inFiles(s, files) && distanceKm(lat, lon, s.latitude, s.longitude) <= maxKm) return true;
+            if (!inFiles(s, files)) continue;
+            const d = Math.round(distanceKm(lat, lon, s.latitude, s.longitude) * 100) / 100;
+            if (d <= maxKm && d < bestD) {
+              best = s;
+              bestD = d;
+            }
           }
         }
       }
-      return false;
+      return best;
+    },
+    covers(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): boolean {
+      return this.stationAt(lat, lon, maxKm, files) !== null;
     },
   };
 }
 
-/** Ray-casting point-in-polygon over a GeoJSON Polygon's outer ring ([lon,lat]). */
+/**
+ * Point-in-polygon over a GeoJSON Polygon's outer ring ([lon,lat]). The ring
+ * may be written past ±180, so the probe is tried in each 360° frame.
+ */
 function pointInArea(area: number[][][], lat: number, lon: number): boolean {
+  return pointInRing(area, lat, lon) || pointInRing(area, lat, lon + 360) || pointInRing(area, lat, lon - 360);
+}
+
+function pointInRing(area: number[][][], lat: number, lon: number): boolean {
   const ring = area[0];
   if (!ring || ring.length < 4) return false;
   let inside = false;

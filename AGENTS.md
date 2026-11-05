@@ -109,8 +109,11 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   where its own source is the first layer of the resolveVector order
   (dataset stack, then type rank) that covers it, so the overlay agrees with
   `/vector` wherever GRIB or UTCEF wins, and partial GRIB coverage doesn't
-  hide UTCEF elsewhere. The point budget is split between the two sources
-  (each thinned its own way). Points carry `source`. Legacy harmonic
+  hide UTCEF elsewhere. A UTCEF candidate must be the very station the
+  winning layer returns (so overlapping datasets match `/vector`); a GRIB
+  lattice sample won by an off-viewport UTCEF station (area reaching in) is
+  emitted as a UTCEF point at the sample position, not left blank. The
+  point budget is split between the two sources (each thinned its own way). Points carry `source`. Legacy harmonic
   stations are not part of `/grid` and don't claim positions there, so near
   one that `/vector` would pick, `/grid` still shows GRIB/UTCEF.
   Both `/stations?bbox=` and

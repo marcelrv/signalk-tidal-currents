@@ -247,6 +247,23 @@ function sampleSlot(slot: TimeSlot, lat: number, lon: number): { u: number; v: n
   return { u, v };
 }
 
+// Merged slot list per (data, files set): callers probing many positions
+// reuse one Set instance, so the filter+merge+sort runs once, not per probe.
+const filesSlotsCache = new WeakMap<GribCurrentsData, WeakMap<ReadonlySet<string>, TimeSlot[]>>();
+function slotsForFiles(data: GribCurrentsData, files: ReadonlySet<string>): TimeSlot[] {
+  let perData = filesSlotsCache.get(data);
+  if (!perData) filesSlotsCache.set(data, (perData = new WeakMap()));
+  let slots = perData.get(files);
+  if (!slots) {
+    const lists = Object.entries(data.slotsByFile)
+      .filter(([name]) => files.has(name))
+      .map(([, list]) => list);
+    slots = lists.length === 1 ? lists[0] : lists.flat().sort((a, b) => a.time - b.time);
+    perData.set(files, slots);
+  }
+  return slots;
+}
+
 /**
  * Interpolated current vector at a position/time, or null when the position
  * is outside every grid (or on land) or the time is outside the covered
@@ -266,14 +283,7 @@ export function gribVectorAt(
   timeMs: number,
   files?: ReadonlySet<string>,
 ): CurrentSample | null {
-  let slots = data.slots;
-  if (files) {
-    const lists = Object.entries(data.slotsByFile)
-      .filter(([name]) => files.has(name))
-      .map(([, list]) => list);
-    if (lists.length === 0) return null;
-    slots = lists.length === 1 ? lists[0] : lists.flat().sort((a, b) => a.time - b.time);
-  }
+  const slots = files ? slotsForFiles(data, files) : data.slots;
   if (slots.length === 0) return null;
   if (timeMs < slots[0].time - GRIB_TIME_SLACK_MS) return null;
   if (timeMs > slots[slots.length - 1].time + GRIB_TIME_SLACK_MS) return null;
