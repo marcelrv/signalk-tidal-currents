@@ -760,12 +760,13 @@ type Bbox = { west: number; south: number; east: number; north: number };
  * - In-view UTCEF stations are drawn at their own position only when they win
  *   it (the winning layer returns that very station), thinned with the cell
  *   ladder into whatever budget the lattice leaves.
- * - Budget: GRIB asks for ceil(maxPoints/2) lattice samples whenever any
- *   UTCEF current-station data is loaded (else maxPoints) — independent of
- *   what is in view, so the lattice stride (and every arrow's position) does
- *   not jump while panning. The lattice output never exceeds that request, so
- *   UTCEF gets maxPoints minus the lattice output and the total is
- *   <= maxPoints. Each lattice sample's winner is evaluated once.
+ * - Budget: GRIB requests maxPoints lattice samples (ceil(maxPoints/2) when
+ *   UTCEF data is loaded and ranks above GRIB, so in-view stations get room);
+ *   depends on rank only, not the view. With UTCEF loaded the lattice stride
+ *   is also bounded by the grid's share of the bbox area (strideFromBbox,
+ *   GRID_GRIB_DENSITY_BOOST), still a fixed index lattice so panning is
+ *   stable. UTCEF gets maxPoints minus the lattice output; total <= maxPoints.
+ *   Each lattice sample's winner is evaluated once.
  */
 function gridPoints(
   state: ApiState,
@@ -849,10 +850,14 @@ function gridPoints(
 
   // Lattice first (its request depends only on maxPoints and on whether UTCEF
   // data is loaded at all), single pass.
-  const gribRequest = u ? Math.max(1, Math.ceil(maxPoints / 2)) : maxPoints;
+  // GRIB keeps the full budget unless UTCEF data is loaded AND ranks above it
+  // (then in-view stations need room). Rank only, never the view.
+  const firstNonHarmonic = layers.find((l) => l.type !== 'harmonic');
+  const gribRanksAboveUtcef = firstNonHarmonic?.type === 'grib2';
+  const gribRequest = !u ? maxPoints : gribRanksAboveUtcef ? maxPoints : Math.max(1, Math.ceil(maxPoints / 2));
   const lattice: GridPoint[] = [];
   if (g) {
-    for (const { sample: p, files } of gribGridSamplesWithFiles(g, bbox, time, gribRequest)) {
+    for (const { sample: p, files } of gribGridSamplesWithFiles(g, bbox, time, gribRequest, { strideFromBbox: !!u })) {
       const w = arbitrate ? winnerAtSample(p.latitude, p.longitude, files) : null;
       if (w === null) lattice.push({ ...p, source: 'grib' });
       else if ('grib' in w) {

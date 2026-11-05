@@ -122,9 +122,11 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   the sample position (`source:'utcef'`, `stationId`), whether or not S is
   drawn; in-view stations are drawn only where they win, thinned by
   `thinByCellLadder` into `maxPoints − lattice.length`. The GRIB request is
-  `ceil(maxPoints/2)` whenever any UTCEF current-station data is loaded
-  (else `maxPoints`) — independent of the view, so the stride and every
-  arrow position stay put while panning; total ≤ `maxPoints`. Single pass:
+  `maxPoints`, or `ceil(maxPoints/2)` when UTCEF data is loaded and ranks
+  above GRIB (rank only, not the view); with UTCEF loaded the lattice
+  stride is also `max(window stride, area stride)` (`strideFromBbox`,
+  `GRID_GRIB_DENSITY_BOOST`) so far-away UTCEF doesn't thin GRIB and
+  stride stays on the fixed index lattice (pan-stable); total ≤ `maxPoints`. Single pass:
   each lattice sample's winner is evaluated once. The GRIB winner is
   layer-specific: a lattice sample whose grid is not covered by the winning
   stack layer's files is dropped (that dataset's own lattice covers the

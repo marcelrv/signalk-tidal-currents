@@ -483,6 +483,13 @@ function gridBboxWindow(
   return { iMin, iMax, jMin, jMax };
 }
 
+/**
+ * /grid lattice density when UTCEF data shares the budget (strideFromBbox):
+ * 1 = GRIB strictly proportional to its share of the viewport area, larger =
+ * GRIB denser at UTCEF's expense, Infinity = old window-only behaviour.
+ */
+export const GRID_GRIB_DENSITY_BOOST = 2;
+
 export function gribGridSamples(
   data: GribCurrentsData,
   bbox: { west: number; south: number; east: number; north: number },
@@ -498,6 +505,7 @@ export function gribGridSamplesWithFiles(
   bbox: { west: number; south: number; east: number; north: number },
   timeMs: number,
   maxPoints = 400,
+  opts?: { strideFromBbox?: boolean },
 ): { sample: GridSample; files: ReadonlySet<string> }[] {
   // Each downloaded region is its own grid geometry. Sample every region
   // whose lattice overlaps the viewport — not just the merged grid — or a
@@ -518,7 +526,16 @@ export function gribGridSamplesWithFiles(
     const { iMin, iMax, jMin, jMax } = win;
     const iCount = iMax - iMin + 1;
     const jCount = jMax - jMin + 1;
-    const stride = Math.max(1, Math.ceil(Math.sqrt((iCount * jCount) / perGrid)));
+    let stride = Math.max(1, Math.ceil(Math.sqrt((iCount * jCount) / perGrid)));
+    if (opts?.strideFromBbox) {
+      // Also keep the lattice no denser than this grid's share of the FULL
+      // viewport area allows (in this grid's cell units), so the freed budget
+      // of a small-coverage grid goes to UTCEF and the cutoff below is not hit.
+      const lonSpan = bbox.east >= bbox.west ? bbox.east - bbox.west : bbox.east - bbox.west + 360;
+      const bboxCells = (lonSpan / Math.abs(grid.di)) * ((bbox.north - bbox.south) / Math.abs(grid.dj));
+      const strideArea = Math.max(1, Math.ceil(Math.sqrt(bboxCells / (GRID_GRIB_DENSITY_BOOST * maxPoints))));
+      stride = Math.max(stride, strideArea);
+    }
     // Snap the start to a multiple of stride so the chosen indices are the
     // same regardless of where iMin/jMin happen to fall for this viewport.
     const iStart = Math.ceil(iMin / stride) * stride;

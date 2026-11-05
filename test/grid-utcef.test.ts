@@ -398,3 +398,59 @@ test('/grid UTCEF-station GRIB-coverage memo stays correct within and across slo
   assert.equal(drawn(at(30)), true); // outside the GRIB range (+3 h slack)
   assert.equal(drawn(at(3)), false); // back inside
 });
+
+// ---- /grid budget: far-away UTCEF must not thin GRIB; area-bounded stride ----
+const bigGrib = () => createGribSource(gribDirOf({ 'big.grb2': [fld(2, 1, 52.9, 4.9, 0.02, 31), fld(3, 0, 52.9, 4.9, 0.02, 31)] }), 0);
+const nlBbox = '4.9,52.9,5.5,53.5';
+const gridCall = (utcefDir: string | null, preferGrib: boolean, bbox: string, maxPoints: number) =>
+  makeApi({ data: null, error: null, grib: bigGrib(), utcef: utcefDir ? createUtcefSource(utcefDir, 0) : null, preferGrib })(
+    '/grid', { bbox, time: gridTime, maxPoints: String(maxPoints) }).points as P[];
+
+test('/grid: a far-away UTCEF station does not reduce GRIB density', (t) => {
+  const far = writeUtcefDir({ 'f.utcef': [['FAR', 10, -60]] });
+  t.after(() => fs.rmSync(far, { recursive: true, force: true }));
+  const without = gridCall(null, true, nlBbox, 400);
+  const withFar = gridCall(far, true, nlBbox, 400);
+  console.log(`far-UTCEF test: without=${without.length} with=${withFar.length}`);
+  assert.ok(without.length > 121);
+  assert.equal(withFar.length, without.length);
+});
+
+test('/grid: grid covering a quarter of the bbox shares the budget with UTCEF', (t) => {
+  const st: Array<[string, number, number]> = [];
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) st.push([`Q${i}-${j}`, 52.9 + i * 0.12, 5.6 + j * 0.06]);
+  const dir = writeUtcefDir({ 'q.utcef': st });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const pts = gridCall(dir, true, '4.9,52.9,6.1,54.1', 400);
+  const grib = pts.filter((p) => p.source === 'grib').length;
+  const utcef = pts.filter((p) => p.source === 'utcef').length;
+  console.log(`quarter-grid test: grib=${grib} utcef=${utcef} total=${pts.length}`);
+  assert.ok(grib > 0 && utcef > 0);
+  assert.ok(grib <= 0.5 * 400 * 1.5, `grib ${grib} too dense`);
+  assert.ok(pts.length <= 400);
+});
+
+test('/grid: lattice is pan-stable with UTCEF loaded', (t) => {
+  const far = writeUtcefDir({ 'f.utcef': [['FAR', 10, -60]] });
+  t.after(() => fs.rmSync(far, { recursive: true, force: true }));
+  const key = (p: P) => `${p.latitude},${p.longitude}`;
+  const A = gridCall(far, true, '4.9,52.9,5.4,53.4', 100).filter((p) => p.source === 'grib');
+  const B = gridCall(far, true, '5.013,53.017,5.513,53.517', 100).filter((p) => p.source === 'grib');
+  const inOv = (p: P) => p.latitude > 53.03 && p.latitude < 53.39 && p.longitude > 5.03 && p.longitude < 5.39;
+  const a = A.filter(inOv).map(key).sort();
+  const b = B.filter(inOv).map(key).sort();
+  assert.ok(a.length > 0);
+  assert.deepEqual(a, b);
+});
+
+test('/grid: UTCEF ranked above GRIB still halves the lattice request', (t) => {
+  const st: Array<[string, number, number]> = [];
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) st.push([`R${i}-${j}`, 52.9 + i * 0.06, 4.9 + j * 0.06]);
+  const dir = writeUtcefDir({ 'r.utcef': st });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const pts = gridCall(dir, false, nlBbox, 400);
+  assert.ok(pts.length <= 400);
+  assert.ok(pts.some((p) => p.source === 'utcef' && p.stationId?.startsWith('R')));
+  const latticeOnly = gridCall(null, true, nlBbox, 200).length;
+  assert.ok(latticeOnly <= 200);
+});
