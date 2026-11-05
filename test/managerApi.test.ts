@@ -125,6 +125,19 @@ test('public read routes go on the `reads` router; mutations and admin-only read
   assert.deepEqual(admin.sort(), ['DELETE /datasets/:id', 'GET /cleanup-candidates', 'POST /catalog/refresh', 'POST /downloads', 'PUT /datasets/:id/auto-update', 'PUT /priority']);
 });
 
+test('GET /storage: non-admins share one cached scan; admins scan fresh and refresh it', async () => {
+  const { mgr, dataDir } = baseMgr();
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const anon = { skPrincipal: { permissions: 'readonly' } };
+  const before = ((await call('GET', '/storage', anon)).body as any).usedByPluginBytes;
+  fs.writeFileSync(path.join(dataDir, 'grown.bin'), Buffer.alloc(4096));
+  assert.equal(((await call('GET', '/storage', anon)).body as any).usedByPluginBytes, before, 'anon reuses the cached scan');
+  const admin = ((await call('GET', '/storage', { skPrincipal: { permissions: 'admin' } })).body as any).usedByPluginBytes;
+  assert.equal(admin, before + 4096, 'admin scans fresh');
+  assert.equal(((await call('GET', '/storage', anon)).body as any).usedByPluginBytes, admin, "admin's scan refreshes the shared copy");
+});
+
 test('GET /storage hides the absolute data directory from non-admins only', async () => {
   const { mgr } = baseMgr();
   const { router, call } = makeHarness();

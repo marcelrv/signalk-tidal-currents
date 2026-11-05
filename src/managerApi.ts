@@ -18,7 +18,7 @@ import { computeInstallStatus } from './datasetStatus.js';
 import { DownloadEngine, DownloadJob, FileSelector } from './downloads.js';
 import { readManifest, removeInstall, upsertInstall, writeManifestAtomic } from './manifest.js';
 import { DEFAULT_PRIORITY, SourceType, isValidDatasetStack, isValidPriorityOrder, resolveDatasetStack } from './priority.js';
-import { cleanupCandidates, statStorage } from './storage.js';
+import { StorageStats, cleanupCandidates, statStorage } from './storage.js';
 import { listDataFilesRecursive } from './utcef.js';
 
 /** Orphan-scan classification tag — same three labels the download engine's own subfolder convention uses, kept only for the `orphan:<tag>:<path>` id shape and the UI's type icon; not used to resolve a path (there's only one configured directory now). */
@@ -42,6 +42,9 @@ const isAdminRequest = (req: MReq) => !req.skPrincipal || req.skPrincipal.permis
 
 /** Concurrent SSE streams allowed for non-admin viewers (shared by both feeds) — beyond it they get a 503 and the webapp falls back to polling. */
 export const MAX_PUBLIC_SSE_CLIENTS = 32;
+
+/** How long non-admin /storage requests reuse one data-dir scan (the walk is synchronous — anonymous visitors must not be able to trigger it at will). */
+export const PUBLIC_STORAGE_TTL_MS = 30_000;
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 interface MRes {
@@ -346,14 +349,24 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     res.json({ ok: true, autoUpdate: body.enabled });
   });
 
+  // Non-admins share one scan per PUBLIC_STORAGE_TTL_MS (overlapping
+  // requests await the same promise); admins always scan fresh, and their
+  // result refreshes the shared copy (e.g. right after a download/delete).
+  let publicStorage: { at: number; stats: Promise<Omit<StorageStats, 'path'>> } | null = null;
+  const publicView = ({ path: _dataDir, ...rest }: StorageStats) => rest;
   reads.get('/storage', async (req, res) => {
-    const stats = await statStorage(mgr.dataDir);
     if (isAdminRequest(req)) {
+      const stats = await statStorage(mgr.dataDir);
+      publicStorage = { at: Date.now(), stats: Promise.resolve(publicView(stats)) };
       res.json(stats);
       return;
     }
-    const { path: _dataDir, ...rest } = stats;
-    res.json(rest);
+    if (!publicStorage || Date.now() - publicStorage.at > PUBLIC_STORAGE_TTL_MS) {
+      const stats = statStorage(mgr.dataDir).then(publicView);
+      publicStorage = { at: Date.now(), stats };
+      stats.catch(() => { if (publicStorage?.stats === stats) publicStorage = null; }); // don't cache a failure
+    }
+    res.json(await publicStorage.stats);
   });
 
   router.get('/cleanup-candidates', (req, res) => {

@@ -1,6 +1,6 @@
 import { Dispatch, SetStateAction, useEffect, useMemo, useState, useRef } from 'react';
 
-import { useAppStore, useReadOnly } from '../../store/useAppStore';
+import { READ_ONLY_HINT, useAppStore, useReadOnly } from '../../store/useAppStore';
 import { coveringRows, groupByTier } from '../../lib/wizard';
 import { datasetForRow, isRowInstalled, rowsForSources, SourceRow } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
@@ -192,7 +192,10 @@ export function FirstRunWizard() {
           />
           <button
             type="button"
-            disabled={installing}
+            // Read-only (a refused install keeps the wizard open to show why):
+            // Install would just repeat the refused request; Close stays usable.
+            disabled={installing || (readOnly && hasNewDownloads)}
+            title={readOnly && hasNewDownloads ? READ_ONLY_HINT : undefined}
             onClick={hasNewDownloads ? install : dismissWizard}
             className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
           >
