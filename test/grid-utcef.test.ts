@@ -548,3 +548,56 @@ test('legacyCoverageIndexFor.stationAt matches stationVectorAt\'s selection (top
   }
   assert.ok(found > 100);
 });
+
+// ---- /grid stations=1 review follow-ups ----
+test('/grid stations=1: legacy station without a sample at `time` falls through like /vector', (t) => {
+  const far = farUtcef();
+  t.after(() => fs.rmSync(far, { recursive: true, force: true }));
+  const { firstYear, numYears } = legacyData.constituents;
+  const tOut = Date.UTC(firstYear + numYears + 2, 5, 1);
+  const grib = createGribSource(gribDirOf({
+    'late.grb2': [2, 3].map((param) => ({ ...fld(param, param === 2 ? 1 : 0, 52.9, 4.9, 0.02, 31), refTime: tOut })),
+  }), 0);
+  const state = { data: legacyData, error: null, grib, utcef: createUtcefSource(far, 0), preferGrib: false } as unknown as ApiState;
+  const iso = new Date(tOut).toISOString();
+  const call = (stations: string) => makeApi(state)('/grid', { bbox: nlBbox, time: iso, maxPoints: '400', stations }).points as P[];
+  const on = call('1');
+  const off = call('0');
+  assert.ok(off.length > 10);
+  assert.ok(on.length >= off.length, `${on.length} < ${off.length}`);
+  for (const p of on) {
+    const rv = resolveVector(state, p.latitude, p.longitude, tOut);
+    assert.equal(p.source, rv ? (rv.source === 'station' ? 'station' : rv.source) : 'none', `${p.latitude},${p.longitude}`);
+  }
+  const own = on.find((p) => p.latitude === 53.2 && p.longitude === 5.2);
+  assert.equal(own?.source, resolveVector(state, 53.2, 5.2, tOut)?.source);
+});
+
+test('/grid stations=1 without UTCEF: harmonic above GRIB leaves room for in-view station', (t) => {
+  void t;
+  const grib = createGribSource(gribDirOf({ 'big.grb2': [fld(2, 1, 52.9, 4.9, 0.02, 31), fld(3, 0, 52.9, 4.9, 0.02, 31)] }), 0);
+  const state = { data: legacyData, error: null, grib, utcef: createUtcefSource(writeUtcefDir({}), 0), preferGrib: false } as unknown as ApiState;
+  const sub = legacyData.stations.find((s) => s.latitude === 53.2 && s.longitude === 5.2)!;
+  for (const mp of [10, 40]) {
+    const pts: P[] = makeApi(state)('/grid', { bbox: nlBbox, time: gridTime, maxPoints: String(mp), stations: '1' }).points;
+    assert.ok(pts.length <= mp, `${pts.length} > ${mp}`);
+    assert.ok(pts.some((p) => p.stationId === sub.id && p.latitude === 53.2 && p.longitude === 5.2), `no station @${mp}`);
+  }
+});
+
+test('coverage index matches the linear scan close to the pole', () => {
+  const rand = rng(7);
+  const list: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  for (let k = 0; k < 60; k++) list.push(polarStation('P' + k, 88.5 + rand() * 1.49, -180 + rand() * 360));
+  const idx = utcefCoverageIndex(list);
+  const data = { currentStations: list } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  for (let n = 0; n < 40; n++) {
+    const lat = 89.5 + rand() * 0.45;
+    const lon = -180 + rand() * 360;
+    for (const maxKm of [1, 5, 10, 20]) {
+      const lin = utcefVectorAt(data, lat, lon, T0, Infinity);
+      const want = lin && lin.distanceKm <= maxKm ? lin.station.id : null;
+      assert.equal(idx.stationAt(lat, lon, maxKm)?.id ?? null, want, `${lat},${lon} @${maxKm}`);
+    }
+  }
+});

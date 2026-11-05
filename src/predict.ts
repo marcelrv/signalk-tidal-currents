@@ -259,6 +259,18 @@ export function stationsInBbox(
  * sort by (distance, array order — the stable-sort tie-break), keep 10, then
  * take the first vector-capable one.
  */
+/**
+ * Exact angular longitude half-width (degrees, slightly padded) of a circle of
+ * angular radius `dLatDeg` centred at `lat`: asin(sin d / cos(|lat|+d)).
+ * Returns 360 when the circle reaches a pole (all longitudes).
+ */
+export function lonHalfWidthDeg(lat: number, dLatDeg: number): number {
+  const cosP = Math.cos((Math.abs(lat) + dLatDeg) * DEG2RAD);
+  const ratio = cosP > 0 ? Math.sin(dLatDeg * DEG2RAD) / cosP : 2;
+  if (Math.abs(lat) + dLatDeg >= 90 || ratio >= 1) return 360;
+  return (Math.asin(ratio) / DEG2RAD) * 1.01 + 1e-6;
+}
+
 export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
   const stations = data.stations.filter((s) => s.isCurrent && isStationResolvable(data, s));
   const capable = (s: IdxStation) => !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null);
@@ -285,10 +297,8 @@ export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
         const dLat = maxKm / 110;
         // Exact angular half-width of a radius-d circle: asin(sin d / cos(lat))
         // (the small-angle d/cos(lat) under-covers close to a pole).
-        const cosP = Math.cos((Math.abs(lat) + dLat) * DEG2RAD);
-        const ratio = cosP > 0 ? Math.sin(dLat * DEG2RAD) / cosP : 2;
-        const polar = Math.abs(lat) + dLat >= 90 || ratio >= 1;
-        const dLon = polar ? 360 : (Math.asin(ratio) / DEG2RAD) * 1.01 + 1e-6;
+        const dLon = lonHalfWidthDeg(lat, dLat);
+        const polar = dLon >= 360;
         const j0 = Math.floor((lat - dLat) / cellDeg);
         const j1 = Math.floor((lat + dLat) / cellDeg);
         const i0 = Math.floor((lon - dLon) / cellDeg);

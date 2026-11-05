@@ -29,7 +29,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 
 import { astronomicalArgs, equilibriumArg, isKnownConstituent, nodeFactors } from './astro.js';
-import { CurrentSample, distanceKm, KNOTS_TO_MS, lonInSpan } from './predict.js';
+import { CurrentSample, distanceKm, KNOTS_TO_MS, lonHalfWidthDeg, lonInSpan } from './predict.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -684,8 +684,8 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
       // Padded (110 km/deg < the true ~111.19) and the longitude span taken at
       // the poleward edge, so the box never under-covers; consider() is exact.
       const dLat = maxKm / 110;
-      const polar = Math.abs(lat) + dLat >= 90;
-      const dLon = polar ? 360 : dLat / Math.max(Math.cos((Math.abs(lat) + dLat) * DEG2RAD), 0.01);
+      const dLon = lonHalfWidthDeg(lat, dLat);
+      const polar = dLon >= 360;
       const j0 = Math.floor((lat - dLat) / cellDeg);
       const j1 = Math.floor((lat + dLat) / cellDeg);
       const i0 = Math.floor((lon - dLon) / cellDeg);

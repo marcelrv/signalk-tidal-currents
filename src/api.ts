@@ -824,11 +824,27 @@ function gridPoints(
   // Lattice sample: the sample itself proves GRIB coverage for its own grid's
   // files, so a layer over those files (or an unrestricted one) needs no
   // second interpolation; only layers over OTHER files are probed.
+  const legacySamples = new Map<IdxStation, ReturnType<typeof currentSampleAt>>();
+  const legacySampleOf = (s: IdxStation) => {
+    let sample = legacySamples.get(s);
+    if (sample === undefined) legacySamples.set(s, (sample = currentSampleAt(legacyData!, s, time)));
+    return sample;
+  };
+  // Mirrors stationVectorAt: a station without a usable sample at `time`
+  // does not claim the position (resolveVector falls through to the next layer).
+  const legacyUsable = (s: IdxStation): boolean => {
+    const sm = legacySampleOf(s);
+    return !!sm && sm.u !== null && sm.v !== null && sm.direction !== null;
+  };
+  const legacyProbeAt = (lat: number, lon: number): IdxStation | null => {
+    const st = legacy!.stationAt(lat, lon, REST_FALLBACK_MAX_KM);
+    return st && legacyUsable(st) ? st : null;
+  };
   const winnerAtSample = (lat: number, lon: number, sampleFiles: ReadonlySet<string>): Win =>
     arbitrateLayers(
       (l) => index!.stationAt(lat, lon, l.utcefMaxKm, l.files),
       (l) => !l.files || intersects(l.files, sampleFiles) || gribVectorAt(g!, lat, lon, time, l.files) !== null,
-      () => legacy!.stationAt(lat, lon, REST_FALLBACK_MAX_KM),
+      () => legacyProbeAt(lat, lon),
     );
   // Station position: GRIB coverage memoised per (station, layer files) on the
   // bracketing slot pairs, so frames within the same pair skip the sampling.
@@ -856,7 +872,7 @@ function gridPoints(
     arbitrateLayers(
       (l) => index!.stationAtStation(s, l.utcefMaxKm, l.files, l.filesKey),
       (l) => gribCoversStation(s, l),
-      () => legacy!.stationAt(s.latitude, s.longitude, REST_FALLBACK_MAX_KM),
+      () => legacyProbeAt(s.latitude, s.longitude),
     );
   // Legacy station position: GRIB coverage via the same memoised path is
   // keyed by UtcefCurrentStation, so probe pairs directly here.
@@ -864,12 +880,10 @@ function gridPoints(
     arbitrateLayers(
       (l) => index!.stationAt(s.latitude, s.longitude, l.utcefMaxKm, l.files),
       (l) => gribPairsCover(pairsFor(l), s.latitude, s.longitude),
-      () => legacy!.stationAt(s.latitude, s.longitude, REST_FALLBACK_MAX_KM),
+      () => legacyProbeAt(s.latitude, s.longitude),
     );
-  const legacySamples = new Map<IdxStation, ReturnType<typeof currentSampleAt>>();
   const legacyPoint = (s: IdxStation, lat: number, lon: number): GridPoint | null => {
-    let sample = legacySamples.get(s);
-    if (sample === undefined) legacySamples.set(s, (sample = currentSampleAt(legacyData!, s, time)));
+    const sample = legacySampleOf(s);
     if (!sample || sample.u === null || sample.v === null || sample.direction === null) return null;
     return { latitude: lat, longitude: lon, speedKn: Math.abs(sample.speedKn), direction: sample.direction, u: sample.u, v: sample.v, source: 'station', stationId: s.id };
   };
@@ -885,12 +899,13 @@ function gridPoints(
   // data is loaded at all), single pass.
   // GRIB keeps the full budget unless UTCEF data is loaded AND ranks above it
   // (then in-view stations need room). Rank only, never the view.
-  const firstNonHarmonic = layers.find((l) => l.type !== 'harmonic');
-  const gribRanksAboveUtcef = firstNonHarmonic?.type === 'grib2';
-  const gribRequest = !u ? maxPoints : gribRanksAboveUtcef ? maxPoints : Math.max(1, Math.ceil(maxPoints / 2));
+  const legacyActive = !!legacy && hasLegacyVectors;
+  const overlayStations = !!u || legacyActive;
+  const firstDrawable = layers.find((l) => l.type === 'grib2' || (l.type === 'utcef' && !!u) || (l.type === 'harmonic' && legacyActive));
+  const gribRequest = !overlayStations ? maxPoints : firstDrawable?.type === 'grib2' ? maxPoints : Math.max(1, Math.ceil(maxPoints / 2));
   const lattice: GridPoint[] = [];
   if (g) {
-    for (const { sample: p, files } of gribGridSamplesWithFiles(g, bbox, time, gribRequest, { strideFromBbox: !!u })) {
+    for (const { sample: p, files } of gribGridSamplesWithFiles(g, bbox, time, gribRequest, { strideFromBbox: overlayStations })) {
       const w = arbitrate ? winnerAtSample(p.latitude, p.longitude, files) : null;
       if (w === null) lattice.push({ ...p, source: 'grib' });
       else if ('grib' in w) {
