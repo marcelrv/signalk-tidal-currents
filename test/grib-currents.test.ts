@@ -440,7 +440,7 @@ test('representative_area written past 180 matches in /vector and /grid', (t) =>
   const call = makeApi({ data: null, error: null, grib: createGribSource(uvDir, 0), utcef, preferGrib: false });
   assert.equal(call('/vector', { latitude: '-15', longitude: '-175', time: gridTime }).body.station.id, 'A');
   // /grid's coverage index uses the same containment test (no GRIB lattice exists out here to show it).
-  assert.equal(utcefCoverageIndex(utcef.get()!.currentStations).covers(-15, -175, 10), true);
+  assert.notEqual(utcefCoverageIndex(utcef.get()!.currentStations).stationAt(-15, -175, 10), null);
 });
 
 test('GET /grid keeps only the higher-ranked dataset when UTCEF files overlap', (t) => {
@@ -506,8 +506,8 @@ test('lonInSpan / utcefCoverageIndex wrap across the antimeridian', () => {
   assert.ok(lonInSpan(10, -1000, 1000)); // wider than the globe
   const station = { id: 'A', name: 'A', latitude: -17, longitude: 179.95, meanU: 0, meanV: 0, constituents: [] };
   const index = utcefCoverageIndex([station]);
-  assert.ok(index.covers(-17, -179.95, 50)); // ~11 km away, across ±180
-  assert.ok(!index.covers(-17, -175, 50));
+  assert.notEqual(index.stationAt(-17, -179.95, 50), null); // ~11 km away, across ±180
+  assert.equal(index.stationAt(-17, -175, 50), null);
 });
 
 test('GET /grid thins UTCEF points to maxPoints', (t) => {

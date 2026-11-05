@@ -38,10 +38,7 @@ import {
   UtcefData,
   UtcefSource,
   nearestUtcefStations,
-  lonInSpan,
-  lonSpansOverlap,
-  utcefAreaBounds,
-  utcefCoverageIndex,
+  utcefCoverageIndexFor,
   utcefSampleAt,
   utcefStationsInBbox,
   utcefSummary,
@@ -694,55 +691,56 @@ function gridPoints(
   time: number,
   maxPoints: number,
 ): GridPoint[] {
-  // One pass over the UTCEF stations: those near the viewport (padded by the
-  // nearest-station radius) plus those whose representative_area reaches into
-  // it at any range — together, every station that can claim a point here.
-  const nearby: UtcefCurrentStation[] = [];
-  if (u) {
-    const padLat = REST_FALLBACK_MAX_KM / 111.32;
-    const maxAbsLat = Math.min(89, Math.max(Math.abs(bbox.south), Math.abs(bbox.north)) + padLat);
-    const padLon = padLat / Math.cos((maxAbsLat * Math.PI) / 180);
-    for (const s of u.currentStations) {
-      const inPad =
-        s.latitude >= bbox.south - padLat &&
-        s.latitude <= bbox.north + padLat &&
-        lonInSpan(s.longitude, bbox.west - padLon, bbox.east + padLon);
-      const a = inPad ? null : utcefAreaBounds(s);
-      if (inPad || (a && a.south <= bbox.north && a.north >= bbox.south && lonSpansOverlap(a.west, a.east, bbox.west, bbox.east))) {
-        nearby.push(s);
-      }
-    }
-  }
-  const inView = nearby.filter(
-    (s) => s.latitude >= bbox.south && s.latitude <= bbox.north && lonInSpan(s.longitude, bbox.west, bbox.east),
-  );
+  // Every station that can claim a point here is in the cached all-stations
+  // coverage index (built once per loaded dataset, not per request), so only
+  // the in-view stations need gathering.
+  const inView = u ? utcefStationsInBbox(u, bbox) : [];
 
-  // Priority arbitration; null = nothing to arbitrate (only one source
-  // present). winner() mirrors resolveVector: the first layer that claims a
-  // position wins, and a UTCEF layer names the station it would return.
+  // Priority arbitration (null = no UTCEF, nothing to arbitrate). Runs even
+  // without GRIB: overlapping UTCEF datasets must still resolve to the
+  // station /vector would return. winner() mirrors resolveVector: the first
+  // layer that claims a position wins, and a UTCEF layer names its station.
   let winner: ((lat: number, lon: number) => { type: GridPoint['source']; station?: UtcefCurrentStation } | undefined) | null = null;
-  if (g && nearby.length > 0) {
-    const index = utcefCoverageIndex(nearby);
+  let winnerAtStation: ((s: UtcefCurrentStation) => { type: GridPoint['source']; station?: UtcefCurrentStation } | undefined) | null = null;
+  if (u) {
+    const index = utcefCoverageIndexFor(u);
     type Win = { type: GridPoint['source']; station?: UtcefCurrentStation };
-    const layers: Array<(lat: number, lon: number) => Win | undefined> = [];
-    const gribLayer = (files?: ReadonlySet<string>) => (la: number, lo: number): Win | undefined =>
-      gribVectorAt(g, la, lo, time, files) !== null ? { type: 'grib' } : undefined;
-    const utcefLayer = (maxKm: number, files?: ReadonlySet<string>) => (la: number, lo: number): Win | undefined => {
-      const station = index.stationAt(la, lo, maxKm, files);
-      return station ? { type: 'utcef', station } : undefined;
+    // Each layer answers at an arbitrary point (GRIB lattice samples) and at a
+    // station's own position (in-view stations — memoised for UTCEF layers).
+    type Layer = { at(lat: number, lon: number): Win | undefined; atStation(s: UtcefCurrentStation): Win | undefined };
+    const layers: Layer[] = [];
+    const gribLayer = (grib: GribCurrentsData, files?: ReadonlySet<string>): Layer => {
+      const at = (la: number, lo: number): Win | undefined =>
+        gribVectorAt(grib, la, lo, time, files) !== null ? { type: 'grib' } : undefined;
+      return { at, atStation: (s) => at(s.latitude, s.longitude) };
+    };
+    const utcefLayer = (maxKm: number, files?: ReadonlySet<string>): Layer => {
+      const filesKey = files ? [...files].sort().join('\n') : '';
+      const win = (station: UtcefCurrentStation | null): Win | undefined => (station ? { type: 'utcef', station } : undefined);
+      return {
+        at: (la, lo) => win(index.stationAt(la, lo, maxKm, files)),
+        atStation: (s) => win(index.stationAtStation(s, maxKm, files, filesKey)),
+      };
     };
     for (const entry of state.datasetRank?.() ?? []) {
       const files = new Set(entry.files);
-      if (entry.type === 'grib2') layers.push(gribLayer(files));
+      if (entry.type === 'grib2' && g) layers.push(gribLayer(g, files));
       else if (entry.type === 'utcef') layers.push(utcefLayer(UTCEF_DATASET_FALLBACK_MAX_KM, files));
     }
     for (const key of sourceRank(state)) {
-      if (key === 'grib2') layers.push(gribLayer());
+      if (key === 'grib2' && g) layers.push(gribLayer(g));
       else if (key === 'utcef') layers.push(utcefLayer(REST_FALLBACK_MAX_KM));
     }
     winner = (lat, lon) => {
       for (const l of layers) {
-        const w = l(lat, lon);
+        const w = l.at(lat, lon);
+        if (w) return w;
+      }
+      return undefined;
+    };
+    winnerAtStation = (st) => {
+      for (const l of layers) {
+        const w = l.atStation(st);
         if (w) return w;
       }
       return undefined;
@@ -752,15 +750,14 @@ function gridPoints(
   // A UTCEF station is kept only if it is the very station the winning layer
   // returns at its position (not merely "some UTCEF wins here"), so
   // overlapping datasets agree with /vector on which file's station shows.
-  const utcefWinners = (winner ? inView.filter((s) => winner!(s.latitude, s.longitude)?.station === s) : inView).map((s) => ({
+  // Filtering happens BEFORE thinning, so the budget goes to stations that
+  // actually win their position. (Pre-thinning first would let a cell's
+  // representative be a station GRIB outranks, hiding the eligible ones.)
+  const utcefWinners = (winnerAtStation ? inView.filter((s) => winnerAtStation!(s)?.station === s) : inView).map((s) => ({
     lat: s.latitude,
     lon: s.longitude,
     s,
   }));
-  // Filtering happens BEFORE thinning, so the budget goes to stations that
-  // actually win their position. (Pre-thinning first would let a cell's
-  // representative be a station GRIB outranks, hiding the eligible ones.)
-  const winnerSet = new Set(utcefWinners.map((w) => w.s));
 
   const utcefPoint = (s: UtcefCurrentStation, lat: number, lon: number): GridPoint => {
     const sample = utcefSampleAt(s, time);
@@ -768,33 +765,31 @@ function gridPoints(
   };
 
   // GRIB lattice samples where GRIB wins stay GRIB. Where a UTCEF station
-  // outside the shown set wins (e.g. its representative_area reaches into the
-  // viewport from afar), the sample position gets that station's vector, as
+  // that is NOT drawn wins (its representative_area reaches in from afar, or
+  // thinning dropped it), the sample position gets that station's vector, as
   // /vector would return there — else the area would be blank.
-  const gribPoints = (samples: GridSample[]): GridPoint[] => {
+  const gribPoints = (samples: GridSample[], shown: ReadonlySet<UtcefCurrentStation>): GridPoint[] => {
     const out: GridPoint[] = [];
     for (const p of samples) {
       const w = winner?.(p.latitude, p.longitude);
       if (!w || w.type === 'grib') out.push({ ...p, source: 'grib' });
-      else if (w.station && !winnerSet.has(w.station)) out.push(utcefPoint(w.station, p.latitude, p.longitude));
+      else if (w.station && !shown.has(w.station)) out.push(utcefPoint(w.station, p.latitude, p.longitude));
     }
     return out;
   };
 
   // Split the budget: each source thinned on its own (GRIB by its lattice
-  // stride, UTCEF by the cell ladder) instead of re-thinning the union, which
-  // would jump a whole ladder level when slightly over budget.
-  const rawGrib = g ? gribGridSamples(g, bbox, time, maxPoints) : [];
-  let grib = gribPoints(rawGrib);
-  let utcefThin = thinByCellLadder(utcefWinners, maxPoints);
-  if (grib.length + utcefThin.length > maxPoints) {
-    const gribBudget = Math.floor((maxPoints * grib.length) / (grib.length + utcefThin.length));
-    // gribGridSamples counts lattice points before the priority filter;
-    // scale the request by the survival rate so ~gribBudget remain after it.
-    const want = Math.max(1, Math.round((gribBudget * rawGrib.length) / Math.max(1, grib.length)));
-    grib = g && gribBudget > 0 ? gribPoints(gribGridSamples(g, bbox, time, want)) : [];
-    utcefThin = thinByCellLadder(utcefWinners, Math.max(0, maxPoints - grib.length));
-  }
+  // stride, UTCEF by the cell ladder). The GRIB request depends only on
+  // maxPoints and whether any UTCEF station is in play — never on how many —
+  // so the lattice stride (and every GRIB arrow's position) stays put while
+  // panning at a fixed zoom.
+  const gribRequest = utcefWinners.length > 0 ? Math.max(1, Math.ceil(maxPoints / 2)) : maxPoints;
+  const rawGrib = g ? gribGridSamples(g, bbox, time, gribRequest) : [];
+  const gribEstimate = gribPoints(rawGrib, new Set(utcefWinners.map((w) => w.s))).length;
+  const utcefThin = thinByCellLadder(utcefWinners, Math.max(0, maxPoints - gribEstimate));
+  // Re-resolve against the stations actually drawn: lattice points whose
+  // winner was thinned away get that station's vector instead of vanishing.
+  const grib = gribPoints(rawGrib, new Set(utcefThin.map((w) => w.s))).slice(0, Math.max(0, maxPoints - utcefThin.length));
 
   const utcef: GridPoint[] = utcefThin.map(({ s }) => utcefPoint(s, s.latitude, s.longitude));
   return [...grib, ...utcef];

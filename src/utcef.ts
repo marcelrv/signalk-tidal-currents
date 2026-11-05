@@ -209,6 +209,21 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
         ring.every((p: unknown) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
       ) {
         area = props.representative_area.coordinates as number[][][];
+        // Unwrap the outer ring's longitudes so it is continuous: a ring
+        // crossing the antimeridian written in −180…180 form (179.8 → −179.8)
+        // would otherwise get near-global bounds (utcefAreaBounds) and a
+        // wrong point-in-polygon test. pointInArea probes ±360, so a ring
+        // running past ±180 is handled.
+        const outer = area[0];
+        const unwrapped: number[][] = [[outer[0][0], outer[0][1]]];
+        for (let k = 1; k < outer.length; k++) {
+          let x = outer[k][0];
+          const prev = unwrapped[k - 1][0];
+          while (x - prev > 180) x -= 360;
+          while (prev - x > 180) x += 360;
+          unwrapped.push([x, outer[k][1]]);
+        }
+        area = [unwrapped, ...area.slice(1)];
       } else {
         warnings.push(`${sourceLabel}: station "${id}" has a malformed representative_area — ignored`);
       }
@@ -573,40 +588,95 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
       }
     }
   }
+  const rank = new Map<UtcefCurrentStation, number>();
+  stations.forEach((s, i) => rank.set(s, i));
+  // stationAt() probed AT a station's own position is time- and
+  // viewport-independent, so it is memoised per (station, maxKm, files) —
+  // /grid re-asks it for every in-view station on every animation frame.
+  const ownMemo = new WeakMap<UtcefCurrentStation, Map<string, UtcefCurrentStation | null>>();
   const inFiles = (s: UtcefCurrentStation, files?: ReadonlySet<string>) =>
     !files || (s.file !== undefined && files.has(s.file));
-  return {
+  const index = {
+    /** stationAt(s.latitude, s.longitude, …), memoised; `filesKey` must identify `files` (e.g. its sorted names). */
+    stationAtStation(s: UtcefCurrentStation, maxKm: number, files?: ReadonlySet<string>, filesKey = ''): UtcefCurrentStation | null {
+      let m = ownMemo.get(s);
+      if (!m) ownMemo.set(s, (m = new Map()));
+      const k = `${maxKm}|${filesKey}`;
+      let r = m.get(k);
+      if (r === undefined) {
+        r = index.stationAt(s.latitude, s.longitude, maxKm, files);
+        m.set(k, r);
+      }
+      return r;
+    },
     /** The station utcefVectorAt would pick (containing area first, else nearest within maxKm). */
     stationAt(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): UtcefCurrentStation | null {
       for (const s of areaCells.get(key(Math.floor(lat / cellDeg), Math.floor(lon / cellDeg))) ?? []) {
         if (inFiles(s, files) && pointInArea(s.representativeArea!, lat, lon)) return s;
       }
+      let best: UtcefCurrentStation | null = null;
+      let bestD = Infinity;
+      // Same tie-break as utcefVectorAt: among equal (rounded) distances the
+      // station earliest in the input array wins.
+      const consider = (s: UtcefCurrentStation) => {
+        if (!inFiles(s, files)) return;
+        const d = Math.round(distanceKm(lat, lon, s.latitude, s.longitude) * 100) / 100;
+        if (d <= maxKm && (d < bestD || (d === bestD && rank.get(s)! < rank.get(best!)!))) {
+          best = s;
+          bestD = d;
+        }
+      };
+      // Fast path: probing at (or within metres of) a station — the common
+      // case when /grid arbitrates its own in-view stations. A d = 0 hit in
+      // the probe's own cell cannot be beaten, so the neighbourhood scan is
+      // skipped. A rounded d = 0 means < 5 m, so besides the probe's own cell
+      // only a neighbour whose edge is within that margin can hold one
+      // (stations on regular grids often sit exactly on cell edges).
+      const cj = Math.floor(lat / cellDeg);
+      const ci = Math.floor(lon / cellDeg);
+      const mLat = 1e-4;
+      const mLon = mLat / Math.max(Math.cos(lat * DEG2RAD), 0.01);
+      const js = [cj];
+      if (lat - cj * cellDeg < mLat) js.push(cj - 1);
+      if ((cj + 1) * cellDeg - lat < mLat) js.push(cj + 1);
+      const is = [ci];
+      if (lon - ci * cellDeg < mLon) is.push(ci - 1);
+      if ((ci + 1) * cellDeg - lon < mLon) is.push(ci + 1);
+      for (const j of js) {
+        for (const i of is) {
+          for (const s of cells.get(key(j, i)) ?? []) {
+            if (Math.abs(s.latitude - lat) < 1e-3 && Math.abs(s.longitude - lon) < 1e-2) consider(s);
+          }
+        }
+      }
+      if (bestD === 0) return best;
+
       const dLat = maxKm / 111.32;
       const dLon = dLat / Math.max(Math.cos(lat * DEG2RAD), 0.01);
       const j0 = Math.floor((lat - dLat) / cellDeg);
       const j1 = Math.floor((lat + dLat) / cellDeg);
       const i0 = Math.floor((lon - dLon) / cellDeg);
       const i1 = Math.min(Math.floor((lon + dLon) / cellDeg), i0 + nLon - 1);
-      let best: UtcefCurrentStation | null = null;
-      let bestD = Infinity;
       for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) {
-          for (const s of cells.get(key(j, i)) ?? []) {
-            if (!inFiles(s, files)) continue;
-            const d = Math.round(distanceKm(lat, lon, s.latitude, s.longitude) * 100) / 100;
-            if (d <= maxKm && d < bestD) {
-              best = s;
-              bestD = d;
-            }
-          }
+          for (const s of cells.get(key(j, i)) ?? []) consider(s);
         }
       }
       return best;
     },
-    covers(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): boolean {
-      return this.stationAt(lat, lon, maxKm, files) !== null;
-    },
   };
+  return index;
+}
+
+/** utcefCoverageIndex over ALL of a dataset's stations, built once per loaded UtcefData (a reload yields a new object). */
+const coverageIndexCache = new WeakMap<UtcefData, ReturnType<typeof utcefCoverageIndex>>();
+export function utcefCoverageIndexFor(data: UtcefData): ReturnType<typeof utcefCoverageIndex> {
+  let index = coverageIndexCache.get(data);
+  if (!index) {
+    index = utcefCoverageIndex(data.currentStations);
+    coverageIndexCache.set(data, index);
+  }
+  return index;
 }
 
 /**
