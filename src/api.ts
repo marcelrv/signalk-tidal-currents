@@ -738,11 +738,15 @@ function gridPoints(
   const gribPoints = (samples: GridSample[]): GridPoint[] =>
     samples.filter((p) => !keep || keep(p.latitude, p.longitude, 'grib')).map((p) => ({ ...p, source: 'grib' as const }));
 
-  // Filter UTCEF stations BEFORE thinning so the budget goes to stations that
-  // actually win their position. Pre-thinned to a generous multiple of the
-  // budget first so a zoomed-out viewport doesn't probe every station.
-  const pre = thinByCellLadder(inView.map((s) => ({ lat: s.latitude, lon: s.longitude, s })), maxPoints * 8);
-  const utcefWinners = keep ? pre.filter((it) => keep!(it.lat, it.lon, 'utcef')) : pre;
+  // Filter ALL in-view UTCEF stations BEFORE thinning, so the budget goes to
+  // stations that actually win their position. (Pre-thinning first would let
+  // a cell's representative be a station GRIB outranks, hiding the eligible
+  // ones beside it — e.g. a narrow uncovered strip when zoomed out.)
+  const utcefWinners = (keep ? inView.filter((s) => keep!(s.latitude, s.longitude, 'utcef')) : inView).map((s) => ({
+    lat: s.latitude,
+    lon: s.longitude,
+    s,
+  }));
 
   // Split the budget: each source thinned on its own (GRIB by its lattice
   // stride, UTCEF by the cell ladder) instead of re-thinning the union, which
