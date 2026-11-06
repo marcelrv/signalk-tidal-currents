@@ -236,8 +236,6 @@ class SnapshotCache {
   layerExtents = new Map<Layer, Extent>();
   /** Legacy: the extent of the vector-capable stations at this snapshot's radius. */
   legacyExtent: Extent | null = null;
-  /** Station-winner arrays, LRU (see ownWinFor). */
-  ownWin = new Map<string, Uint8Array>();
 }
 const snapshotCaches = new WeakMap<object, WeakMap<readonly Layer[], SnapshotCache>>();
 function cacheFor(data: object, snapshot: readonly Layer[]): SnapshotCache {
@@ -542,7 +540,7 @@ export const OWN_LOSES = 0;
 export const OWN_WINS = 1;
 export const OWN_TIME_DEPENDENT = 2;
 
-/** Max `ownWin` arrays kept per (data, snapshot): a handful of forecast-horizon states, least recently used out first. */
+/** Max `ownWin` arrays kept per (snapshot, GRIB, UTCEF, harmonics): a handful of forecast-horizon states, least recently used out first. */
 export const OWN_WIN_CACHE_CAP = 4;
 
 /**
@@ -564,6 +562,29 @@ function rangeKey(ctx: ResolveCtx, timeMs: number): string {
   return n > 0 ? key + bits.toString(16) + n : key;
 }
 
+/** Stand-in key for a source that is not loaded (WeakMap keys must be objects). */
+const NO_DATA = {};
+type OwnWinCache = Map<string, Uint8Array>;
+/**
+ * Station-winner LRU per (snapshot, GRIB, UTCEF, harmonics): the claim loop
+ * reads all three sources, so replacing ANY of them must miss. Chained
+ * WeakMaps free the entry when the snapshot or any data object goes away.
+ */
+const ownWinCaches = new WeakMap<readonly Layer[], WeakMap<object, WeakMap<object, WeakMap<object, OwnWinCache>>>>();
+function ownWinCacheFor(ctx: ResolveCtx, create: true): OwnWinCache;
+function ownWinCacheFor(ctx: ResolveCtx, create: false): OwnWinCache | undefined;
+function ownWinCacheFor(ctx: ResolveCtx, create: boolean): OwnWinCache | undefined {
+  const step = <K extends object, V>(m: WeakMap<K, V>, k: K, make: () => V): V | undefined => {
+    let v = m.get(k);
+    if (!v && create) m.set(k, (v = make()));
+    return v;
+  };
+  const bySnap = step(ownWinCaches, ctx.snapshot, () => new WeakMap());
+  const byGrib = bySnap && step(bySnap, ctx.grib ?? NO_DATA, () => new WeakMap());
+  const byUtcef = byGrib && step(byGrib, ctx.utcef ?? NO_DATA, () => new WeakMap());
+  return byUtcef && step(byUtcef, ctx.harmonics ?? NO_DATA, () => new Map());
+}
+
 /**
  * For every station of one source (UTCEF: `data.currentStations`, legacy: the
  * legacy index's station list; indexed by array position) whether it wins its
@@ -579,17 +600,16 @@ function rangeKey(ctx: ResolveCtx, timeMs: number): string {
  * and a /grid request only re-decides the flagged stations.
  *
  * Memory: one byte per station per kept key (a Uint8Array, not a per-station
- * memo map), at most OWN_WIN_CACHE_CAP keys per (data, snapshot), least recently
- * used first out; freed with the data object or the layer snapshot.
+ * memo map), at most OWN_WIN_CACHE_CAP keys per (snapshot, GRIB, UTCEF,
+ * harmonics), least recently used first out; freed with any of those objects.
  */
 export function ownWinFor(ctx: ResolveCtx, kind: 'utcef' | 'station', timeMs: number): Uint8Array {
-  const data = kind === 'utcef' ? ctx.utcef! : ctx.harmonics!;
-  const cache = cacheFor(data, ctx.snapshot);
+  const cache = ownWinCacheFor(ctx, true)!;
   const key = `${kind}|${ctx.legacy ? 1 : 0}|${ctx.maxStationKm}|${rangeKey(ctx, timeMs)}`;
-  const hit = cache.ownWin.get(key);
+  const hit = cache.get(key);
   if (hit) {
-    cache.ownWin.delete(key); // refresh recency
-    cache.ownWin.set(key, hit);
+    cache.delete(key); // refresh recency
+    cache.set(key, hit);
     return hit;
   }
   resolveBuildCounts.ownWin++;
@@ -604,12 +624,12 @@ export function ownWinFor(ctx: ResolveCtx, kind: 'utcef' | 'station', timeMs: nu
     const claim = claimLoop(fill, ctx.fullLayers, s.latitude, s.longitude, timeMs, td);
     out[k] = td.timeDependent ? OWN_TIME_DEPENDENT : claim && claim.source === kind && (claim as { station?: unknown }).station === s ? OWN_WINS : OWN_LOSES;
   }
-  cache.ownWin.set(key, out);
-  if (cache.ownWin.size > OWN_WIN_CACHE_CAP) cache.ownWin.delete(cache.ownWin.keys().next().value!);
+  cache.set(key, out);
+  if (cache.size > OWN_WIN_CACHE_CAP) cache.delete(cache.keys().next().value!);
   return out;
 }
 
-/** Number of kept station-winner arrays for `data` under `snapshot` (bounded by OWN_WIN_CACHE_CAP; for tests). */
-export function ownWinCacheSize(data: object, snapshot: readonly Layer[]): number {
-  return snapshotCaches.get(data)?.get(snapshot)?.ownWin.size ?? 0;
+/** Number of kept station-winner arrays for ctx's (snapshot, GRIB, UTCEF, harmonics) (bounded by OWN_WIN_CACHE_CAP; for tests). */
+export function ownWinCacheSize(ctx: ResolveCtx): number {
+  return ownWinCacheFor(ctx, false)?.size ?? 0;
 }

@@ -210,10 +210,12 @@ accept `maxPoints` to cap how many points come back, thinned on a stable
 spatial grid so a zoomed-out view (e.g. all of Europe, with hundreds of
 thousands of stations) stays responsive, and panning or zooming doesn't
 reshuffle which points appear. Ask for more (or a smaller box) to get full
-detail when zoomed in. The GRIB arrow density of `/grid` depends only on the
-view size, the grid resolution and `maxPoints` (never on which stations
-happen to be in view): arrows sit on the grid's own nodes, in power-of-two
-steps, so a density change adds or removes arrows without moving the rest.
+detail when zoomed in. The GRIB arrows of `/grid` sit on the grid's own
+nodes, in power-of-two steps chosen from the view size, the grid resolution
+and `maxPoints`, so a density change adds or removes arrows without moving the
+rest. The arrows share the `maxPoints` budget with the stations shown, so more
+stations in view can mean fewer GRIB arrows for the same view, grid and
+`maxPoints`.
 
 **"Vector-capable" stations**: reference current stations in the XTide ASCII
 format only carry a signed speed (harmonic constituents in knots) — they're

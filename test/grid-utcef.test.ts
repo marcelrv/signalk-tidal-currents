@@ -459,8 +459,7 @@ test('no cache growth: 1000 /grid requests over varying bboxes and times build e
   assert.equal(resolveBuildCounts.fileExtentPasses, warm.fileExtentPasses);
   // The station-winner arrays: one per (range state, source), however many requests and times.
   assert.ok(resolveBuildCounts.ownWin - warm.ownWin <= 4, `ownWin builds ${resolveBuildCounts.ownWin - warm.ownWin}`);
-  const snapshot = orderedLayers(state, REST_FALLBACK_MAX_KM);
-  assert.ok(ownWinCacheSize(utcef.get()!, snapshot) <= OWN_WIN_CACHE_CAP);
+  assert.ok(ownWinCacheSize(createResolveCtx(state, REST_FALLBACK_MAX_KM)) <= OWN_WIN_CACHE_CAP);
 });
 
 // ── 13b. Per-snapshot layer caches: no thrash with many stack layers ──
@@ -592,7 +591,7 @@ test('station winners: coastline (partial-cell) stations are re-decided per time
   assert.equal(resolveBuildCounts.ownWin - b0.ownWin, 2);
   sweep();
   assert.equal(resolveBuildCounts.ownWin - b0.ownWin, 2, 'a second sweep builds nothing');
-  assert.ok(ownWinCacheSize(utcef.get()!, orderedLayers(state, REST_FALLBACK_MAX_KM)) <= OWN_WIN_CACHE_CAP);
+  assert.ok(ownWinCacheSize(createResolveCtx(state, REST_FALLBACK_MAX_KM)) <= OWN_WIN_CACHE_CAP);
 });
 
 test('station winners: one build per key — a request at another time in the same range builds nothing', () => {
@@ -618,6 +617,37 @@ test('station winners: one build per key — a request at another time in the sa
   // The array is one byte per station.
   const ctx = createResolveCtx(state);
   assert.equal(ownWinFor(ctx, 'utcef', T0).byteLength, stations.length);
+});
+
+test('station winners: replacing another source\'s data object (same snapshot, same rangeKey) recomputes them', () => {
+  // Two GRIB files with the same series count and time range: one covers the UTCEF station, the other is elsewhere.
+  const over = createGribSource(gribDirOf({ 'g.grb2': [0, 6].flatMap((h) => uvFields(52.9, 4.9, 0.1, 7, { u: 1, forecastHours: h })) }), 0).get()!;
+  const away = createGribSource(gribDirOf({ 'g.grb2': [0, 6].flatMap((h) => uvFields(40, -10, 0.1, 7, { u: 1, forecastHours: h })) }), 0).get()!;
+  let cur = over;
+  const grib = { get: () => cur, error: null, invalidate: () => {} };
+  const utcef = createUtcefSource(writeUtcefDir({ 's.utcef': [['S', 53.1, 5.1]] }), 0);
+  const state: ApiState = { data: null, error: null, grib, utcef, preferGrib: true };
+  const call = makeApi(state);
+  const t = T0 + 3 * HOUR;
+  const grid = () => call('/grid', { bbox: '4.8,52.8,5.6,53.6', time: isoAt(t), maxPoints: '400' }).points as P[];
+  const snapshot = orderedLayers(state, REST_FALLBACK_MAX_KM);
+  const b0 = resolveBuildCounts.ownWin;
+  let pts = grid();
+  assert.equal(resolveBuildCounts.ownWin - b0, 1);
+  assert.ok(!pts.some((p) => p.stationId === 'S'), 'GRIB covers the station: it loses its own position');
+  assert.ok(pts.some((p) => p.source === 'grib'));
+  grid();
+  assert.equal(resolveBuildCounts.ownWin - b0, 1, 'same data: served from the cache');
+  cur = away; // a new GRIB data object, same snapshot, same rangeKey
+  assert.equal(orderedLayers(state, REST_FALLBACK_MAX_KM), snapshot);
+  pts = grid();
+  assert.equal(resolveBuildCounts.ownWin - b0, 2, 'the winners were recomputed for the new GRIB data');
+  assert.ok(pts.some((p) => p.stationId === 'S' && p.source === 'utcef'), 'the station now wins and is shown');
+  assertParity(state, pts, t);
+  cur = over; // back to the first object: its own cached array, still correct
+  pts = grid();
+  assert.equal(resolveBuildCounts.ownWin - b0, 2);
+  assert.ok(!pts.some((p) => p.stationId === 'S'));
 });
 
 // ── 14. Thin API surface ──

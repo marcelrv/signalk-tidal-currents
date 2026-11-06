@@ -166,7 +166,7 @@ export function createCellIndex<T>(
     const j1 = Math.floor(north / cellDeg);
     const wide = east - west >= 360;
     const i0 = wide ? 0 : Math.floor(west / cellDeg);
-    const i1 = wide ? nLon - 1 : Math.floor(east / cellDeg);
+    const i1 = wide ? nLon - 1 : Math.min(Math.floor(east / cellDeg), i0 + nLon - 1);
     const take = (r: number) => {
       const lat = lats[r];
       if (lat >= south && lat <= north && lonInSpan(lons[r], west, east)) {

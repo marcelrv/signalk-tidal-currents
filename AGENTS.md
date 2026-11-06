@@ -71,14 +71,16 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   when it had to sample the bracketing slots (partially-defined cell), the one
   case where its answer changes with the time while the series stays in range
   (`gribSeriesInRange` is the other, coarse, time dependence).
-  **Cycle seam (accepted behaviour):** the per-time dedup keeps the newest
-  cycle for each valid time, so where a newer forecast cycle starts *later*
-  than an older one covers, the time between the last old-cycle-only slot and
-  the first slot of the newer cycle is bracketed ACROSS the two cycles for
-  that one step (old cycle on one side, new on the other). Inside the newer
-  cycle's range nothing is ever blended with an older cycle. This is
-  deliberate — the alternative (dropping the older cycle's tail) would leave a
-  gap — so do not "fix" it. `createGribSource(dir)` re-stats the dir at most 1×/min and reloads on
+  **Cycle seams (accepted behaviour):** the dedup is per valid time, not per
+  cycle, so a series can bracket slots from different cycles. Where a newer
+  forecast cycle starts *later* than an older one covers, the step between the
+  last old-cycle-only slot and the first newer-cycle slot interpolates ACROSS
+  the two cycles. The same happens *inside* the newer cycle's range when it
+  lacks an intermediate valid time that an older cycle has (the older cycle
+  supplies that slot), and because depth ranks before `refTime`, a shallower
+  slot from an older cycle outranks a deeper slot from a newer one. This is
+  deliberate — dropping older-cycle slots would leave gaps — so do not "fix"
+  it. `createGribSource(dir)` re-stats the dir at most 1×/min and reloads on
   file-set change, re-decoding only files whose size/mtime changed (per-file
   parse cache — a full re-decode of every file on each change froze small
   ARM boxes once many regions were installed).
@@ -114,9 +116,11 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   `nearestWithin` (rounded distance, ties by array rank, d = 0 fast path),
   `within`, `inBbox`. Also home of `distanceKm`/`lonHalfWidthDeg`/`lonInSpan`.
 - `src/resolve.ts` — **THE resolver**; no other module decides who answers at
-  (lat, lon, t). `orderedLayers()` (dataset stack, then type rank GRIB →
-  UTCEF → legacy station, or UTCEF → station → GRIB when `preferGrib` is
-  false; a stack UTCEF probe's nearest radius is clamped to 50 km) builds the
+  (lat, lon, t). `orderedLayers()` (dataset stack, then the type rank: the
+  configured `sourcePriority` when set — any order — else the `preferGrib`
+  fallback, GRIB → UTCEF → legacy station, or UTCEF → station → GRIB when
+  `preferGrib` is false; a stack UTCEF probe's nearest radius is clamped to
+  50 km) builds the
   layers; `createResolveCtx(state, maxKm, {bbox?, legacy?})` keeps those that
   can answer (an optional `bbox` drops layers whose 10°-bucket extent cannot
   reach it). `claimAt` returns WHO answers (GRIB series / UTCEF station /
@@ -148,8 +152,9 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   GRIB series are in range at `t`, so crossing a forecast-horizon edge selects
   or builds another array; stations flagged 2 (coastline cells, partially
   defined GRIB) are re-decided per request with `claimAt`. LRU of
-  `OWN_WIN_CACHE_CAP` (4) arrays per (data, snapshot). It is NOT a per-station
-  memo map.
+  `OWN_WIN_CACHE_CAP` (4) arrays per (snapshot, GRIB, UTCEF, harmonics) —
+  chained WeakMaps, so replacing ANY loaded data object misses and frees it
+  (the claim loop reads all three). It is NOT a per-station memo map.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).
@@ -170,7 +175,11 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   1. *Single resolver.* `/grid` only chooses candidate positions (lattice
      nodes, in-view stations); every one is decided by `resolveAt`/`claimAt`.
      It never probes GRIB/UTCEF/legacy itself, so each point equals `/vector`
-     at its coordinates.
+     at its coordinates — with two exceptions: by default `/grid` excludes
+     legacy harmonic stations while `/vector` includes them, so the two can
+     pick different sources at the same position (`stations=1` opts them in);
+     and with `stations=1` a legacy station's `speedKn` is a magnitude in
+     `/grid` while `/vector` keeps its sign.
   2. *Series model.* A lattice belongs to a grid geometry; a GRIB answer from
      another grid is dropped (that grid's own lattice shows it), a station
      answer is emitted as that station's vector (`stationId`).
