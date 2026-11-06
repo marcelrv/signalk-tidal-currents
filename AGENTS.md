@@ -152,8 +152,9 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   GRIB series are in range at `t`, so crossing a forecast-horizon edge selects
   or builds another array; stations flagged 2 (coastline cells, partially
   defined GRIB) are re-decided per request with `claimAt`. LRU of
-  `OWN_WIN_CACHE_CAP` (4) arrays per (data, snapshot). It is NOT a per-station
-  memo map.
+  `OWN_WIN_CACHE_CAP` (4) arrays per (snapshot, GRIB, UTCEF, harmonics) —
+  chained WeakMaps, so replacing ANY loaded data object misses and frees it
+  (the claim loop reads all three). It is NOT a per-station memo map.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).
