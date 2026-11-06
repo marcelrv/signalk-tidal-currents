@@ -22,9 +22,8 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    fetchCleanupCandidates();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    fetchCleanupCandidates().catch(() => undefined);
+  }, [fetchCleanupCandidates]); // zustand actions are stable, so this still runs once
 
   const toggle = (id: string) => {
     const next = new Set(selected);
@@ -72,7 +71,7 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
           <button
             type="button"
             disabled={selected.size === 0 || deleting}
-            onClick={confirmDelete}
+            onClick={() => { confirmDelete().catch(() => undefined); }}
             className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
           >
             {deleting ? 'Removing…' : `Free ~${formatBytes(freeableBytes)}`}

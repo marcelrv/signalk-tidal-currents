@@ -22,7 +22,8 @@ export function PriorityList() {
     const j = index + dir;
     if (j < 0 || j >= next.length) return;
     [next[index], next[j]] = [next[j], next[index]];
-    setPriority(next);
+    // On failure the store keeps the server's order, so the list just doesn't move.
+    setPriority(next).catch(() => undefined);
   };
 
   return (

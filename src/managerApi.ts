@@ -53,10 +53,12 @@ interface MRes {
   status(code: number): MRes;
 }
 export interface ManagerRouterLike {
-  get(path: string, handler: (req: MReq, res: MRes) => void): void;
-  post(path: string, handler: (req: MReq, res: MRes) => void): void;
-  put(path: string, handler: (req: MReq, res: MRes) => void): void;
-  delete(path: string, handler: (req: MReq, res: MRes) => void): void;
+  // The host router ignores the handler's return value; allowing a promise
+  // lets the in-file test harness await completion before asserting.
+  get(path: string, handler: (req: MReq, res: MRes) => void | Promise<void>): void;
+  post(path: string, handler: (req: MReq, res: MRes) => void | Promise<void>): void;
+  put(path: string, handler: (req: MReq, res: MRes) => void | Promise<void>): void;
+  delete(path: string, handler: (req: MReq, res: MRes) => void | Promise<void>): void;
 }
 
 /**
@@ -340,14 +342,20 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     res.json({ ...state, sourceUrl: '', error: state.error ? PUBLIC_CATALOG_ERROR : null });
   });
 
-  router.post('/catalog/refresh', async (_req, res) => {
-    const state = await mgr.catalog.refresh();
-    invalidatePublic(); // dataset names/status derive from the catalog document
-    if (state.error) {
-      res.status(502).json(state);
-      return;
-    }
-    res.json(state);
+  // Async handlers must not reject: the host router ignores the returned
+  // promise, so a throw would hang the request and surface as an unhandled
+  // rejection. Answer 500 instead.
+  router.post('/catalog/refresh', (_req, res) => {
+    mgr.catalog.refresh().then((state) => {
+      invalidatePublic(); // dataset names/status derive from the catalog document
+      if (state.error) {
+        res.status(502).json(state);
+        return;
+      }
+      res.json(state);
+    }).catch((e: unknown) => {
+      res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+    });
   });
 
   // The scan is synchronous (manifest read, per-file existsSync, recursive
@@ -548,7 +556,15 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     };
     send(job);
 
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    // A job that is already terminal will never fire another update, so the
+    // snapshot is the whole stream — close now instead of holding a public
+    // SSE slot open forever.
+    const terminal = job.state === 'done' || job.state === 'error';
+    const heartbeat = terminal
+      ? undefined
+      : setInterval(() => {
+        if (!closed) raw.write(':hb\n\n');
+      }, 15_000);
     let unsubscribe: () => void = () => {};
     function cleanup(): void {
       if (closed) return;
@@ -559,17 +575,10 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
       raw.end();
     }
 
-    // A job that is already terminal will never fire another update, so the
-    // snapshot is the whole stream — close now instead of holding a public
-    // SSE slot open forever.
-    if (job.state === 'done' || job.state === 'error') {
+    if (terminal) {
       cleanup();
       return;
     }
-
-    heartbeat = setInterval(() => {
-      if (!closed) raw.write(':hb\n\n');
-    }, 15_000);
 
     unsubscribe = mgr.downloads.onUpdate(req.params.id, (updated) => {
       send(updated);
