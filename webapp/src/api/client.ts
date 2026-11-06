@@ -11,8 +11,24 @@ import {
 
 // Hardcoded, not derived from window.location — robust regardless of how the
 // Admin UI mounts this webapp (relative resolution quirks, trailing slash,
-// etc.). All backend I/O for this plugin lives under this one prefix.
-const API_BASE = '/plugins/signalk-tidal-currents';
+// etc.). All backend I/O for this plugin lives under this one prefix:
+// signalk-server keeps it admin-only, except the routes the plugin marks
+// readable via router.access('readonly') (the manager's read-only view), so
+// anonymous visitors can still browse on a locked-down server (public demo).
+export const API_BASE = '/plugins/signalk-tidal-currents';
+
+/** An HTTP error from the plugin API — `status` lets callers tell "not allowed" (401/403) apart from real failures; `body` is the parsed JSON response (e.g. the cached catalog a failed refresh still returns). */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly body: unknown = null) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+/** True for an ApiError with HTTP 401/403 — the server refused the request for this visitor (as opposed to a real failure). */
+export function isPermissionError(e: unknown): boolean {
+  return e instanceof ApiError && (e.status === 401 || e.status === 403);
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(`${API_BASE}${path}`, {
@@ -22,9 +38,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const body = await resp.json().catch(() => null);
   if (!resp.ok) {
     const message = (body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : null) ?? `HTTP ${resp.status}`;
-    throw new Error(message);
+    throw new ApiError(message, resp.status, body);
   }
   return body as T;
+}
+
+/** Subset of signalk-server's `/skServer/loginStatus` this app cares about. */
+export interface LoginStatus {
+  status?: string;
+  userLevel?: string;
+  authenticationRequired?: boolean;
 }
 
 export const api = {
@@ -54,6 +77,23 @@ export const api = {
 
   getVectorAt: (lat: number, lon: number) =>
     request<VectorResponse>(`/vector?latitude=${lat}&longitude=${lon}`),
+
+  /** Throws an ApiError on any non-OK answer (incl. 404, e.g. a proxy not forwarding /skServer) — access then stays unknown/read-only, never granted. */
+  getLoginStatus: async (): Promise<LoginStatus> => {
+    // Bounded: a hung request would otherwise block dataset loading (which
+    // waits on the access check) forever. The abort rejects with a non-ApiError,
+    // i.e. a transient failure the caller retries. The timer stays armed through
+    // the body read, since a body can stall after the headers have arrived.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10_000);
+    try {
+      const resp = await fetch('/skServer/loginStatus', { credentials: 'same-origin', signal: ctrl.signal });
+      if (!resp.ok) throw new ApiError(`HTTP ${resp.status}`, resp.status);
+      return (await resp.json()) as LoginStatus;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
 
   // Vessel position comes from the SignalK server itself, not this plugin.
   getVesselPosition: async (): Promise<{ latitude: number; longitude: number } | null> => {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, useReadOnly } from '../../store/useAppStore';
 import { formatBytes } from '../../lib/format';
 import { Modal } from './Modal';
 import { Icon } from './Icon';
@@ -13,6 +13,7 @@ import { Icon } from './Icon';
  */
 export function DeleteDatasetButton({ id, name, sizeBytes }: { id: string; name: string; sizeBytes: number }) {
   const deleteDataset = useAppStore((s) => s.deleteDataset);
+  const readOnly = useReadOnly();
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +30,8 @@ export function DeleteDatasetButton({ id, name, sizeBytes }: { id: string; name:
       setDeleting(false);
     }
   };
+
+  if (readOnly) return null;
 
   return (
     <>

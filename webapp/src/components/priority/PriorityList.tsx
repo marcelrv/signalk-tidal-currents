@@ -1,4 +1,4 @@
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, useReadOnly } from '../../store/useAppStore';
 import { SourceType } from '../../api/types';
 import { Icon } from '../shared/Icon';
 
@@ -15,6 +15,7 @@ const LABEL: Record<SourceType, string> = { grib2: 'GRIB2', utcef: 'UTCEF', harm
 export function PriorityList() {
   const priority = useAppStore((s) => s.priority);
   const setPriority = useAppStore((s) => s.setPriority);
+  const readOnly = useReadOnly();
 
   const move = (index: number, dir: -1 | 1) => {
     const next = [...priority];
@@ -30,6 +31,8 @@ export function PriorityList() {
         <li key={type} className="flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-1">
           <span className="w-5 shrink-0 text-center text-xs font-semibold text-muted tabular-nums">{i + 1}</span>
           <span className="flex-1 text-sm font-medium">{LABEL[type]}</span>
+          {!readOnly && (
+          <>
           <button
             type="button"
             aria-label={`Move ${LABEL[type]} up`}
@@ -48,6 +51,8 @@ export function PriorityList() {
           >
             <Icon name="arrowDown" className="h-4 w-4" />
           </button>
+          </>
+          )}
         </li>
       ))}
     </ol>

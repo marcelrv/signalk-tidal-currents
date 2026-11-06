@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { useAppStore } from '../../store/useAppStore';
+import { READ_ONLY_HINT, useAppStore, useReadOnly } from '../../store/useAppStore';
 import { timeAgo, formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
 import { Icon } from '../shared/Icon';
@@ -22,6 +22,7 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
   const catalog = useAppStore((s) => s.catalog);
   const catalogLoading = useAppStore((s) => s.catalogLoading);
   const refreshCatalog = useAppStore((s) => s.refreshCatalog);
+  const readOnly = useReadOnly();
   const fetchPriority = useAppStore((s) => s.fetchPriority);
   const datasets = useAppStore((s) => s.datasets);
   const [cleanupOpen, setCleanupOpen] = useState(false);
@@ -38,6 +39,7 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
       <div className="flex flex-col gap-5 pt-1">
         <section aria-label="Storage" className="flex flex-col gap-2.5">
           <StorageGauge />
+          {!readOnly && (
           <button
             type="button"
             onClick={() => setCleanupOpen(true)}
@@ -46,6 +48,7 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
             <Icon name="trash" className="h-4 w-4" />
             Smart cleanup…
           </button>
+          )}
         </section>
 
         <section aria-label="Catalog" className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2">
@@ -58,7 +61,8 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
           </div>
           <button
             type="button"
-            disabled={catalogLoading}
+            disabled={catalogLoading || readOnly}
+            title={readOnly ? READ_ONLY_HINT : undefined}
             onClick={() => refreshCatalog()}
             className="flex min-h-11 shrink-0 items-center gap-2 rounded-full bg-surface-2 px-4 text-sm font-medium text-accent disabled:opacity-50"
           >
@@ -103,7 +107,7 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
           </section>
         )}
       </div>
-      {cleanupOpen && <SmartCleanupPanel onClose={() => setCleanupOpen(false)} />}
+      {cleanupOpen && !readOnly && <SmartCleanupPanel onClose={() => setCleanupOpen(false)} />}
     </Modal>
   );
 }

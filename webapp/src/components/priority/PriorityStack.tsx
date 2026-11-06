@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, useReadOnly } from '../../store/useAppStore';
 import { DatasetEntry } from '../../api/types';
 import { datasetCoverageAreaSqDeg, rowForDataset, rowsForSources } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
@@ -22,6 +22,7 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
   const datasets = useAppStore((s) => s.datasets);
   const priorityDatasets = useAppStore((s) => s.priorityDatasets);
   const setDatasetPriority = useAppStore((s) => s.setDatasetPriority);
+  const readOnly = useReadOnly();
   const catalog = useAppStore((s) => s.catalog);
   const select = useAppStore((s) => s.select);
 
@@ -70,7 +71,7 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
 
   return (
     <div className="flex flex-col gap-2">
-      {stack.length > 1 && (
+      {stack.length > 1 && !readOnly && (
         <button
           type="button"
           onClick={autoSort}
@@ -103,6 +104,7 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
                 </span>
               </button>
               <DeleteDatasetButton id={dataset.id} name={name} sizeBytes={dataset.sizeBytes} />
+              {!readOnly && (
               <div className="flex shrink-0 flex-col">
                 <button
                   type="button"
@@ -123,6 +125,7 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
                   <Icon name="arrowDown" className="h-4 w-4" />
                 </button>
               </div>
+              )}
             </li>
           );
         })}

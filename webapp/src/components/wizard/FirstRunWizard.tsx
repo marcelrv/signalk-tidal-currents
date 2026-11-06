@@ -1,8 +1,8 @@
 import { Dispatch, SetStateAction, useEffect, useMemo, useState } from 'react';
 
-import { useAppStore } from '../../store/useAppStore';
+import { READ_ONLY_HINT, useAppStore, useReadOnly } from '../../store/useAppStore';
 import { coveringRows, groupByTier } from '../../lib/wizard';
-import { datasetForRow, isRowInstalled, rowsForSources, SourceRow } from '../../lib/sources';
+import { datasetForRow, downloadKeyFor, isRowInstalled, rowsForSources, SourceRow } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { DatasetEntry } from '../../api/types';
 import { Modal } from '../shared/Modal';
@@ -18,16 +18,20 @@ import { WizardSourceCard } from './WizardSourceCard';
  */
 export function FirstRunWizard() {
   const wizard = useAppStore((s) => s.wizard);
+  const readOnly = useReadOnly();
   const dismissWizard = useAppStore((s) => s.dismissWizard);
   const catalog = useAppStore((s) => s.catalog);
   const vesselPosition = useAppStore((s) => s.vesselPosition);
   const datasets = useAppStore((s) => s.datasets);
   const startDownload = useAppStore((s) => s.startDownload);
+  const downloads = useAppStore((s) => s.downloads);
+  const jobIdBySource = useAppStore((s) => s.jobIdBySource);
   const setView = useAppStore((s) => s.setView);
 
   const [manualPos, setManualPos] = useState<{ lat: string; lon: string } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [installing, setInstalling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const position = manualPos && manualPos.lat !== '' && manualPos.lon !== ''
     ? { latitude: Number(manualPos.lat), longitude: Number(manualPos.lon) }
@@ -59,6 +63,11 @@ export function FirstRunWizard() {
   const liveRecommendedKey = allGrouped.live.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.live[0]?.key ?? null);
   const backupRecommendedKey = allGrouped.backup.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.backup[0]?.key ?? null);
 
+  useEffect(() => {
+    // The component stays mounted while closed — don't resurface a stale install error on reopen.
+    if (!wizard.open) setError(null);
+  }, [wizard.open]);
+
   // Default-select only the recommended row per tier (≤ 2 total), not every covering row.
   useEffect(() => {
     const keys = new Set<string>();
@@ -67,9 +76,23 @@ export function FirstRunWizard() {
     setSelected(keys);
   }, [liveRecommendedKey, backupRecommendedKey]);
 
-  if (!wizard.open) return null;
+  // Never shown read-only — including while access is still 'unknown', which
+  // matches the hidden "Near You" button — except to explain why an install
+  // just failed: a 401/403 flips access to read-only mid-flow.
+  if (!wizard.open || (readOnly && !error)) return null;
 
-  const newDownloads = notInstalled.filter((c) => selected.has(c.key));
+  /**
+   * True when the row's download is already queued/active. Such a row is
+   * never (re)started, however the selection got there — e.g. after a
+   * partial failure, when a started row finishing shifts the recommendations
+   * and the selection resets.
+   */
+  const inFlight = (row: SourceRow) => {
+    const id = jobIdBySource[downloadKeyFor(row.source.id, row.regionId, row.fileType, row.variant)];
+    const state = id ? downloads[id]?.state : undefined;
+    return state === 'queued' || state === 'active';
+  };
+  const newDownloads = notInstalled.filter((c) => selected.has(c.key) && !inFlight(c));
   const totalBytes = newDownloads.reduce((sum, c) => {
     const d = datasetForRow(datasets, c);
     return sum + ((d ? d.sizeBytes : c.sizeBytes) ?? 0);
@@ -79,10 +102,20 @@ export function FirstRunWizard() {
 
   const install = async () => {
     setInstalling(true);
+    setError(null);
     try {
-      await Promise.all(newDownloads.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined)));
-      dismissWizard();
-      setView('list');
+      const results = await Promise.allSettled(newDownloads.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined)));
+      const failed = newDownloads.filter((_, i) => results[i].status === 'rejected');
+      if (failed.length === 0) {
+        dismissWizard();
+        setView('list');
+        return;
+      }
+      // Keep only the rejected rows selected (the started ones are running and
+      // are skipped by `inFlight` anyway).
+      setSelected(new Set(failed.map((row) => row.key)));
+      const reason = (results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason;
+      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setInstalling(false);
     }
@@ -167,7 +200,10 @@ export function FirstRunWizard() {
           />
           <button
             type="button"
-            disabled={installing}
+            // Read-only (a refused install keeps the wizard open to show why):
+            // Install would just repeat the refused request; Close stays usable.
+            disabled={installing || (readOnly && hasNewDownloads)}
+            title={readOnly && hasNewDownloads ? READ_ONLY_HINT : undefined}
             onClick={hasNewDownloads ? install : dismissWizard}
             className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
           >
@@ -177,6 +213,11 @@ export function FirstRunWizard() {
                 ? `Install selected (~${formatBytes(totalBytes)}${anyUnknownSize ? '+' : ''})`
                 : 'Close'}
           </button>
+          {error && (
+            <span role="alert" className="text-xs text-danger">
+              {error}
+            </span>
+          )}
         </div>
       )}
     </Modal>

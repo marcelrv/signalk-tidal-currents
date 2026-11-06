@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { useAppStore } from '../store/useAppStore';
 import { DownloadJob } from '../api/types';
-
-const API_BASE = '/plugins/signalk-tidal-currents';
+import { API_BASE } from '../api/client';
 
 /**
  * Subscribes to live download progress via Server-Sent Events (PRD §9 Phase
