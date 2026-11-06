@@ -128,6 +128,12 @@ test('bbox search returns every current station in view, unsorted by distance', 
 
   // Empty box far away.
   assert.equal(stationsInBbox(data, 0, 0, 1, 1, 500).length, 0);
+
+  // Viewports written past ±180 (map clients wrapping the antimeridian) find
+  // the same stations as the normalised box.
+  const ids = (r: ReturnType<typeof stationsInBbox>) => r.map((n) => n.station.id).sort();
+  assert.deepEqual(ids(stationsInBbox(data, 365.05, 53.05, 365.35, 53.35, 500)), ids(inBox));
+  assert.deepEqual(ids(stationsInBbox(data, -354.95, 53.05, -354.65, 53.35, 500)), ids(inBox));
 });
 
 test('utility functions', () => {

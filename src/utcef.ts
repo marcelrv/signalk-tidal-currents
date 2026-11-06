@@ -29,7 +29,8 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 
 import { astronomicalArgs, equilibriumArg, isKnownConstituent, nodeFactors } from './astro.js';
-import { CurrentSample, distanceKm, KNOTS_TO_MS } from './predict.js';
+import { createCellIndex, distanceKm } from './geoindex.js';
+import { CurrentSample, KNOTS_TO_MS } from './predict.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -58,6 +59,8 @@ export interface UtcefCurrentStation {
   constituents: CurrentConstituent[];
   /** GeoJSON Polygon rings [ [ [lon,lat], … ] ] where the prediction is valid, if given. */
   representativeArea?: number[][][];
+  /** Lon/lat bounds of the area's outer ring (computed at parse time; null = no usable area). */
+  areaBounds?: { west: number; south: number; east: number; north: number } | null;
   /** Provenance: which file in the UTCEF dir this station came from (set by loadUtcefDir) — the hook per-dataset priority filters on. */
   file?: string;
 }
@@ -194,11 +197,44 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
     }
 
     const mean = props.mean_offset ?? {};
-    const area =
-      props.representative_area?.type === 'Polygon' &&
-      Array.isArray(props.representative_area.coordinates)
-        ? (props.representative_area.coordinates as number[][][])
-        : undefined;
+    // Accept the area only if the outer ring is >= 4 positions with finite
+    // lon/lat; a malformed polygon would otherwise throw in every point probe.
+    let area: number[][][] | undefined;
+    if (props.representative_area?.type === 'Polygon' && Array.isArray(props.representative_area.coordinates)) {
+      const ring = props.representative_area.coordinates[0];
+      if (
+        Array.isArray(ring) &&
+        ring.length >= 4 &&
+        ring.every((p: unknown) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+      ) {
+        area = props.representative_area.coordinates as number[][][];
+        // Unwrap the outer ring's longitudes so it is continuous: a ring
+        // crossing the antimeridian written in −180…180 form (179.8 → −179.8)
+        // would otherwise get near-global bounds (utcefAreaBounds) and a
+        // wrong point-in-polygon test. pointInArea probes ±360, so a ring
+        // running past ±180 is handled.
+        const outer = area[0];
+        const unwrapped: number[][] = [[outer[0][0], outer[0][1]]];
+        for (let k = 1; k < outer.length; k++) {
+          let x = outer[k][0];
+          const prev = unwrapped[k - 1][0];
+          while (x - prev > 180) x -= 360;
+          while (prev - x > 180) x += 360;
+          unwrapped.push([x, outer[k][1]]);
+        }
+        if (Math.abs(unwrapped[unwrapped.length - 1][0] - unwrapped[0][0]) >= 180) {
+          // The unwrapped ring does not close: it encircles a pole, which the
+          // lon/lat point-in-polygon test cannot represent. Reject the area;
+          // the station then falls back to nearest-station lookup.
+          warnings.push(`${sourceLabel}: station "${id}" has a representative_area that encircles a pole — ignored`);
+          area = undefined;
+        } else {
+          area = [unwrapped, ...area.slice(1)];
+        }
+      } else {
+        warnings.push(`${sourceLabel}: station "${id}" has a malformed representative_area — ignored`);
+      }
+    }
 
     currentStations.push({
       id,
@@ -209,6 +245,7 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
       meanV: (Number(mean.v_residual) || 0) * scale,
       constituents,
       representativeArea: area,
+      areaBounds: ringBounds(area?.[0]),
     });
   }
 
@@ -439,18 +476,51 @@ export function loadUtcefDir(dir: string, cache?: UtcefFileCache): UtcefData | n
   };
 }
 
+/** A UTCEF sample: always a full 2D vector, so direction/u/v are never null (unlike legacy reference stations). */
+export interface UtcefSample extends CurrentSample {
+  direction: number;
+  u: number;
+  v: number;
+}
+
+/**
+ * Single-entry memo of the per-constituent astronomical terms (Greenwich
+ * equilibrium argument + nodal phase, and nodal factor f) for one instant.
+ * These depend only on (time, constituent), not on the station, so a map
+ * overlay sampling thousands of stations at the SAME time computes each
+ * constituent's V0/f/u once instead of once per station. null = unknown
+ * constituent (already warned at load).
+ */
+let termsTimeMs = NaN;
+let terms = new Map<string, { base: number; f: number } | null>();
+
+/** Memoized base phase and nodal factor for a constituent at timeMs; null if unknown. */
+function constituentTerms(timeMs: number, name: string): { base: number; f: number } | null {
+  if (timeMs !== termsTimeMs) {
+    termsTimeMs = timeMs;
+    terms = new Map();
+  }
+  let t = terms.get(name);
+  if (t === undefined) {
+    const a = astronomicalArgs(timeMs);
+    const v0 = equilibriumArg(a, name);
+    const nf = nodeFactors(a, name);
+    t = v0 === null || nf === null ? null : { base: v0 + nf.u, f: nf.f };
+    terms.set(name, t);
+  }
+  return t;
+}
+
 /** Set/drift sample at a UTCEF current station for a UTC time. */
-export function utcefSampleAt(station: UtcefCurrentStation, timeMs: number): CurrentSample {
-  const a = astronomicalArgs(timeMs);
+export function utcefSampleAt(station: UtcefCurrentStation, timeMs: number): UtcefSample {
   let u = station.meanU;
   let v = station.meanV;
   for (const c of station.constituents) {
-    const v0 = equilibriumArg(a, c.name);
-    const nf = nodeFactors(a, c.name);
-    if (v0 === null || nf === null) continue; // unknown constituent (already warned at load)
-    const base = v0 + nf.u; // Greenwich equilibrium argument + nodal phase
-    u += nf.f * c.uAmp * Math.cos((base - c.uPhaseG) * DEG2RAD);
-    v += nf.f * c.vAmp * Math.cos((base - c.vPhaseG) * DEG2RAD);
+    const t = constituentTerms(timeMs, c.name);
+    if (t === null) continue; // unknown constituent (already warned at load)
+    // t.base = Greenwich equilibrium argument + nodal phase
+    u += t.f * c.uAmp * Math.cos((t.base - c.uPhaseG) * DEG2RAD);
+    v += t.f * c.vAmp * Math.cos((t.base - c.vPhaseG) * DEG2RAD);
   }
   const speedMs = Math.hypot(u, v);
   // Direction of set (°T): same convention as the GRIB source.
@@ -464,8 +534,151 @@ export function utcefSampleAt(station: UtcefCurrentStation, timeMs: number): Cur
   };
 }
 
-/** Ray-casting point-in-polygon over a GeoJSON Polygon's outer ring ([lon,lat]). */
+/**
+ * UTCEF current stations inside a lon/lat box (inclusive; longitudes compared
+ * modulo 360), in array order, gathered through the cell index (O(stations in
+ * view), not O(all stations)). No cap: callers thin the result, and stopping
+ * early in array order would make the thinned set depend on file load order.
+ */
+export function utcefStationsInBbox(
+  data: UtcefData,
+  bbox: { west: number; south: number; east: number; north: number },
+): UtcefCurrentStation[] {
+  return utcefCoverageIndexFor(data).points.inBbox(bbox.west, bbox.south, bbox.east, bbox.north);
+}
+
+type AreaBounds = { west: number; south: number; east: number; north: number };
+
+function ringBounds(ring: number[][] | undefined): AreaBounds | null {
+  if (!ring || ring.length < 4) return null;
+  const b = { west: Infinity, south: Infinity, east: -Infinity, north: -Infinity };
+  for (const [x, y] of ring) {
+    if (x < b.west) b.west = x;
+    if (x > b.east) b.east = x;
+    if (y < b.south) b.south = y;
+    if (y > b.north) b.north = y;
+  }
+  return b;
+}
+
+/** Lon/lat bounds of a station's representative_area outer ring (stored at parse time; computed on demand for hand-built stations). */
+export function utcefAreaBounds(s: UtcefCurrentStation): AreaBounds | null {
+  return s.areaBounds !== undefined ? s.areaBounds : ringBounds(s.representativeArea?.[0]);
+}
+
+/** Coarse bucket size for the large-area list: a probe scans only the big polygons registered in its 10° bucket. */
+const LARGE_AREA_BUCKET_DEG = 10;
+const LARGE_AREA_BUCKETS_LON = 360 / LARGE_AREA_BUCKET_DEG;
+
+/**
+ * Index over a set of stations answering "would the UTCEF source claim this
+ * point?" (contained in a representative_area, or a station within maxKm)
+ * without a linear scan over every station — for map overlays probing
+ * thousands of points per request. Stations sit in the shared cell index
+ * (geoindex.ts); area polygons are bucketed by their bounding box on the same
+ * grid, and polygons too big for that (basin-sized) in coarse 10° buckets, so a
+ * probe only tests the polygons whose bounds cover its bucket. `files`
+ * restricts the probe to one dataset's stations.
+ */
+export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.5) {
+  const points = createCellIndex(stations, (s) => s.latitude, (s) => s.longitude, cellDeg);
+  const nLon = Math.round(360 / cellDeg);
+  const areaCells = new Map<number, number[]>(); // cell key → station ranks (ascending)
+  // Polygons whose bbox covers more than MAX_AREA_CELLS cells would be pushed
+  // into every one of them (huge fan-out for basin-sized areas); they go in
+  // coarse 10° buckets instead (ranks ascending within a bucket).
+  const largeAreas = new Map<number, Array<{ s: UtcefCurrentStation; rank: number; b: AreaBounds }>>();
+  const MAX_AREA_CELLS = 64;
+  const bucketKey = (j: number, i: number) => j * LARGE_AREA_BUCKETS_LON + (((i % LARGE_AREA_BUCKETS_LON) + LARGE_AREA_BUCKETS_LON) % LARGE_AREA_BUCKETS_LON);
+  for (let rank = 0; rank < stations.length; rank++) {
+    const s = stations[rank];
+    const b = utcefAreaBounds(s);
+    if (!b) continue;
+    const i0 = Math.floor(b.west / cellDeg);
+    const i1 = Math.min(Math.floor(b.east / cellDeg), i0 + nLon - 1);
+    const j0 = Math.floor(b.south / cellDeg);
+    const j1 = Math.floor(b.north / cellDeg);
+    if ((j1 - j0 + 1) * (i1 - i0 + 1) > MAX_AREA_CELLS) {
+      const bi0 = Math.floor(b.west / LARGE_AREA_BUCKET_DEG);
+      const bi1 = Math.min(Math.floor(b.east / LARGE_AREA_BUCKET_DEG), bi0 + LARGE_AREA_BUCKETS_LON - 1);
+      for (let j = Math.floor(b.south / LARGE_AREA_BUCKET_DEG); j <= Math.floor(b.north / LARGE_AREA_BUCKET_DEG); j++) {
+        for (let i = bi0; i <= bi1; i++) {
+          const k = bucketKey(j, i);
+          const list = largeAreas.get(k);
+          if (list) list.push({ s, rank, b });
+          else largeAreas.set(k, [{ s, rank, b }]);
+        }
+      }
+      continue;
+    }
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const k = points.cellKey(j, i);
+        const list = areaCells.get(k);
+        if (list) list.push(rank);
+        else areaCells.set(k, [rank]);
+      }
+    }
+  }
+  const inFiles = (s: UtcefCurrentStation, files?: ReadonlySet<string>) =>
+    !files || (s.file !== undefined && files.has(s.file));
+  return {
+    /** The station cell index (nearest / within / bbox queries). */
+    points,
+    /** The station the UTCEF source would pick (containing area first, else nearest within maxKm). */
+    stationAt(lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>): UtcefCurrentStation | null {
+      // Containment = the first matching station in array order (rank), across
+      // the per-cell list (rank-ordered) and the large-area bucket (rank-ordered).
+      let contained: UtcefCurrentStation | null = null;
+      let containedRank = Infinity;
+      for (const rank of areaCells.get(points.keyAt(lat, lon)) ?? []) {
+        const s = stations[rank];
+        if (inFiles(s, files) && pointInArea(s.representativeArea!, lat, lon)) {
+          contained = s;
+          containedRank = rank;
+          break;
+        }
+      }
+      for (const a of largeAreas.get(bucketKey(Math.floor(lat / LARGE_AREA_BUCKET_DEG), Math.floor(lon / LARGE_AREA_BUCKET_DEG))) ?? []) {
+        if (a.rank > containedRank) break;
+        const b = a.b;
+        if (lat < b.south || lat > b.north) continue;
+        // Rings may be unwrapped past ±180: mirror pointInArea's three frames.
+        if (
+          !((lon >= b.west && lon <= b.east) || (lon + 360 >= b.west && lon + 360 <= b.east) || (lon - 360 >= b.west && lon - 360 <= b.east))
+        ) continue;
+        if (inFiles(a.s, files) && pointInArea(a.s.representativeArea!, lat, lon)) {
+          contained = a.s;
+          break;
+        }
+      }
+      if (contained) return contained;
+      return points.nearestWithin(lat, lon, maxKm, (s) => inFiles(s, files));
+    },
+  };
+}
+
+/** utcefCoverageIndex over ALL of a dataset's stations, built once per loaded UtcefData (a reload yields a new object). */
+const coverageIndexCache = new WeakMap<UtcefData, ReturnType<typeof utcefCoverageIndex>>();
+export function utcefCoverageIndexFor(data: UtcefData): ReturnType<typeof utcefCoverageIndex> {
+  let index = coverageIndexCache.get(data);
+  if (!index) {
+    index = utcefCoverageIndex(data.currentStations);
+    coverageIndexCache.set(data, index);
+  }
+  return index;
+}
+
+/**
+ * Point-in-polygon over a GeoJSON Polygon's outer ring ([lon,lat]). The ring
+ * may be written past ±180, so the probe is tried in each 360° frame.
+ */
 function pointInArea(area: number[][][], lat: number, lon: number): boolean {
+  return pointInRing(area, lat, lon) || pointInRing(area, lat, lon + 360) || pointInRing(area, lat, lon - 360);
+}
+
+/** Even-odd ray-cast test of a point against the outer ring (area[0]); false for degenerate rings. */
+function pointInRing(area: number[][][], lat: number, lon: number): boolean {
   const ring = area[0];
   if (!ring || ring.length < 4) return false;
   let inside = false;
@@ -499,6 +712,7 @@ export function nearestUtcefStations(
  * Best current vector at a position/time: prefer a station whose
  * `representative_area` contains the point; otherwise fall back to the
  * nearest station within `maxKm`. Returns null when nothing qualifies.
+ * A finite `maxKm` uses the cached coverage index; Infinity a linear scan.
  * `files` restricts the search to stations loaded from those files —
  * how per-dataset priority (PRD §5.3 Phase 3) probes one installed
  * dataset at a time instead of the whole merged directory.
@@ -511,6 +725,18 @@ export function utcefVectorAt(
   maxKm = Infinity,
   files?: ReadonlySet<string>,
 ): { station: UtcefCurrentStation; distanceKm: number; sample: CurrentSample } | null {
+  if (Number.isFinite(maxKm)) {
+    // Bounded probe: the cached coverage index (cell buckets + polygon bboxes)
+    // picks the same station as the linear scan below, without touching every
+    // station. An unbounded probe keeps the scan (the index is radius-bounded).
+    const st = utcefCoverageIndexFor(data).stationAt(lat, lon, maxKm, files);
+    if (!st) return null;
+    return {
+      station: st,
+      distanceKm: Math.round(distanceKm(lat, lon, st.latitude, st.longitude) * 100) / 100,
+      sample: utcefSampleAt(st, timeMs),
+    };
+  }
   const stations = files
     ? data.currentStations.filter((s) => s.file !== undefined && files.has(s.file))
     : data.currentStations;

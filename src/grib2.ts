@@ -607,13 +607,23 @@ function parseMessage(
   throw new Error("missing '7777' end section");
 }
 
+/** The bilinear cell containing a position: corner indices and fractional weights. */
+export interface GridCell {
+  i0: number;
+  i1: number;
+  j0: number;
+  j1: number;
+  /** Fractional position inside the cell, 0..1 along longitude / latitude. */
+  wx: number;
+  wy: number;
+}
+
 /**
- * Bilinear sample of a normalized field at a position. Corners that are
- * missing (NaN, e.g. land in ocean-current grids) are dropped and the
- * remaining weights renormalized — returns null only when all contributing
- * corners are missing or the position is outside the grid.
+ * Locate the bilinear cell of a position, or null when it is outside the
+ * grid. Shared by sampleGrid and the coverage masks (gribcurrents.ts) so
+ * "is this position inside the grid, and in which cell" has ONE definition.
  */
-export function sampleGrid(grid: Grib2Grid, values: Float64Array, lat: number, lon: number): number | null {
+export function locateGridCell(grid: Grib2Grid, lat: number, lon: number, out?: GridCell): GridCell | null {
   const fy = grid.nj > 1 ? (lat - grid.lat0) / grid.dj : Math.abs(lat - grid.lat0) < 1e-9 ? 0 : NaN;
   if (!Number.isFinite(fy) || fy < -1e-9 || fy > grid.nj - 1 + 1e-9) return null;
   let fx = (((lon - grid.lon0) % 360) + 360) % 360;
@@ -626,21 +636,42 @@ export function sampleGrid(grid: Grib2Grid, values: Float64Array, lat: number, l
   const i1 = grid.globalLon ? (i0 + 1) % grid.ni : Math.min(grid.ni - 1, i0 + 1);
   const wx = Math.min(1, Math.max(0, fx - i0));
   const wy = Math.min(1, Math.max(0, fy - j0));
+  if (out) {
+    out.i0 = i0;
+    out.i1 = i1;
+    out.j0 = j0;
+    out.j1 = j1;
+    out.wx = wx;
+    out.wy = wy;
+    return out;
+  }
+  return { i0, i1, j0, j1, wx, wy };
+}
 
-  const corners: Array<[number, number]> = [
-    [values[j0 * grid.ni + i0], (1 - wx) * (1 - wy)],
-    [values[j0 * grid.ni + i1], wx * (1 - wy)],
-    [values[j1 * grid.ni + i0], (1 - wx) * wy],
-    [values[j1 * grid.ni + i1], wx * wy],
-  ];
+/**
+ * Bilinear sample of a normalized field at a position. Corners that are
+ * missing (NaN, e.g. land in ocean-current grids) are dropped and the
+ * remaining weights renormalized — returns null only when all contributing
+ * corners are missing or the position is outside the grid.
+ */
+export function sampleGrid(grid: Grib2Grid, values: Float64Array, lat: number, lon: number): number | null {
+  const c = locateGridCell(grid, lat, lon);
+  if (!c) return null;
+  const { i0, i1, j0, j1, wx, wy } = c;
   let sum = 0;
   let wsum = 0;
-  for (const [v, w] of corners) {
-    if (!Number.isNaN(v) && w > 0) {
-      sum += v * w;
-      wsum += w;
-    }
-  }
+  let v = values[j0 * grid.ni + i0];
+  let w = (1 - wx) * (1 - wy);
+  if (!Number.isNaN(v) && w > 0) { sum += v * w; wsum += w; }
+  v = values[j0 * grid.ni + i1];
+  w = wx * (1 - wy);
+  if (!Number.isNaN(v) && w > 0) { sum += v * w; wsum += w; }
+  v = values[j1 * grid.ni + i0];
+  w = (1 - wx) * wy;
+  if (!Number.isNaN(v) && w > 0) { sum += v * w; wsum += w; }
+  v = values[j1 * grid.ni + i1];
+  w = wx * wy;
+  if (!Number.isNaN(v) && w > 0) { sum += v * w; wsum += w; }
   if (wsum <= 0) return null;
   return sum / wsum;
 }

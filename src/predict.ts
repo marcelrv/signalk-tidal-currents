@@ -17,6 +17,7 @@
  * directions, which is what turns the signed speed into a set/drift vector.
  */
 
+import { createCellIndex, distanceKm } from './geoindex.js';
 import {
   ConstituentTable,
   findStationHarmonics,
@@ -24,6 +25,8 @@ import {
   HarmonicStation,
   IdxStation,
 } from './harmonics.js';
+
+export { distanceKm, lonHalfWidthDeg, lonInSpan } from './geoindex.js';
 
 export const KNOTS_TO_MS = 0.514444;
 const DEG2RAD = Math.PI / 180;
@@ -150,17 +153,6 @@ export function timeline(
   return out;
 }
 
-/** Great-circle distance in km. */
-export function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * DEG2RAD;
-  const dLon = (lon2 - lon1) * DEG2RAD;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * DEG2RAD) * Math.cos(lat2 * DEG2RAD) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(Math.min(1, a)));
-}
-
 // Resolvability memo: whether a station's (or its reference's) harmonic
 // record exists is a pure function of the loaded dataset, so cache it per
 // station object instead of re-running a FULL harmonic prediction per station
@@ -175,6 +167,11 @@ export function isStationResolvable(data: HarmonicsData, station: IdxStation): b
   const ok = name !== undefined && findStationHarmonics(data.records, name) !== undefined;
   resolvableCache.set(station, ok);
   return ok;
+}
+
+/** True for a station with known flood AND ebb directions — usable as a set/drift vector. */
+export function isVectorCapable(s: IdxStation): boolean {
+  return !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null);
 }
 
 /**
@@ -193,7 +190,7 @@ export function nearestCurrentStations(
     .map((s) => ({
       station: s,
       distanceKm: Math.round(distanceKm(lat, lon, s.latitude, s.longitude) * 100) / 100,
-      vectorCapable: !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null),
+      vectorCapable: isVectorCapable(s),
     }))
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, limit);
@@ -202,8 +199,9 @@ export function nearestCurrentStations(
 /**
  * All current stations inside a lat/lon bounding box (no distance sort or
  * nearest-N cutoff — the point is to cover every station a map viewport can
- * see, not just the closest handful to one reference point). `limit` is
- * still applied as a safety cap on the response size.
+ * see, not just the closest handful to one reference point). Gathered through
+ * the cell index (O(stations in view)), in array order. `limit` is still
+ * applied as a safety cap on the response size.
  */
 export function stationsInBbox(
   data: HarmonicsData,
@@ -213,16 +211,53 @@ export function stationsInBbox(
   north: number,
   limit: number = 500,
 ): Array<{ station: IdxStation; vectorCapable: boolean }> {
-  const result: Array<{ station: IdxStation; vectorCapable: boolean }> = [];
-  for (const s of data.stations) {
-    if (!s.isCurrent) continue;
-    if (s.latitude < south || s.latitude > north || s.longitude < west || s.longitude > east) continue;
-    if (!isStationResolvable(data, s)) continue;
-    result.push({
-      station: s,
-      vectorCapable: !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null),
-    });
-    if (result.length >= limit) break;
-  }
-  return result;
+  const found = legacyCoverageIndexFor(data).index.inBbox(west, south, east, north);
+  return (found.length > limit ? found.slice(0, limit) : found).map((station) => ({
+    station,
+    vectorCapable: isVectorCapable(station),
+  }));
+}
+
+/**
+ * Spatial index over a dataset's current + resolvable legacy stations (the
+ * shared cell index, geoindex.ts). `stationAt` returns the first
+ * vector-capable station of `nearestCurrentStations(…, 10)` within `maxKm`
+ * (the REST/delta selection rule: top-10 nearest, then capable, then in range).
+ *
+ * Why only stations within maxKm matter: that result is the first capable
+ * station among the 10 nearest, restricted to d <= maxKm. Sorted by rounded
+ * distance, every station with d <= maxKm precedes every station beyond it,
+ * so the top-10 restricted to d <= maxKm is just the first 10 of the
+ * within-maxKm stations. Stations beyond maxKm can occupy top-10 slots only
+ * after all within-range ones, so they never block a capable one. Hence we
+ * gather all stations within maxKm (padded box + exact rounded-distance test),
+ * sort by (distance, array order — the stable-sort tie-break), keep 10, then
+ * take the first vector-capable one.
+ */
+export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
+  const stations = data.stations.filter((s) => s.isCurrent && isStationResolvable(data, s));
+  const index = createCellIndex(stations, (s) => s.latitude, (s) => s.longitude, cellDeg);
+  const capableStations = stations.filter(isVectorCapable);
+  return {
+    index,
+    /** The vector-capable indexed stations (computed once per dataset). */
+    capable: capableStations,
+    /** True when at least one indexed station is vector-capable (computed once per dataset). */
+    hasVectorCapable: capableStations.length > 0,
+    stationAt(lat: number, lon: number, maxKm: number): IdxStation | null {
+      const cand: Array<{ s: IdxStation; d: number; r: number }> = [];
+      index.within(lat, lon, maxKm, (s, d, r) => cand.push({ s, d, r }));
+      cand.sort((a, b) => a.d - b.d || a.r - b.r);
+      for (const c of cand.slice(0, 10)) if (isVectorCapable(c.s)) return c.s;
+      return null;
+    },
+  };
+}
+
+const legacyIndexCache = new WeakMap<HarmonicsData, ReturnType<typeof legacyCoverageIndex>>();
+/** legacyCoverageIndex memoised per loaded HarmonicsData (a reload yields a new object). */
+export function legacyCoverageIndexFor(data: HarmonicsData): ReturnType<typeof legacyCoverageIndex> {
+  let index = legacyIndexCache.get(data);
+  if (!index) legacyIndexCache.set(data, (index = legacyCoverageIndex(data)));
+  return index;
 }
