@@ -16,6 +16,7 @@ import {
   savePriorityOverrideAtomic,
 } from '../dist/priority.js';
 import { ApiState, resolveVector } from '../dist/api.js';
+import { buildGridSeries } from '../dist/gribcurrents.js';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'signalk-tidal-currents-priority-'));
@@ -30,8 +31,9 @@ function fakeGribState() {
     v: Float64Array.from([0, 0, 0, 0]),
     depth: 0,
     file: 'test.grb2',
+    refTime: Date.UTC(2026, 6, 4, 12, 0, 0),
   };
-  const data = { dir: 'test', files: ['test.grb2'], slots: [slot], slotsByFile: { 'test.grb2': [slot] }, warnings: [] };
+  const data = { dir: 'test', files: ['test.grb2'], series: buildGridSeries([slot]), warnings: [] };
   return { get: () => data, error: null };
 }
 
@@ -156,7 +158,7 @@ test('a stacked UTCEF dataset far away does not hijack via its nearest-station f
   assert.equal(r?.utcefStation?.id, 'NEAR');
 });
 
-test('gribVectorAt honors a file filter against slotsByFile', () => {
+test('a stack GRIB dataset whose files are not loaded falls through to the type-rank probe', () => {
   const time = Date.UTC(2026, 6, 4, 12, 0, 0);
   const g = (fakeGribState() as any).get();
   const state: ApiState = {

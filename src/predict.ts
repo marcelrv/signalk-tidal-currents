@@ -177,6 +177,11 @@ export function isStationResolvable(data: HarmonicsData, station: IdxStation): b
   return ok;
 }
 
+/** True for a station with known flood AND ebb directions — usable as a set/drift vector. */
+export function isVectorCapable(s: IdxStation): boolean {
+  return !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null);
+}
+
 /**
  * Nearest current stations to a position, closest first. Only stations that
  * resolve to harmonic data are returned; `vectorCapable` marks those with
@@ -193,7 +198,7 @@ export function nearestCurrentStations(
     .map((s) => ({
       station: s,
       distanceKm: Math.round(distanceKm(lat, lon, s.latitude, s.longitude) * 100) / 100,
-      vectorCapable: !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null),
+      vectorCapable: isVectorCapable(s),
     }))
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, limit);
@@ -235,7 +240,7 @@ export function stationsInBbox(
     if (!isStationResolvable(data, s)) continue;
     result.push({
       station: s,
-      vectorCapable: !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null),
+      vectorCapable: isVectorCapable(s),
     });
     if (result.length >= limit) break;
   }
@@ -273,7 +278,7 @@ export function lonHalfWidthDeg(lat: number, dLatDeg: number): number {
  */
 export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
   const stations = data.stations.filter((s) => s.isCurrent && isStationResolvable(data, s));
-  const capable = (s: IdxStation) => !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null);
+  const capable = isVectorCapable;
   const rank = new Map<IdxStation, number>();
   stations.forEach((s, i) => rank.set(s, i));
   const nLon = Math.round(360 / cellDeg);
@@ -285,9 +290,12 @@ export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
     if (l) l.push(s);
     else cells.set(k, [s]);
   }
+  const capableStations = stations.filter(capable);
   return {
+    /** The vector-capable indexed stations (computed once per dataset). */
+    capable: capableStations,
     /** True when at least one indexed station is vector-capable (computed once per dataset). */
-    hasVectorCapable: stations.some(capable),
+    hasVectorCapable: capableStations.length > 0,
     stationAt(lat: number, lon: number, maxKm: number): IdxStation | null {
       const cand: Array<{ s: IdxStation; d: number }> = [];
       const consider = (s: IdxStation) => {

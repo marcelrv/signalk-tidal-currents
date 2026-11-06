@@ -28,7 +28,7 @@ import { registerRoutes, resolveVector, resolvedStationName, ApiState, RouterLik
 import { runAutoUpdateSweep } from './autoUpdate.js';
 import { createCatalogClient } from './catalog.js';
 import { createDownloadEngine } from './downloads.js';
-import { GRIB_EXT_RE, createGribSource } from './gribcurrents.js';
+import { GRIB_EXT_RE, createGribSource, gribSlotCount } from './gribcurrents.js';
 import { HarmonicsData, loadHarmonicsDir } from './harmonics.js';
 import { ManagerRouterLike, ManagerState, registerManagerRoutes } from './managerApi.js';
 import { readManifest } from './manifest.js';
@@ -406,8 +406,8 @@ function pluginConstructor(app: any) {
           parts.push(`${state.data.stations.length} stations (${currents} current)`);
         }
         const g = state.grib?.get();
-        if (g && g.slots.length > 0) {
-          parts.push(`${g.files.length} GRIB file(s), ${g.slots.length} forecast times`);
+        if (g && g.series.length > 0) {
+          parts.push(`${g.files.length} GRIB file(s), ${g.series.length} grid(s), ${gribSlotCount(g)} forecast times`);
         }
         const u = state.utcef?.get();
         if (u && u.currentStations.length > 0) {
@@ -591,10 +591,10 @@ const openApiSpec = {
       get: {
         summary:
           'Current vectors over a bbox for a flow-field overlay: GRIB lattice samples merged with UTCEF ' +
-          'stations, each point kept only where its source wins the configured source priority (same ' +
-          'order as /vector). Every point carries `source` ("grib" | "utcef" | "station", plus `stationId` for stations). ' +
+          'stations. Every point is answered by the same resolver as /vector (same source priority), so it ' +
+          'equals /vector at its coordinates. Every point carries `source` ("grib" | "utcef" | "station", plus `stationId` for stations). ' +
           'Legacy harmonic stations are skipped unless stations=1. ' +
-          'maxPoints caps the count via stable thinning — same zoom-out/zoom-in density control as /stations viewport mode.',
+          'maxPoints caps the count; GRIB lattice density depends only on the view size and grid resolution (power-of-two steps on the grid nodes), stations are thinned on a stable spatial ladder.',
         parameters: [
           { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: '"west,south,east,north"' },
           { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },

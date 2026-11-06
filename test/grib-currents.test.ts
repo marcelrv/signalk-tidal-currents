@@ -12,8 +12,10 @@ import { registerRoutes, resolveVector, ApiState } from '../dist/api.js';
 import {
   createGribSource,
   gribVectorAt,
-  gribGridSamples,
+  gribSeriesFor,
+  gribSeriesCacheSize,
   gribSummary,
+  SERIES_CACHE_CAP,
   loadGribDir,
   GRIB_TIME_SLACK_MS,
 } from '../dist/gribcurrents.js';
@@ -21,6 +23,9 @@ import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { lonInSpan } from '../dist/predict.js';
 import { createUtcefSource, utcefCoverageIndex, utcefVectorAt } from '../dist/utcef.js';
 import { encodeGrib2File, EncodeField } from './grib2-testutil.js';
+
+/** The interpolated sample at a point, or null. */
+const vec = (...a: Parameters<typeof gribVectorAt>) => gribVectorAt(...a)?.sample ?? null;
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
@@ -61,42 +66,42 @@ test('loadGribDir pairs u/v fields into time slots', () => {
   const data = loadGribDir(uvDir)!;
   assert.ok(data);
   assert.deepEqual(data.files, ['currents.grb2']);
-  assert.equal(data.slots.length, 2);
-  assert.equal(data.slots[0].time, T0);
-  assert.equal(data.slots[1].time, T0 + 2 * HOUR);
+  assert.equal(data.series[0].slots.length, 2);
+  assert.equal(data.series[0].slots[0].time, T0);
+  assert.equal(data.series[0].slots[1].time, T0 + 2 * HOUR);
   assert.deepEqual(data.warnings, []);
 });
 
 test('gribVectorAt: spatial sample and linear time interpolation', () => {
   const data = loadGribDir(uvDir)!;
-  const at0 = gribVectorAt(data, 53.2, 5.2, T0)!;
+  const at0 = vec(data, 53.2, 5.2, T0)!;
   assert.ok(Math.abs(at0.u! - 1.0) < 1e-6);
   assert.ok(Math.abs(at0.v!) < 1e-6);
   assert.equal(at0.direction, 90); // flowing east
   assert.ok(Math.abs(at0.speedKn - 1 / 0.514444) < 0.01);
 
-  const mid = gribVectorAt(data, 53.2, 5.2, T0 + HOUR)!; // halfway → u=1.5
+  const mid = vec(data, 53.2, 5.2, T0 + HOUR)!; // halfway → u=1.5
   assert.ok(Math.abs(mid.u! - 1.5) < 1e-6);
 
   // Clamps to the edge field within the slack window…
-  const late = gribVectorAt(data, 53.2, 5.2, T0 + 2 * HOUR + GRIB_TIME_SLACK_MS - 1)!;
+  const late = vec(data, 53.2, 5.2, T0 + 2 * HOUR + GRIB_TIME_SLACK_MS - 1)!;
   assert.ok(Math.abs(late.u! - 2.0) < 1e-6);
   // …but not beyond it.
-  assert.equal(gribVectorAt(data, 53.2, 5.2, T0 + 2 * HOUR + GRIB_TIME_SLACK_MS + 1), null);
-  assert.equal(gribVectorAt(data, 53.2, 5.2, T0 - GRIB_TIME_SLACK_MS - 1), null);
+  assert.equal(vec(data, 53.2, 5.2, T0 + 2 * HOUR + GRIB_TIME_SLACK_MS + 1), null);
+  assert.equal(vec(data, 53.2, 5.2, T0 - GRIB_TIME_SLACK_MS - 1), null);
 });
 
 test('gribVectorAt: outside the grid → null', () => {
   const data = loadGribDir(uvDir)!;
-  assert.equal(gribVectorAt(data, 53.2, 6.5, T0), null);
-  assert.equal(gribVectorAt(data, 51.0, 5.2, T0), null);
+  assert.equal(vec(data, 53.2, 6.5, T0), null);
+  assert.equal(vec(data, 51.0, 5.2, T0), null);
 });
 
 test('direction/speed fields (params 0/1) are converted to u/v', () => {
   // 1 m/s flowing toward 045° true.
   const dir = writeGribDir('dirspd', [gridField(0, 0, 45.0), gridField(1, 0, 1.0)]);
   const data = loadGribDir(dir)!;
-  const s = gribVectorAt(data, 53.2, 5.2, T0)!;
+  const s = vec(data, 53.2, 5.2, T0)!;
   assert.equal(s.direction, 45);
   assert.ok(Math.abs(s.u! - Math.SQRT1_2) < 1e-3);
   assert.ok(Math.abs(s.v! - Math.SQRT1_2) < 1e-3);
@@ -114,7 +119,7 @@ test('createGribSource picks up newly dropped files', () => {
   assert.equal(src.get(), null);
   fs.writeFileSync(path.join(dir, 'new.grb2'), encodeGrib2File([gridField(2, 0, 1), gridField(3, 0, 0)]));
   const data = src.get();
-  assert.ok(data && data.slots.length === 1);
+  assert.ok(data && data.series[0].slots.length === 1);
 });
 
 test('invalidate() forces an immediate reload, bypassing checkIntervalMs', () => {
@@ -127,7 +132,7 @@ test('invalidate() forces an immediate reload, bypassing checkIntervalMs', () =>
   assert.equal(src.get(), null, 'still within checkIntervalMs — should not have reloaded yet');
   src.invalidate();
   const data = src.get();
-  assert.ok(data && data.slots.length === 1, 'invalidate() should force the very next get() to reload');
+  assert.ok(data && data.series[0].slots.length === 1, 'invalidate() should force the very next get() to reload');
 });
 
 // ── API integration (stub router, harmonics fixture + synthetic GRIB) ──
@@ -568,28 +573,31 @@ test('loadGribDir per-file cache: unchanged files reuse decoded slots, changed f
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-cache-'));
   fs.writeFileSync(path.join(dir, 'a.grb2'), encodeGrib2File([gridField(2, 0, 1.0), gridField(3, 0, 0.0)]));
   fs.writeFileSync(path.join(dir, 'b.grb2'), encodeGrib2File([gridField(2, 2, 2.0), gridField(3, 2, 0.0)]));
+  const slotOf = (d: NonNullable<ReturnType<typeof loadGribDir>>, file: string) =>
+    d.series.flatMap((s) => s.raw).find((x) => x.file === file);
 
   const cache = new Map();
   const first = loadGribDir(dir, cache)!;
-  assert.equal(first.slots.length, 2);
-  const aSlotsFirst = first.slotsByFile['a.grb2'];
+  assert.equal(first.series.length, 1, 'both files share one grid → one series');
+  assert.equal(first.series[0].slots.length, 2);
+  const aFirst = slotOf(first, 'a.grb2')!;
 
-  // Nothing changed: the decoded slot ARRAYS must be reused, not rebuilt.
+  // Nothing changed: the decoded slot objects (and their arrays) must be reused, not rebuilt.
   const second = loadGribDir(dir, cache)!;
-  assert.equal(second.slotsByFile['a.grb2'], aSlotsFirst);
+  assert.equal(slotOf(second, 'a.grb2'), aFirst);
 
-  // Touch b into the future: only b re-decodes; a's arrays survive.
+  // Touch b into the future: only b re-decodes; a's slots survive.
   const future = new Date(Date.now() + 5_000);
   fs.utimesSync(path.join(dir, 'b.grb2'), future, future);
-  const bSlotsBefore = second.slotsByFile['b.grb2'];
+  const bBefore = slotOf(second, 'b.grb2');
   const third = loadGribDir(dir, cache)!;
-  assert.equal(third.slotsByFile['a.grb2'], aSlotsFirst);
-  assert.notEqual(third.slotsByFile['b.grb2'], bSlotsBefore);
+  assert.equal(slotOf(third, 'a.grb2'), aFirst);
+  assert.notEqual(slotOf(third, 'b.grb2'), bBefore);
 
   // Delete b: cache entry evicted, merged data shrinks.
   fs.unlinkSync(path.join(dir, 'b.grb2'));
   const fourth = loadGribDir(dir, cache)!;
-  assert.equal(fourth.slots.length, 1);
+  assert.equal(fourth.series[0].slots.length, 1);
   assert.equal(cache.has('b.grb2'), false);
   assert.equal(cache.has('a.grb2'), true);
 });
@@ -611,47 +619,80 @@ function remoteGridField(param: number, forecastHours: number, value: number): E
   };
 }
 
-test('gribGridSamples: samples every region, not just slots[0] grid', () => {
+test('series model: regions sharing valid times each keep their own series (no cross-grid shadowing)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-multiregion-'));
-  // File a sorts first, so its grid is slots[0].grid. The bug sampled only
-  // that grid, so a viewport over file b's region returned no arrows.
+  // SAME valid time (T0) in both regions — the real NOAA RTOFS case. The old
+  // merged slot list deduped across grids and kept only one region.
   fs.writeFileSync(path.join(dir, 'a.grb2'), encodeGrib2File([gridField(2, 0, 1.0), gridField(3, 0, 0.0)]));
-  // SAME valid time (T0) as region A — reproduces the real NOAA RTOFS case
-  // where every region shares one cycle's forecast times, so loadGribDir's
-  // same-time dedup collapses the merged `slots` down to just one region
-  // (here b.grb2 sorts last and wins). The fix must still find region A via
-  // slotsByFile rather than the collapsed `slots`.
   fs.writeFileSync(
     path.join(dir, 'b.grb2'),
     encodeGrib2File([remoteGridField(2, 0, 1.0), remoteGridField(3, 0, 0.0)]),
   );
   const data = loadGribDir(dir)!;
-  // Precondition: the merged list really did collapse to a single region.
-  assert.equal(data.slots.length, 1);
+  assert.equal(data.series.length, 2);
+  assert.deepEqual(data.series.map((s) => s.files), [['a.grb2'], ['b.grb2']]);
+  assert.ok(vec(data, 53.2, 5.2, T0), 'region A answers');
+  assert.ok(vec(data, 30.2, -74.8, T0), 'region B answers');
+  assert.equal(vec(data, 0, 0, T0), null);
 
-  // Viewport over region B (US East Coast) must yield arrows.
-  const east = gribGridSamples(data, { west: -74.8, south: 30.1, east: -74.2, north: 30.5 }, T0, 50);
-  assert.ok(east.length > 0, 'expected samples in the second region');
-  assert.ok(east.every((p) => p.longitude < 0 && p.latitude >= 30 && p.latitude <= 30.6));
-
-  // Viewport over region A (North Sea) still works.
-  const west = gribGridSamples(data, { west: 5.0, south: 53.0, east: 5.4, north: 53.4 }, T0, 50);
-  assert.ok(west.length > 0, 'expected samples in the first region');
-  assert.ok(west.every((p) => p.longitude > 4 && p.longitude < 6));
-
-  // A viewport much wider than region B's own small span (-75.0 to -74.4),
-  // extending well past its western edge — the "zoomed out" map case. The
-  // region is still fully contained in the bbox and must still yield
-  // samples (this used to come back empty: the old lonIndex modulo folded
-  // the far-west bbox edge to a huge positive index with no upper clamp).
-  const zoomedOut = gribGridSamples(data, { west: -90, south: 20, east: -70, north: 40 }, T0, 50);
-  assert.ok(zoomedOut.length > 0, 'expected samples in region B from a wide zoomed-out viewport');
-
-  // Summary reports both regions and a union envelope spanning them.
   const summary = gribSummary(data) as {
+    fields: number;
     regions: { lonWest: number; lonEast: number }[];
     boundingBox: { lonWest: number; lonEast: number; latMin: number; latMax: number };
   };
+  assert.equal(summary.fields, 2);
   assert.equal(summary.regions.length, 2);
   assert.ok(summary.boundingBox.lonWest <= -75 && summary.boundingBox.lonEast >= 5);
+});
+
+test('series order: finest resolution first, ties by file name', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-order-'));
+  const coarse = (p: number, v: number): EncodeField => ({ ...gridField(p, 0, v), dLat: 0.2, dLon: 0.2, ni: 4, nj: 4, values: new Array(16).fill(v) });
+  // z.grb2 is the FINE grid (0.1°), a.grb2 the coarse one (0.2°) over the same area.
+  fs.writeFileSync(path.join(dir, 'a.grb2'), encodeGrib2File([coarse(2, 5), coarse(3, 0)]));
+  fs.writeFileSync(path.join(dir, 'z.grb2'), encodeGrib2File([gridField(2, 0, 1), gridField(3, 0, 0)]));
+  const data = loadGribDir(dir)!;
+  assert.deepEqual(data.series.map((s) => s.files[0]), ['z.grb2', 'a.grb2']);
+  const hit = gribVectorAt(data, 53.2, 5.2, T0)!;
+  assert.equal(hit.series.files[0], 'z.grb2', 'the finest grid answers where several overlap');
+  assert.ok(Math.abs(hit.sample.u! - 1) < 1e-6);
+});
+
+test('series dedup: one slot per valid time — shallowest depth first, then newest cycle', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-dedup-'));
+  const write = (name: string, refTime: number, forecastHours: number, uVal: number, depth?: number) => {
+    const extra = depth ? { surfaceType: 160, surfaceValue: depth } : {};
+    fs.writeFileSync(
+      path.join(dir, name),
+      encodeGrib2File([
+        { ...gridField(2, forecastHours, uVal), refTime, ...extra },
+        { ...gridField(3, forecastHours, 0), refTime, ...extra },
+      ]),
+    );
+  };
+  // Both land on valid time T0; `new` is the newer cycle.
+  write('old.grb2', T0 - 12 * HOUR, 12, 1);
+  write('new.grb2', T0 - 6 * HOUR, 6, 2);
+  let data = loadGribDir(dir)!;
+  assert.equal(data.series.length, 1);
+  assert.equal(data.series[0].slots.length, 1);
+  assert.equal(data.series[0].slots[0].file, 'new.grb2', 'newest cycle wins the valid time');
+  assert.ok(Math.abs(vec(data, 53.2, 5.2, T0)!.u! - 2) < 1e-6);
+
+  // A deeper level from an even newer cycle still loses to the surface.
+  write('deep.grb2', T0, 0, 9, 50);
+  data = loadGribDir(dir)!;
+  assert.equal(data.series[0].slots.length, 1);
+  assert.equal(data.series[0].slots[0].file, 'new.grb2');
+});
+
+test('gribSeriesFor is cached by the filesKey string and capped', () => {
+  const data = loadGribDir(uvDir)!;
+  const a = gribSeriesFor(data, new Set(['currents.grb2']), 'f:currents.grb2');
+  const b = gribSeriesFor(data, new Set(['currents.grb2']), 'f:currents.grb2'); // a DIFFERENT Set instance, same key
+  assert.equal(a, b);
+  assert.equal(a[0].grid, data.series[0].grid, 'subset series share the canonical grid object');
+  assert.deepEqual(gribSeriesFor(data, new Set(['nope.grb2']), 'f:nope.grb2'), []);
+  for (let i = 0; i < SERIES_CACHE_CAP * 3; i++) gribSeriesFor(data, new Set([`x${i}`]), `f:x${i}`);
+  assert.ok(gribSeriesCacheSize(data) <= SERIES_CACHE_CAP);
 });

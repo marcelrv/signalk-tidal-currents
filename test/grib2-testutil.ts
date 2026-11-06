@@ -179,9 +179,9 @@ export function encodeGrib2Message(f: EncodeField): Uint8Array {
   const present = f.values.filter((v) => !Number.isNaN(v));
   const hasBitmap = present.length !== f.values.length;
   const scaled = present.map((v) => Math.round(v * Math.pow(10, decScale)));
-  const refValue = scaled.length > 0 ? Math.min(...scaled) : 0;
+  const refValue = scaled.reduce((m, x) => (x < m ? x : m), scaled.length > 0 ? scaled[0] : 0); // reduce, not spread: large grids overflow the call stack
   const xs = scaled.map((s) => s - refValue);
-  const maxX = xs.length > 0 ? Math.max(...xs) : 0;
+  const maxX = xs.reduce((m, x) => (x > m ? x : m), 0);
   const nbits = maxX > 0 ? Math.ceil(Math.log2(maxX + 1)) : 0;
 
   const sections: Uint8Array[] = [

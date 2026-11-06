@@ -21,7 +21,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { Grib2Field, Grib2Grid, parseGrib2, sampleGrid } from './grib2.js';
+import { Grib2Field, Grib2Grid, GridCell, locateGridCell, parseGrib2, sampleGrid } from './grib2.js';
 import { CurrentSample, KNOTS_TO_MS } from './predict.js';
 import { listDataFilesRecursive } from './utcef.js';
 
@@ -33,25 +33,45 @@ export const GRIB_TIME_SLACK_MS = 3 * 3_600_000;
 
 /** One forecast time with matched u and v grids. */
 export interface TimeSlot {
-  time: number; // ms epoch
+  time: number; // ms epoch (valid time)
   grid: Grib2Grid;
   u: Float64Array; // m/s east
   v: Float64Array; // m/s north
   depth: number; // m below surface (0 = surface), for reporting
   file: string;
+  /** Model cycle (analysis/reference time) the field belongs to, ms epoch. */
+  refTime: number;
+}
+
+/**
+ * All the slots of ONE grid geometry. The unit GRIB lookups work on: a grid
+ * never shadows another grid, and a lookup brackets in time only among the
+ * slots of its own series (deduped per valid time — shallowest depth, then
+ * newest refTime, then later file name — so one forecast cycle answers a
+ * given valid time).
+ */
+export interface GridSeries {
+  /** One shared object per distinct geometry within a data object (compare by identity). */
+  grid: Grib2Grid;
+  /** Files contributing slots to this grid, sorted. */
+  files: string[];
+  /** Deduped per valid time, sorted by time. */
+  slots: TimeSlot[];
+  /** Every candidate slot before the per-time dedup (what gribSeriesFor subsets are built from). */
+  raw: TimeSlot[];
+  /**
+   * Per-cell coverage bits (index j0*ni + i0 of locateGridCell): bit 0 = the
+   * cell is bilinear-defined in at least one slot (necessary condition),
+   * bit 1 = defined in EVERY slot (sufficient). Time-independent.
+   */
+  cellMask: Uint8Array;
 }
 
 export interface GribCurrentsData {
   dir: string;
   files: string[];
-  slots: TimeSlot[]; // sorted by time
-  /**
-   * The same slots keyed by source file, WITHOUT the cross-file same-time
-   * dedup applied to `slots` — per-dataset priority (PRD §5.3 Phase 3) needs
-   * to probe one file's full coverage even when another file shadowed some
-   * of its valid times in the merged list. Same TimeSlot objects, no copies.
-   */
-  slotsByFile: Record<string, TimeSlot[]>;
+  /** One entry per distinct grid geometry, finest resolution first (ties by file name). */
+  series: GridSeries[];
   /** Reasons for anything skipped during parsing (surfaced in the summary). */
   warnings: string[];
 }
@@ -86,6 +106,7 @@ function buildSlots(fields: Grib2Field[], file: string, warnings: string[]): Tim
     time: number;
     depth: number;
     grid: Grib2Grid;
+    refTime: number;
     byParam: Map<number, Grib2Field>;
   }
   const buckets: Bucket[] = [];
@@ -94,10 +115,10 @@ function buildSlots(fields: Grib2Field[], file: string, warnings: string[]): Tim
     const depth = fieldDepth(f);
     if (depth === null) continue;
     let b = buckets.find(
-      (x) => x.time === f.validTime && Math.abs(x.depth - depth) < 1e-6 && sameGrid(x.grid, f.grid),
+      (x) => x.time === f.validTime && x.refTime === f.refTime && Math.abs(x.depth - depth) < 1e-6 && sameGrid(x.grid, f.grid),
     );
     if (!b) {
-      b = { time: f.validTime, depth, grid: f.grid, byParam: new Map() };
+      b = { time: f.validTime, depth, grid: f.grid, refTime: f.refTime, byParam: new Map() };
       buckets.push(b);
     }
     b.byParam.set(f.paramNumber, f);
@@ -112,13 +133,13 @@ function buildSlots(fields: Grib2Field[], file: string, warnings: string[]): Tim
   }
   for (const [time, list] of byTime) {
     // Prefer the shallowest level that yields a complete vector.
-    list.sort((a, b) => a.depth - b.depth);
+    list.sort((a, b) => a.depth - b.depth || b.refTime - a.refTime);
     let made = false;
     for (const b of list) {
       const u = b.byParam.get(2);
       const v = b.byParam.get(3);
       if (u && v) {
-        slots.push({ time, grid: b.grid, u: u.values, v: v.values, depth: b.depth, file });
+        slots.push({ time, grid: b.grid, u: u.values, v: v.values, depth: b.depth, file, refTime: b.refTime });
         made = true;
         break;
       }
@@ -134,7 +155,7 @@ function buildSlots(fields: Grib2Field[], file: string, warnings: string[]): Tim
           uu[i] = s * Math.sin(d);
           vv[i] = s * Math.cos(d);
         }
-        slots.push({ time, grid: b.grid, u: uu, v: vv, depth: b.depth, file });
+        slots.push({ time, grid: b.grid, u: uu, v: vv, depth: b.depth, file, refTime: b.refTime });
         made = true;
         break;
       }
@@ -167,7 +188,87 @@ export interface GribFileCacheEntry {
 }
 export type GribFileCache = Map<string, GribFileCacheEntry>;
 
-/** Parse every GRIB2 file in a directory (recursively — catalog filenames may carry subdir paths) into a time-sorted current dataset. Pass a `cache` (owned by a long-lived source) to re-parse only files whose size/mtime changed. */
+// ── Series model ──
+
+/** Finest grid first (|di·dj| ascending), ties by first file name. */
+function seriesOrder(a: GridSeries, b: GridSeries): number {
+  const ra = Math.abs(a.grid.di * a.grid.dj);
+  const rb = Math.abs(b.grid.di * b.grid.dj);
+  if (ra !== rb) return ra - rb;
+  return a.files[0] < b.files[0] ? -1 : a.files[0] > b.files[0] ? 1 : 0;
+}
+
+/**
+ * Per-cell coverage bits for a series (see GridSeries.cellMask). Built from
+ * per-NODE accumulators over all slots (one pass over the decoded arrays), then
+ * folded into cells with the same corner indices locateGridCell produces.
+ */
+function buildCellMask(grid: Grib2Grid, slots: TimeSlot[]): Uint8Array {
+  const { ni, nj } = grid;
+  const n = ni * nj;
+  const allOk = new Uint8Array(n).fill(1);
+  const anyU = new Uint8Array(n);
+  const anyV = new Uint8Array(n);
+  for (const slot of slots) {
+    const u = slot.u;
+    const v = slot.v;
+    for (let k = 0; k < n; k++) {
+      const nu = !Number.isNaN(u[k]);
+      const nv = !Number.isNaN(v[k]);
+      if (nu) anyU[k] = 1;
+      if (nv) anyV[k] = 1;
+      if (!(nu && nv)) allOk[k] = 0;
+    }
+  }
+  const mask = new Uint8Array(n);
+  for (let j0 = 0; j0 < nj; j0++) {
+    const j1 = Math.min(nj - 1, j0 + 1);
+    for (let i0 = 0; i0 < ni; i0++) {
+      const i1 = grid.globalLon ? (i0 + 1) % ni : Math.min(ni - 1, i0 + 1);
+      const k0 = j0 * ni + i0;
+      const k1 = j0 * ni + i1;
+      const k2 = j1 * ni + i0;
+      const k3 = j1 * ni + i1;
+      const all = allOk[k0] & allOk[k1] & allOk[k2] & allOk[k3];
+      const any = (anyU[k0] | anyU[k1] | anyU[k2] | anyU[k3]) & (anyV[k0] | anyV[k1] | anyV[k2] | anyV[k3]);
+      mask[k0] = any | (all << 1);
+    }
+  }
+  return mask;
+}
+
+/**
+ * Group slots by grid geometry into series. Within a grid, one slot per valid
+ * time: shallowest depth, then newest refTime, then later file name. Ordered
+ * finest-resolution first, then by file name.
+ */
+export function buildGridSeries(all: TimeSlot[]): GridSeries[] {
+  const groups: Array<{ grid: Grib2Grid; raw: TimeSlot[] }> = [];
+  for (const s of all) {
+    let g = groups.find((x) => sameGrid(x.grid, s.grid));
+    if (!g) groups.push((g = { grid: s.grid, raw: [] }));
+    g.raw.push(s);
+  }
+  const out: GridSeries[] = [];
+  for (const { grid, raw } of groups) {
+    const ranked = raw
+      .slice()
+      .sort(
+        (a, b) =>
+          a.time - b.time ||
+          a.depth - b.depth ||
+          b.refTime - a.refTime ||
+          (a.file < b.file ? 1 : a.file > b.file ? -1 : 0),
+      );
+    const slots: TimeSlot[] = [];
+    for (const s of ranked) if (slots.length === 0 || slots[slots.length - 1].time !== s.time) slots.push(s);
+    const files = [...new Set(raw.map((s) => s.file))].sort();
+    out.push({ grid, files, slots, raw, cellMask: buildCellMask(grid, slots) });
+  }
+  return out.sort(seriesOrder);
+}
+
+/** Parse every GRIB2 file in a directory (recursively — catalog filenames may carry subdir paths) into per-grid series. Pass a `cache` (owned by a long-lived source) to re-parse only files whose size/mtime changed. */
 export function loadGribDir(dir: string, cache?: GribFileCache): GribCurrentsData | null {
   if (!fs.existsSync(dir)) return null; // directory absent — GRIB source simply not configured
   const entries = listDataFilesRecursive(dir, GRIB_EXT_RE);
@@ -178,7 +279,6 @@ export function loadGribDir(dir: string, cache?: GribFileCache): GribCurrentsDat
 
   const warnings: string[] = [];
   const slots: TimeSlot[] = [];
-  const slotsByFile: Record<string, TimeSlot[]> = {};
   const files: string[] = [];
   const present = new Set<string>();
   for (const name of entries) {
@@ -217,7 +317,6 @@ export function loadGribDir(dir: string, cache?: GribFileCache): GribCurrentsDat
     warnings.push(...fileWarnings);
     if (fileSlots.length > 0) {
       slots.push(...fileSlots);
-      slotsByFile[name] = fileSlots;
       files.push(name);
     }
   }
@@ -225,19 +324,54 @@ export function loadGribDir(dir: string, cache?: GribFileCache): GribCurrentsDat
   if (cache) {
     for (const key of [...cache.keys()]) if (!present.has(key)) cache.delete(key);
   }
-  if (slots.length === 0) {
-    return { dir, files, slots: [], slotsByFile, warnings };
+  return { dir, files, series: buildGridSeries(slots), warnings };
+}
+
+/** Upper bound on cached file-subset series lists per data object (one per stack layer; a handful in practice). */
+export const SERIES_CACHE_CAP = 32;
+// Per data object, keyed by the filesKey STRING (never by Set identity): freed
+// together with the data on reload.
+const seriesCache = new WeakMap<GribCurrentsData, Map<string, GridSeries[]>>();
+
+/** The key a file subset is cached under (matches resolve.ts Layer.filesKey for stack layers). */
+export function gribFilesKey(files: Iterable<string>): string {
+  return 'f:' + [...files].sort().join('\n');
+}
+
+/** Number of cached file-subset series lists for `data` (bounded by SERIES_CACHE_CAP; for tests). */
+export function gribSeriesCacheSize(data: GribCurrentsData): number {
+  return seriesCache.get(data)?.size ?? 0;
+}
+
+/**
+ * The series a lookup restricted to `files` works on, built from the files'
+ * own slots (same dedup/order rules as the unrestricted series). `undefined`
+ * files = every file (`data.series`). Cached per data by `filesKey`.
+ */
+export function gribSeriesFor(
+  data: GribCurrentsData,
+  files?: ReadonlySet<string>,
+  filesKey?: string,
+): readonly GridSeries[] {
+  if (!files) return data.series;
+  const key = filesKey ?? gribFilesKey(files);
+  let perData = seriesCache.get(data);
+  if (!perData) seriesCache.set(data, (perData = new Map()));
+  let list = perData.get(key);
+  if (!list) {
+    const raw: TimeSlot[] = [];
+    for (const s of data.series) for (const slot of s.raw) if (files.has(slot.file)) raw.push(slot);
+    list = buildGridSeries(raw);
+    // Share the data's canonical grid object per geometry, so callers can
+    // compare "same grid" by identity across the unrestricted and file-subset series.
+    for (const sub of list) {
+      const canon = data.series.find((x) => sameGrid(x.grid, sub.grid));
+      if (canon) sub.grid = canon.grid;
+    }
+    perData.set(key, list);
+    if (perData.size > SERIES_CACHE_CAP) perData.delete(perData.keys().next().value!);
   }
-  slots.sort((a, b) => a.time - b.time);
-  // Duplicate valid times across files: keep the one from the later file
-  // (sorted scan above), assuming newer downloads supersede older ones.
-  const dedup: TimeSlot[] = [];
-  for (const s of slots) {
-    const last = dedup[dedup.length - 1];
-    if (last && last.time === s.time && Math.abs(last.depth - s.depth) < 1e-6) dedup[dedup.length - 1] = s;
-    else dedup.push(s);
-  }
-  return { dir, files, slots: dedup, slotsByFile, warnings };
+  return list;
 }
 
 function sampleSlot(slot: TimeSlot, lat: number, lon: number): { u: number; v: number } | null {
@@ -247,89 +381,11 @@ function sampleSlot(slot: TimeSlot, lat: number, lon: number): { u: number; v: n
   return { u, v };
 }
 
-// Merged slot list per (data, files set): callers probing many positions
-// reuse one Set instance, so the filter+merge+sort runs once, not per probe.
-const filesSlotsCache = new WeakMap<GribCurrentsData, WeakMap<ReadonlySet<string>, TimeSlot[]>>();
-/** Time-sorted slots merged from the given files, cached per (data, Set identity). */
-function slotsForFiles(data: GribCurrentsData, files: ReadonlySet<string>): TimeSlot[] {
-  let perData = filesSlotsCache.get(data);
-  if (!perData) filesSlotsCache.set(data, (perData = new WeakMap()));
-  let slots = perData.get(files);
-  if (!slots) {
-    const lists = Object.entries(data.slotsByFile)
-      .filter(([name]) => files.has(name))
-      .map(([, list]) => list);
-    slots = lists.length === 1 ? lists[0] : lists.flat().sort((a, b) => a.time - b.time);
-    perData.set(files, slots);
-  }
-  return slots;
-}
-
-/**
- * Interpolated current vector at a position/time, or null when the position
- * is outside every grid (or on land) or the time is outside the covered
- * range by more than GRIB_TIME_SLACK_MS.
- *
- * Unlike station samples, `speedKn` is a magnitude (there is no flood/ebb
- * axis in gridded data — the sign convention does not apply).
- *
- * `files` restricts the lookup to slots parsed from those files (union,
- * merged by time) — how per-dataset priority (PRD §5.3 Phase 3) probes one
- * installed dataset instead of the whole merged directory.
- */
-export function gribVectorAt(
-  data: GribCurrentsData,
-  lat: number,
-  lon: number,
-  timeMs: number,
-  files?: ReadonlySet<string>,
-): CurrentSample | null {
-  return gribVectorAtDetail(data, lat, lon, timeMs, files)?.sample ?? null;
-}
-
-/**
- * gribVectorAt plus the grid geometry the answer was interpolated from (the
- * slot that contributed; s0's grid when both bracketing slots did). /grid
- * uses it to emit a lattice sample only from the grid /vector would answer
- * from, so overlapping regions don't produce two disagreeing lattices.
- */
-export function gribVectorAtDetail(
-  data: GribCurrentsData,
-  lat: number,
-  lon: number,
-  timeMs: number,
-  files?: ReadonlySet<string>,
-): { sample: CurrentSample; grid: Grib2Grid } | null {
-  if (files) return vectorAtSlots(slotsForFiles(data, files), lat, lon, timeMs);
-  const merged = vectorAtSlots(data.slots, lat, lon, timeMs);
-  if (merged) return merged;
-  // The merged list de-duplicates same-time slots across files, so with
-  // several regional grids sharing valid times it only holds ONE region's
-  // grid. Probe each distinct grid group's own slots before giving up.
-  const groups = gridGroups(data);
-  if (groups.length < 2) return null;
-  for (const g of groups) {
-    const hit = vectorAtSlots(slotsForFiles(data, g.files), lat, lon, timeMs);
-    if (hit) return hit;
-  }
-  return null;
-}
-
-/** Number of distinct grid geometries loaded (one per region). */
-export function gribGridCount(data: GribCurrentsData): number {
-  return gridGroups(data).length;
-}
-
-/** True when two grids have the same geometry (origin, spacing, size). */
-export function gribSameGrid(a: Grib2Grid, b: Grib2Grid): boolean {
-  return sameGrid(a, b);
-}
-
-/** Bracketing slot pair of a time within a sorted slot list, or null when out of range (beyond the clamp slack). */
-function bracketSlots(slots: TimeSlot[], timeMs: number): { s0: TimeSlot; s1: TimeSlot } | null {
-  if (slots.length === 0) return null;
-  if (timeMs < slots[0].time - GRIB_TIME_SLACK_MS) return null;
-  if (timeMs > slots[slots.length - 1].time + GRIB_TIME_SLACK_MS) return null;
+/** Index of the slot at/just before `timeMs` in a sorted list, or -1 when out of range (beyond the clamp slack). */
+function bracketIndex(slots: TimeSlot[], timeMs: number): number {
+  if (slots.length === 0) return -1;
+  if (timeMs < slots[0].time - GRIB_TIME_SLACK_MS) return -1;
+  if (timeMs > slots[slots.length - 1].time + GRIB_TIME_SLACK_MS) return -1;
   // Bracketing slots (binary search).
   let lo = 0;
   let hi = slots.length - 1;
@@ -338,51 +394,61 @@ function bracketSlots(slots: TimeSlot[], timeMs: number): { s0: TimeSlot; s1: Ti
     if (slots[mid].time <= timeMs) lo = mid;
     else hi = mid - 1;
   }
-  return { s0: slots[lo], s1: slots[Math.min(lo + 1, slots.length - 1)] };
+  return lo;
 }
 
+const scratchCell: GridCell = { i0: 0, i1: 0, j0: 0, j1: 0, wx: 0, wy: 0 };
+
 /**
- * The bracketing slot pair(s) gribVectorAt would sample at `timeMs`: one pair
- * per slot list it probes (merged list, plus each grid group when `files` is
- * undefined and several grids are loaded). Empty when out of range. Whether
- * gribVectorAt is non-null at a position depends only on these pairs and the
- * position — not on the exact time inside the pair — so callers can memoise
- * coverage per pair (see gribPairsCover).
+ * Does `series` answer at (lat, lon, timeMs)? EXACTLY the non-null condition
+ * of gribSeriesSample, without building a sample: the cell mask settles the
+ * common cases (defined in every slot / in none) with one lookup, and only a
+ * partially-defined cell (coastline) falls back to sampling the two
+ * bracketing slots. The mask is time-independent, so scrolling time never
+ * rebuilds it.
  */
-export function gribBracketPairs(
-  data: GribCurrentsData,
+export function gribSeriesCovers(series: GridSeries, lat: number, lon: number, timeMs: number): boolean {
+  const lo = bracketIndex(series.slots, timeMs);
+  if (lo < 0) return false;
+  const cell = locateGridCell(series.grid, lat, lon, scratchCell);
+  if (!cell) return false;
+  const m = series.cellMask[cell.j0 * series.grid.ni + cell.i0];
+  if (m & 2) return true;
+  if (!(m & 1)) return false;
+  const s0 = series.slots[lo];
+  const s1 = series.slots[Math.min(lo + 1, series.slots.length - 1)];
+  return sampleSlot(s0, lat, lon) !== null || (s1 !== s0 && sampleSlot(s1, lat, lon) !== null);
+}
+
+/** The first series (in the given order) that answers at the point, or null. */
+export function gribClaimSeries(
+  list: readonly GridSeries[],
+  lat: number,
+  lon: number,
   timeMs: number,
-  files?: ReadonlySet<string>,
-): { s0: TimeSlot; s1: TimeSlot }[] {
-  const lists = files ? [slotsForFiles(data, files)] : [data.slots];
-  if (!files) {
-    const groups = gridGroups(data);
-    if (groups.length >= 2) for (const g of groups) lists.push(slotsForFiles(data, g.files));
-  }
-  const out: { s0: TimeSlot; s1: TimeSlot }[] = [];
-  for (const l of lists) {
-    const p = bracketSlots(l, timeMs);
-    if (p) out.push(p);
-  }
-  return out;
-}
-
-/** True iff gribVectorAt would be non-null at (lat, lon) for these pairs (mirrors its null logic exactly). */
-export function gribPairsCover(pairs: readonly { s0: TimeSlot; s1: TimeSlot }[], lat: number, lon: number): boolean {
-  for (const { s0, s1 } of pairs) {
-    if (sampleSlot(s0, lat, lon) || (s1 !== s0 && sampleSlot(s1, lat, lon))) return true;
-  }
-  return false;
+): GridSeries | null {
+  for (const s of list) if (gribSeriesCovers(s, lat, lon, timeMs)) return s;
+  return null;
 }
 
 /**
- * Bilinear-in-space, linear-in-time current at a point from a sorted slot list;
- * null when the time is outside the slots or the point is uncovered.
+ * Bilinear-in-space, linear-in-time current at a point from one series; null
+ * when the time is outside the slots (beyond the clamp slack) or the point is
+ * uncovered.
+ *
+ * Unlike station samples, `speedKn` is a magnitude (there is no flood/ebb
+ * axis in gridded data — the sign convention does not apply).
  */
-function vectorAtSlots(slots: TimeSlot[], lat: number, lon: number, timeMs: number): { sample: CurrentSample; grid: Grib2Grid } | null {
-  const br = bracketSlots(slots, timeMs);
-  if (!br) return null;
-  const { s0, s1 } = br;
+export function gribSeriesSample(
+  series: GridSeries,
+  lat: number,
+  lon: number,
+  timeMs: number,
+): CurrentSample | null {
+  const lo = bracketIndex(series.slots, timeMs);
+  if (lo < 0) return null;
+  const s0 = series.slots[lo];
+  const s1 = series.slots[Math.min(lo + 1, series.slots.length - 1)];
 
   const a = sampleSlot(s0, lat, lon);
   const b = s1 === s0 ? a : sampleSlot(s1, lat, lon);
@@ -401,84 +467,38 @@ function vectorAtSlots(slots: TimeSlot[], lat: number, lon: number, timeMs: numb
   const speedMs = Math.hypot(u, v);
   const direction = speedMs > 1e-6 ? ((Math.atan2(u, v) * RAD2DEG) % 360 + 360) % 360 : 0;
   return {
-    sample: {
-      time: new Date(timeMs).toISOString(),
-      speedKn: Math.round((speedMs / KNOTS_TO_MS) * 100) / 100,
-      direction: Math.round(direction * 10) / 10,
-      u: Math.round(u * 1000) / 1000,
-      v: Math.round(v * 1000) / 1000,
-    },
-    grid: (a ? s0 : s1).grid,
+    time: new Date(timeMs).toISOString(),
+    speedKn: Math.round((speedMs / KNOTS_TO_MS) * 100) / 100,
+    direction: Math.round(direction * 10) / 10,
+    u: Math.round(u * 1000) / 1000,
+    v: Math.round(v * 1000) / 1000,
   };
 }
 
-export interface GridSample {
-  latitude: number;
-  longitude: number;
-  speedKn: number;
-  direction: number;
-  u: number;
-  v: number;
-}
-
 /**
- * Current vectors within a bounding box, for a map's flow-field overlay
- * (there is no station concept in gridded data, so this is the only way to
- * show GRIB coverage beyond a single point).
- *
- * Samples are chosen from the source grid's own fixed (i, j) lattice —
- * never at bbox-relative offsets — specifically so a given physical point
- * always lands at the same lat/lon. Otherwise, since the bbox is the map
- * viewport, every pan/zoom would shift the sampling phase and the arrows
- * would appear to jump to unrelated positions instead of the same current
- * field just being panned/zoomed with the map. `stride` (spacing between
- * sampled grid indices) is chosen to target roughly `maxPoints` samples
- * over the box and is snapped to multiples of itself, so panning at a
- * fixed stride reveals/hides points from one stable lattice, and only
- * zooming across a stride change re-grids (coarser/finer), like a tile
- * pyramid. Points with no coverage (land, outside the grid, outside the
- * time slack) are omitted, so the result can be smaller than `maxPoints`.
+ * Interpolated current vector at a position/time: the first series (finest
+ * grid first) with a value there — no merged slot list, no fallback pass.
+ * `files` restricts the lookup to those files' own series (per-dataset
+ * priority, PRD §5.3 Phase 3); pass `filesKey` when the caller already has
+ * one so the cache lookup doesn't re-derive it.
  */
-/**
- * The distinct grid geometries loaded — one per downloaded region — each with
- * the set of files on that grid. Different regions (e.g. US East Coast vs. US
- * West Coast) are separate GRIB grids with their own origin/extent, so anything
- * that walks a lattice must cover each of them.
- *
- * Derived from `slotsByFile`, NOT the merged `slots`: every NOAA RTOFS region
- * from one cycle carries the SAME forecast valid-times, so the same-time dedup
- * in loadGribDir collapses `slots` down to whichever region's file sorts last,
- * erasing every other region's grid from the merged list. The `files` set lets
- * callers restrict `gribVectorAt` to a region's own (un-deduped) slots, exactly
- * as resolveVector's per-dataset probe does.
- */
-type GridGroup = { grid: Grib2Grid; files: Set<string> };
-// One stable group list (and one Set per group) per data object, so the
-// slotsForFiles WeakMap cache keyed by Set identity keeps hitting.
-const gridGroupsCache = new WeakMap<GribCurrentsData, GridGroup[]>();
-function gridGroups(data: GribCurrentsData): GridGroup[] {
-  let cached = gridGroupsCache.get(data);
-  if (!cached) gridGroupsCache.set(data, (cached = computeGridGroups(data)));
-  return cached;
-}
-/** Groups source files by identical grid geometry (uncached; use gridGroups). */
-function computeGridGroups(data: GribCurrentsData): GridGroup[] {
-  const groups: { grid: Grib2Grid; files: Set<string> }[] = [];
-  for (const [file, slots] of Object.entries(data.slotsByFile)) {
-    if (slots.length === 0) continue;
-    const grid = slots[0].grid;
-    let g = groups.find((x) => sameGrid(x.grid, grid));
-    if (!g) {
-      g = { grid, files: new Set() };
-      groups.push(g);
-    }
-    g.files.add(file);
+export function gribVectorAt(
+  data: GribCurrentsData,
+  lat: number,
+  lon: number,
+  timeMs: number,
+  files?: ReadonlySet<string>,
+  filesKey?: string,
+): { sample: CurrentSample; series: GridSeries } | null {
+  for (const series of gribSeriesFor(data, files, filesKey)) {
+    const sample = gribSeriesSample(series, lat, lon, timeMs);
+    if (sample) return { sample, series };
   }
-  return groups;
+  return null;
 }
 
 /** Integer (i, j) index window of a grid's own lattice covering `bbox`, or null when the grid and the bbox are disjoint. */
-function gridBboxWindow(
+export function gribLatticeWindow(
   grid: Grib2Grid,
   bbox: { west: number; south: number; east: number; north: number },
 ): { iMin: number; iMax: number; jMin: number; jMax: number } | null {
@@ -512,103 +532,20 @@ function gridBboxWindow(
   return { iMin, iMax, jMin, jMax };
 }
 
-/**
- * /grid lattice density when UTCEF data shares the budget (strideFromBbox):
- * 1 = GRIB strictly proportional to its share of the viewport area, larger =
- * GRIB denser at UTCEF's expense, Infinity = old window-only behaviour.
- */
-export const GRID_GRIB_DENSITY_BOOST = 2;
-
-export function gribGridSamples(
-  data: GribCurrentsData,
-  bbox: { west: number; south: number; east: number; north: number },
-  timeMs: number,
-  maxPoints = 400,
-): GridSample[] {
-  return gribGridSamplesWithFiles(data, bbox, timeMs, maxPoints).map((x) => x.sample);
-}
-
-/** Like gribGridSamples, but each sample carries the (stable) file set and the grid geometry it was sampled from. */
-export function gribGridSamplesWithFiles(
-  data: GribCurrentsData,
-  bbox: { west: number; south: number; east: number; north: number },
-  timeMs: number,
-  maxPoints = 400,
-  opts?: { strideFromBbox?: boolean },
-): { sample: GridSample; files: ReadonlySet<string>; grid: Grib2Grid }[] {
-  // Each downloaded region is its own grid geometry. Sample every region
-  // whose lattice overlaps the viewport — not just the merged grid — or a
-  // viewport over any region the same-time dedup dropped from `slots` (e.g.
-  // the US East Coast, shadowed by the Pacific region) returns no arrows
-  // even though per-point lookups there succeed.
-  const windows = gridGroups(data)
-    .map((g) => ({ ...g, win: gridBboxWindow(g.grid, bbox) }))
-    .filter((w): w is typeof w & { win: NonNullable<typeof w.win> } => w.win !== null);
-  if (windows.length === 0) return [];
-
-  // Split the point budget across overlapping regions so the total stays
-  // near maxPoints (regions are mostly disjoint, so usually there is one).
-  const perGrid = Math.max(1, Math.floor(maxPoints / windows.length));
-
-  const points: { sample: GridSample; files: ReadonlySet<string>; grid: Grib2Grid }[] = [];
-  for (const { grid, files, win } of windows) {
-    const { iMin, iMax, jMin, jMax } = win;
-    const iCount = iMax - iMin + 1;
-    const jCount = jMax - jMin + 1;
-    let stride = Math.max(1, Math.ceil(Math.sqrt((iCount * jCount) / perGrid)));
-    if (opts?.strideFromBbox) {
-      // Also keep the lattice no denser than this grid's share of the FULL
-      // viewport area allows (in this grid's cell units), so the freed budget
-      // of a small-coverage grid goes to UTCEF and the cutoff below is not hit.
-      const lonSpan = bbox.east >= bbox.west ? bbox.east - bbox.west : bbox.east - bbox.west + 360;
-      const bboxCells = (lonSpan / Math.abs(grid.di)) * ((bbox.north - bbox.south) / Math.abs(grid.dj));
-      const strideArea = Math.max(1, Math.ceil(Math.sqrt(bboxCells / (GRID_GRIB_DENSITY_BOOST * maxPoints))));
-      stride = Math.max(stride, strideArea);
-    }
-    // Snap the start to a multiple of stride so the chosen indices are the
-    // same regardless of where iMin/jMin happen to fall for this viewport.
-    const iStart = Math.ceil(iMin / stride) * stride;
-    const jStart = Math.ceil(jMin / stride) * stride;
-
-    for (let j = jStart; j <= jMax; j += stride) {
-      const lat = grid.lat0 + j * grid.dj;
-      for (let i = iStart; i <= iMax; i += stride) {
-        const lonRaw = grid.lon0 + i * grid.di;
-        const lon = ((lonRaw + 180) % 360 + 360) % 360 - 180;
-        // Restrict to this region's own files so the dedup that dropped it
-        // from the merged `slots` doesn't also blank it here.
-        const sample = gribVectorAt(data, lat, lon, timeMs, files);
-        if (sample && sample.u !== null && sample.v !== null) {
-          points.push({
-            sample: {
-              latitude: Math.round(lat * 1e4) / 1e4,
-              longitude: Math.round(lon * 1e4) / 1e4,
-              speedKn: sample.speedKn,
-              direction: sample.direction ?? 0,
-              u: sample.u,
-              v: sample.v,
-            },
-            files,
-            grid,
-          });
-          if (points.length >= maxPoints) return points;
-        }
-      }
-    }
-  }
-  return points;
+/** Total forecast slots across all series (status line / summary). */
+export function gribSlotCount(data: GribCurrentsData): number {
+  let n = 0;
+  for (const s of data.series) n += s.slots.length;
+  return n;
 }
 
 /** Coverage summary for the dataset endpoint / plugin status. */
 export function gribSummary(data: GribCurrentsData): Record<string, unknown> {
-  if (data.slots.length === 0) {
+  if (data.series.length === 0) {
     return { dir: data.dir, files: data.files, fields: 0, warnings: data.warnings };
   }
-  // One entry per downloaded region (each is its own grid). The old summary
-  // reported only slots[0]'s grid, so a boat with several regions saw the
-  // coverage of just one of them (e.g. the Pacific box while the US East
-  // Coast was loaded but invisible).
-  const regions = gridGroups(data).map(({ grid: g }) => {
+  // One entry per distinct grid (each downloaded region is its own grid).
+  const regions = data.series.map(({ grid: g }) => {
     const lonWest = ((g.lon0 + 180) % 360 + 360) % 360 - 180;
     const lonEastRaw = g.lon0 + (g.ni - 1) * g.di;
     const lonEast = ((lonEastRaw + 180) % 360 + 360) % 360 - 180;
@@ -620,14 +557,17 @@ export function gribSummary(data: GribCurrentsData): Record<string, unknown> {
       resolutionDeg: Math.round(g.di * 1e4) / 1e4,
     };
   });
+  let start = Infinity;
+  let end = -Infinity;
+  for (const s of data.series) {
+    start = Math.min(start, s.slots[0].time);
+    end = Math.max(end, s.slots[s.slots.length - 1].time);
+  }
   return {
     dir: data.dir,
     files: data.files,
-    fields: data.slots.length,
-    timeRange: {
-      start: new Date(data.slots[0].time).toISOString(),
-      end: new Date(data.slots[data.slots.length - 1].time).toISOString(),
-    },
+    fields: gribSlotCount(data),
+    timeRange: { start: new Date(start).toISOString(), end: new Date(end).toISOString() },
     // Union envelope across all regions (informational — a caller needing
     // exact per-region coverage, or handling antimeridian-straddling grids,
     // should use `regions`). Longitude union is a plain min/max in [-180, 180].
