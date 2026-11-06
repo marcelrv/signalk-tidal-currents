@@ -93,11 +93,10 @@ export function rect(w: number, s: number, e: number, n: number): number[][][] {
 
 /** Call a registered route handler directly and return its JSON body. */
 export function makeApi(state: ApiState) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const routes = new Map<string, (req: any, res: any) => void>();
   registerRoutes({ get: (p, h) => routes.set(p, h) }, state);
   return (routePath: string, query: Record<string, unknown> = {}) => {
-    let body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    let body: any;
     const res = { status: () => res, json: (b: unknown) => void (body = b) };
     routes.get(routePath)!({ query, params: {} }, res);
     return body;

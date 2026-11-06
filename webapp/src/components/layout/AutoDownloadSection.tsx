@@ -46,14 +46,14 @@ export function AutoDownloadSection() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchAutoDownload();
+    void fetchAutoDownload(); // never rejects (catches internally)
   }, [fetchAutoDownload]);
 
   // A sweep started by the change runs server-side; re-read once it has had
   // time to finish so the feedback line shows what it did.
   useEffect(() => {
     if (!settings?.running) return;
-    const t = setTimeout(() => fetchAutoDownload(), 2000);
+    const t = setTimeout(() => void fetchAutoDownload(), 2000);
     return () => clearTimeout(t);
   }, [settings, fetchAutoDownload]);
 
@@ -83,7 +83,7 @@ export function AutoDownloadSection() {
         value={settings?.intervalHours ?? 0}
         disabled={!settings || saving || readOnly}
         title={readOnly ? READ_ONLY_HINT : undefined}
-        onChange={(e) => onChange(Number(e.target.value) as AutoDownloadInterval)}
+        onChange={(e) => void onChange(Number(e.target.value) as AutoDownloadInterval)}
         className="min-h-11 shrink-0 rounded-full bg-surface-2 px-3 text-sm font-medium text-accent disabled:opacity-50"
       >
         {choices.map((h) => (

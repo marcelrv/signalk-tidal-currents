@@ -13,6 +13,10 @@ export function AutoUpdateToggle({ dataset }: { dataset: DatasetEntry }) {
   const autoDownloadOn = useAppStore((s) => (s.autoDownload?.intervalHours ?? 0) > 0);
   const readOnly = useReadOnly();
   if (!dataset.catalogSourceId || !autoDownloadOn) return null;
+  // The checkbox is controlled by server state: on failure it simply stays as it was.
+  const toggle = (enabled: boolean) => {
+    setAutoUpdate(dataset.id, enabled).catch(() => undefined);
+  };
 
   return (
     <label className="flex min-h-11 items-center gap-1.5 text-xs text-muted" title={readOnly ? READ_ONLY_HINT : 'Include this dataset when auto-download runs'}>
@@ -20,7 +24,7 @@ export function AutoUpdateToggle({ dataset }: { dataset: DatasetEntry }) {
         type="checkbox"
         checked={dataset.autoUpdate}
         disabled={readOnly}
-        onChange={(e) => setAutoUpdate(dataset.id, e.target.checked)}
+        onChange={(e) => toggle(e.target.checked)}
         className="h-4 w-4"
       />
       Auto-download

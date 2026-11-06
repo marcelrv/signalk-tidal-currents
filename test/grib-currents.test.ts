@@ -154,11 +154,10 @@ test('invalidate() forces an immediate reload, bypassing checkIntervalMs', () =>
 
 interface Captured {
   code: number;
-  body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  body: any;
 }
 
 function makeApi(state: ApiState) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const routes = new Map<string, (req: any, res: any) => void>();
   registerRoutes({ get: (p, h) => routes.set(p, h) }, state);
   return (routePath: string, query: Record<string, unknown> = {}, params: Record<string, string> = {}): Captured => {
@@ -384,16 +383,16 @@ test('GET /grid merges GRIB and UTCEF per point by source priority', (t) => {
   // GRIB first: GRIB lattice in its box, K outside it; G (inside GRIB) dropped.
   const gribFirst = makeApi({ data: null, error: null, grib, utcef, preferGrib: true });
   const a = gribFirst('/grid', { bbox, time: gridTime, maxPoints: '200' }).body.points;
-  assert.ok(a.some((p: any) => p.source === 'grib')); // eslint-disable-line @typescript-eslint/no-explicit-any
-  assert.deepEqual(a.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId), ['K']); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.ok(a.some((p: any) => p.source === 'grib'));
+  assert.deepEqual(a.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId), ['K']);
 
   // UTCEF first: G wins its 50 km neighbourhood (the whole small GRIB box), so
   // no GRIB arrows remain there; the lattice samples there are filled with G's
   // vector (all tagged G), and both stations are shown.
   const utcefFirst = makeApi({ data: null, error: null, grib, utcef, preferGrib: false });
   const b = utcefFirst('/grid', { bbox, time: gridTime, maxPoints: '200' }).body.points;
-  assert.deepEqual([...new Set(b.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId))].sort(), ['G', 'K']); // eslint-disable-line @typescript-eslint/no-explicit-any
-  assert.equal(b.filter((p: any) => p.source === 'grib').length, 0); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.deepEqual([...new Set(b.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId))].sort(), ['G', 'K']);
+  assert.equal(b.filter((p: any) => p.source === 'grib').length, 0);
 
   // Dataset stack outranks the type rank: g.utcef stacked on top wins inside
   // the GRIB box even though preferGrib is true.
@@ -406,8 +405,8 @@ test('GET /grid merges GRIB and UTCEF per point by source priority', (t) => {
     datasetRank: () => [{ id: 'g', type: 'utcef', files: ['g.utcef'] }],
   });
   const c = stacked('/grid', { bbox, time: gridTime, maxPoints: '200' }).body.points;
-  assert.ok(c.some((p: any) => p.stationId === 'G')); // eslint-disable-line @typescript-eslint/no-explicit-any
-  assert.equal(c.filter((p: any) => p.source === 'grib').length, 0); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.ok(c.some((p: any) => p.stationId === 'G'));
+  assert.equal(c.filter((p: any) => p.source === 'grib').length, 0);
 
   // Same answer as /vector at G.
   assert.equal(stacked('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.source, 'utcef');
@@ -428,18 +427,18 @@ test('GET /grid honours a distant station whose representative_area covers the v
   });
   assert.equal(call('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.source, 'utcef');
   const pts = call('/grid', { bbox: '5.0,53.0,5.4,53.4', time: gridTime }).body.points;
-  assert.equal(pts.filter((p: any) => p.source === 'grib').length, 0); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(pts.filter((p: any) => p.source === 'grib').length, 0);
   // The lattice positions are not left blank: they carry the distant
   // station's vector, as /vector returns there.
   assert.ok(pts.length > 0);
-  assert.ok(pts.every((p: any) => p.source === 'utcef' && p.stationId === 'F')); // eslint-disable-line @typescript-eslint/no-explicit-any
-  assert.ok(pts.every((p: any) => p.latitude >= 53.0 && p.latitude <= 53.4 && p.longitude >= 5.0 && p.longitude <= 5.4)); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.ok(pts.every((p: any) => p.source === 'utcef' && p.stationId === 'F'));
+  assert.ok(pts.every((p: any) => p.latitude >= 53.0 && p.latitude <= 53.4 && p.longitude >= 5.0 && p.longitude <= 5.4));
   const vec = call('/vector', { latitude: String(pts[0].latitude), longitude: String(pts[0].longitude), time: gridTime }).body.sample;
   assert.ok(Math.abs(vec.u - pts[0].u) < 1e-9 && Math.abs(vec.v - pts[0].v) < 1e-9);
 });
 
 test('malformed representative_area is ignored instead of crashing probes', (t) => {
-  const dir = writeUtcefDir({ 'bad.utcef': [['B', 52.0, 5.0, [[null, null, null, null]] as any]] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const dir = writeUtcefDir({ 'bad.utcef': [['B', 52.0, 5.0, [[null, null, null, null]] as any]] });
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const utcef = createUtcefSource(dir, 0);
   const data = utcef.get()!;
@@ -449,7 +448,7 @@ test('malformed representative_area is ignored instead of crashing probes', (t) 
   const call = makeApi({ data: null, error: null, grib: createGribSource(uvDir, 0), utcef, preferGrib: true });
   const r = call('/grid', { bbox: '4.9,51.9,5.1,52.1', time: gridTime });
   assert.equal(r.code, 200);
-  assert.ok(r.body.points.some((p: any) => p.stationId === 'B')); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.ok(r.body.points.some((p: any) => p.stationId === 'B'));
   assert.equal(call('/vector', { latitude: '52.01', longitude: '5.0', time: gridTime }).code, 200);
 });
 
@@ -481,7 +480,7 @@ test('GET /grid keeps only the higher-ranked dataset when UTCEF files overlap', 
   });
   assert.equal(call('/vector', { latitude: '53.2', longitude: '5.2', time: gridTime }).body.station.id, 'SB');
   const pts = call('/grid', { bbox: '5.0,53.0,5.4,53.4', time: gridTime }).body.points;
-  const ids = new Set(pts.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId)); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const ids = new Set(pts.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId));
   assert.deepEqual([...ids], ['SB']);
 });
 
@@ -495,8 +494,8 @@ test('GET /grid splits the budget between sources instead of collapsing density'
   const pts = call('/grid', { bbox: '3.4,50.9,5.5,53.5', time: gridTime, maxPoints: '60' }).body.points;
   assert.ok(pts.length <= 60, `${pts.length} > budget`);
   assert.ok(pts.length >= 30, `density collapsed to ${pts.length}`);
-  assert.ok(pts.some((p: any) => p.source === 'grib')); // eslint-disable-line @typescript-eslint/no-explicit-any
-  assert.ok(pts.some((p: any) => p.source === 'utcef')); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.ok(pts.some((p: any) => p.source === 'grib'));
+  assert.ok(pts.some((p: any) => p.source === 'utcef'));
 });
 
 test('GET /grid and /stations?bbox find UTCEF stations in viewports past ±180', (t) => {
@@ -505,20 +504,20 @@ test('GET /grid and /stations?bbox find UTCEF stations in viewports past ±180',
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const utcef = createUtcefSource(dir, 0);
   const call = makeApi({ data: null, error: null, grib: null, utcef, preferGrib: true });
-  const ids = (r: Captured) => r.body.points.map((p: any) => p.stationId).sort(); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const ids = (r: Captured) => r.body.points.map((p: any) => p.stationId).sort();
 
   // Viewport written east-positive across the antimeridian (Freeboard style).
   assert.deepEqual(ids(call('/grid', { bbox: '170,-40,190,-10', time: gridTime })), ['E', 'W']);
   // Same area written west-negative.
   assert.deepEqual(ids(call('/grid', { bbox: '-190,-40,-170,-10', time: gridTime })), ['E', 'W']);
   // Returned longitudes stay normalised to −180…180, like GRIB samples.
-  const e = call('/grid', { bbox: '170,-40,190,-10', time: gridTime }).body.points.find((p: any) => p.stationId === 'E'); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const e = call('/grid', { bbox: '170,-40,190,-10', time: gridTime }).body.points.find((p: any) => p.stationId === 'E');
   assert.equal(e.longitude, -179.5);
   // A plain viewport still excludes the far side.
   assert.deepEqual(ids(call('/grid', { bbox: '170,-40,179,-10', time: gridTime })), ['W']);
 
   const st = call('/stations', { bbox: '170,-40,190,-10' });
-  assert.deepEqual(st.body.map((s: any) => s.id).sort(), ['E', 'W']); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.deepEqual(st.body.map((s: any) => s.id).sort(), ['E', 'W']);
 });
 
 test('lonInSpan / utcefCoverageIndex wrap across the antimeridian', () => {
@@ -541,7 +540,7 @@ test('GET /grid thins UTCEF points to maxPoints', (t) => {
   const r = call('/grid', { bbox: '2.9,50.9,4.1,52.1', time: gridTime, maxPoints: '7' });
   assert.equal(r.code, 200);
   assert.ok(r.body.points.length > 0 && r.body.points.length <= 7);
-  assert.ok(r.body.points.every((p: any) => p.source === 'utcef')); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.ok(r.body.points.every((p: any) => p.source === 'utcef'));
   // Stable: same request → same set.
   assert.deepEqual(call('/grid', { bbox: '2.9,50.9,4.1,52.1', time: gridTime, maxPoints: '7' }).body.points, r.body.points);
 });
@@ -550,7 +549,7 @@ test('GET /grid tags GRIB lattice points with source', () => {
   const call = makeApi(apiState());
   const r = call('/grid', { bbox: '5.0,53.0,5.4,53.4', time: gridTime, maxPoints: '25' });
   assert.ok(r.body.points.length > 0);
-  assert.ok(r.body.points.every((p: any) => p.source === 'grib' && p.stationId === undefined)); // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.ok(r.body.points.every((p: any) => p.source === 'grib' && p.stationId === undefined));
 });
 
 test('GET /grid anchors samples to a fixed lattice — panning does not shift them', () => {

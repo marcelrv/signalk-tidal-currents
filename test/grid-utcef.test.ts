@@ -84,7 +84,7 @@ test('parity: every /grid point equals /vector at its coordinates (randomized se
   const shuffle = <T>(arr: T[]) => arr.map((x) => [rand(), x] as const).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
 
   let withPoints = 0;
-  let sources = new Set<string>();
+  const sources = new Set<string>();
   for (let n = 0; n < 60; n++) {
     // GRIB: random non-empty subset.
     const gribFiles = gribNames.filter(() => rand() < 0.5);
@@ -384,7 +384,6 @@ test('a legacy station without a sample at `time` falls through exactly like /ve
 test('counted work: a request costs O(output + in-view stations), layers out of view cost nothing, nothing accumulates', () => {
   // A dense UTCEF cluster in view, a GRIB region, and 20 orphan UTCEF files elsewhere on the globe.
   const view = { west: 4.5, south: 52.5, east: 5.7, north: 53.7 };
-  const bbox = `${view.west},${view.south},${view.east},${view.north}`;
   const cluster: UtcefStationSpec[] = [];
   for (let i = 0; i < 15; i++) for (let j = 0; j < 15; j++) cluster.push([`C${i}-${j}`, 52.6 + i * 0.07, 4.6 + j * 0.07]);
   const files: Record<string, UtcefStationSpec[]> = { 'near.utcef': cluster };
