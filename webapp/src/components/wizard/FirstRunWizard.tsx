@@ -1,8 +1,8 @@
-import { Dispatch, SetStateAction, useEffect, useMemo, useState, useRef } from 'react';
+import { Dispatch, SetStateAction, useEffect, useMemo, useState } from 'react';
 
 import { READ_ONLY_HINT, useAppStore, useReadOnly } from '../../store/useAppStore';
 import { coveringRows, groupByTier } from '../../lib/wizard';
-import { datasetForRow, isRowInstalled, rowsForSources, SourceRow } from '../../lib/sources';
+import { datasetForRow, downloadKeyFor, isRowInstalled, rowsForSources, SourceRow } from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { DatasetEntry } from '../../api/types';
 import { Modal } from '../shared/Modal';
@@ -24,6 +24,8 @@ export function FirstRunWizard() {
   const vesselPosition = useAppStore((s) => s.vesselPosition);
   const datasets = useAppStore((s) => s.datasets);
   const startDownload = useAppStore((s) => s.startDownload);
+  const downloads = useAppStore((s) => s.downloads);
+  const jobIdBySource = useAppStore((s) => s.jobIdBySource);
   const setView = useAppStore((s) => s.setView);
 
   const [manualPos, setManualPos] = useState<{ lat: string; lon: string } | null>(null);
@@ -61,20 +63,13 @@ export function FirstRunWizard() {
   const liveRecommendedKey = allGrouped.live.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.live[0]?.key ?? null);
   const backupRecommendedKey = allGrouped.backup.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.backup[0]?.key ?? null);
 
-  // After a partial failure the selection is the failed rows only; a started
-  // row finishing (datasets refresh → recommendations shift) must not reset it
-  // and reselect a row that is still downloading. Cleared on close.
-  const keepFailedSelection = useRef(false);
   useEffect(() => {
-    if (!wizard.open) {
-      keepFailedSelection.current = false;
-      setError(null); // the component stays mounted while closed — don't resurface a stale install error on reopen
-    }
+    // The component stays mounted while closed — don't resurface a stale install error on reopen.
+    if (!wizard.open) setError(null);
   }, [wizard.open]);
 
   // Default-select only the recommended row per tier (≤ 2 total), not every covering row.
   useEffect(() => {
-    if (keepFailedSelection.current) return;
     const keys = new Set<string>();
     if (liveRecommendedKey) keys.add(liveRecommendedKey);
     if (backupRecommendedKey) keys.add(backupRecommendedKey);
@@ -86,7 +81,15 @@ export function FirstRunWizard() {
   // just failed: a 401/403 flips access to read-only mid-flow.
   if (!wizard.open || (readOnly && !error)) return null;
 
-  const newDownloads = notInstalled.filter((c) => selected.has(c.key));
+  // A row whose download is already queued/active is never (re)started, however
+  // the selection got there — e.g. after a partial failure, when a started row
+  // finishing shifts the recommendations and the selection resets.
+  const inFlight = (row: SourceRow) => {
+    const id = jobIdBySource[downloadKeyFor(row.source.id, row.regionId, row.fileType, row.variant)];
+    const state = id ? downloads[id]?.state : undefined;
+    return state === 'queued' || state === 'active';
+  };
+  const newDownloads = notInstalled.filter((c) => selected.has(c.key) && !inFlight(c));
   const totalBytes = newDownloads.reduce((sum, c) => {
     const d = datasetForRow(datasets, c);
     return sum + ((d ? d.sizeBytes : c.sizeBytes) ?? 0);
@@ -105,9 +108,8 @@ export function FirstRunWizard() {
         setView('list');
         return;
       }
-      // Keep only the rejected rows selected — the started ones are already
-      // running, and re-pressing Install must not queue them a second time.
-      keepFailedSelection.current = true;
+      // Keep only the rejected rows selected (the started ones are running and
+      // are skipped by `inFlight` anyway).
       setSelected(new Set(failed.map((row) => row.key)));
       const reason = (results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason;
       setError(reason instanceof Error ? reason.message : String(reason));

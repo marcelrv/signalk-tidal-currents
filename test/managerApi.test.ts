@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { MAX_PUBLIC_SSE_CLIENTS, registerManagerRoutes, ManagerRouterLike, ManagerState } from '../dist/managerApi.js';
+import { MAX_PUBLIC_SSE_CLIENTS, PUBLIC_CATALOG_ERROR, PUBLIC_DOWNLOAD_ERROR, registerManagerRoutes, ManagerRouterLike, ManagerState } from '../dist/managerApi.js';
 import { writeManifestAtomic, upsertInstall, InstallManifest } from '../dist/manifest.js';
 import { DEFAULT_PRIORITY } from '../dist/priority.js';
 import { CatalogClient, CatalogState } from '../dist/catalog.js';
@@ -385,33 +385,138 @@ test('GET/PUT /priority dataset stack: persisted order first, unranked installs 
   assert.deepEqual((good.body as any).datasets, ['c-utcef', 'a-grib', 'b-utcef']);
 });
 
-test('redaction: only whole absolute data-dir paths, only for non-admins; /catalog hides the configured URL from non-admins', async () => {
-  // Platform-resolved, as the plugin resolves it ('/data' on POSIX, e.g.
-  // 'D:\\data' on Windows) — a literal '/data' never matches on Windows.
-  const dataDir = path.resolve('/data');
-  const part = path.join('grib', 'x.grb2.part');
-  const { mgr } = baseMgr({ dataDir });
-  const err = `HTTP 404 fetching https://example.org/data/x.grb2; ENOSPC: write '${path.join(dataDir, part)}'`;
-  mgr.downloads = { ...fakeDownloadEngine(), list: () => [{ id: 'j', catalogSourceId: 's', state: 'error', bytes: 0, totalBytes: null, error: err }] };
+test('non-admins get generic error texts (no paths, no catalog URL) on every job view and /catalog; admins see them verbatim', () => {
+  const { mgr } = baseMgr();
+  const err = "HTTP 404 fetching https://user:secret@intranet.example/cat/x.grb2; ENOSPC: write '/srv/data/grib/x.grb2.part'";
+  const job: DownloadJob = { id: 'j', catalogSourceId: 's', state: 'error', bytes: 0, totalBytes: null, error: err };
+  const anyDone: ((j: DownloadJob) => void)[] = [];
+  const jobUpdate: ((j: DownloadJob) => void)[] = [];
+  mgr.downloads = {
+    ...fakeDownloadEngine(),
+    list: () => [job],
+    get: () => ({ ...job, state: 'active', error: undefined }),
+    onUpdate: (_id, cb) => { jobUpdate.push(cb); return () => {}; },
+    onAnyDone: (cb) => { anyDone.push(cb); return () => {}; },
+  };
   mgr.catalog = { get: () => ({ status: 'cached', document: null, fetchedAt: null, error: 'fetch failed: https://intranet.example/c.json?token=abc', sourceUrl: 'https://intranet.example/c.json?token=abc', warnings: [] }), refresh: async () => mgr.catalog.get() } as CatalogClient;
   const handlers = new Map<string, (req: any, res: any) => void>();
-  const router: ManagerRouterLike = {
-    get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {},
-  };
-  registerManagerRoutes(router, mgr);
+  registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
   const call = (p: string, principal?: { permissions: string }) => {
     let body: any;
-    handlers.get(p)!({ params: {}, query: {}, skPrincipal: principal }, { status() { return this; }, json(b: unknown) { body = b; } });
+    handlers.get(p)!({ params: { id: 'j' }, query: {}, skPrincipal: principal }, { status() { return this; }, json(b: unknown) { body = b; } });
     return body;
   };
+  const closers: (() => void)[] = [];
+  const sse = (p: string, principal: { permissions: string }) => {
+    const frames: any[] = [];
+    const res = { status() { return res; }, json() {}, writeHead() {}, write(c: string) { if (c.startsWith('data: ')) frames.push(JSON.parse(c.slice(6))); return true; }, end() {}, on(_e: string, cb: () => void) { closers.push(cb); } };
+    handlers.get(p)!({ params: { id: 'j' }, query: {}, skPrincipal: principal }, res);
+    return frames;
+  };
   const anon = { permissions: 'readonly' };
-  assert.equal(call('/downloads', anon)[0].error, `HTTP 404 fetching https://example.org/data/x.grb2; ENOSPC: write '<data dir>${path.sep}${part}'`);
-  assert.equal(call('/downloads', { permissions: 'admin' })[0].error, err);
+  const admin = { permissions: 'admin' };
+  assert.equal(call('/downloads', anon)[0].error, PUBLIC_DOWNLOAD_ERROR);
+  assert.equal(call('/downloads/:id', anon).error, undefined, 'no error → nothing to hide');
+  assert.equal(call('/downloads', admin)[0].error, err);
   assert.equal(call('/downloads')[0].error, err); // security off: no principal
+
+  try {
+    const anonGlobal = sse('/downloads/events', anon);
+    const adminGlobal = sse('/downloads/events', admin);
+    const anonJob = sse('/downloads/:id/events', anon);
+    anyDone.forEach((cb) => cb(job));
+    jobUpdate.forEach((cb) => cb(job));
+    assert.equal(anonGlobal[0].error, PUBLIC_DOWNLOAD_ERROR);
+    assert.equal(adminGlobal[0].error, err);
+    assert.equal(anonJob.at(-1).error, PUBLIC_DOWNLOAD_ERROR);
+  } finally {
+    closers.forEach((c) => c()); // clears the heartbeat timers
+  }
+
   const cat = call('/catalog', anon);
   assert.equal(cat.sourceUrl, '');
-  assert.ok(!JSON.stringify(cat).includes('token=abc'), JSON.stringify(cat));
-  assert.equal(call('/catalog', { permissions: 'admin' }).sourceUrl, 'https://intranet.example/c.json?token=abc');
+  assert.equal(cat.error, PUBLIC_CATALOG_ERROR);
+  assert.ok(!JSON.stringify(cat).includes('intranet'), JSON.stringify(cat));
+  const adminCat = call('/catalog', admin);
+  assert.equal(adminCat.sourceUrl, 'https://intranet.example/c.json?token=abc');
+  assert.match(adminCat.error, /token=abc/);
+});
+
+test('non-admin shared reads (/datasets, /storage, /priority) are invalidated by every change made through the plugin', async () => {
+  const { mgr, dataDir, manifestPath } = baseMgr();
+  let fireDone: ((j: DownloadJob) => void) | null = null;
+  mgr.downloads = { ...fakeDownloadEngine(), onAnyDone: (cb) => { fireDone = cb; return () => { fireDone = null; }; } };
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr); // before any engine-specific hook exists, like registerWithRouter before start()
+  const anon = { skPrincipal: { permissions: 'readonly' } };
+  const count = async () => ((await call('GET', '/datasets', anon)).body as unknown[]).length;
+  const used = async () => ((await call('GET', '/storage', anon)).body as any).usedByPluginBytes as number;
+
+  // 1. A download finishing (onAnyDone) — hooked lazily, on the engine current at request time.
+  assert.equal(await count(), 0);
+  const usedBefore = await used();
+  fs.writeFileSync(path.join(dataDir, 'grib', 'a.grb2'), Buffer.alloc(64));
+  assert.equal(await count(), 0, 'cached until something changes');
+  fireDone!({ id: 'j', catalogSourceId: 's', state: 'done', bytes: 64, totalBytes: 64 });
+  assert.equal(await count(), 1, 'completion invalidates /datasets');
+  assert.equal(await used(), usedBefore + 64, 'completion invalidates /storage');
+
+  // 2. start()/restart swaps the engine: the old hook is dropped, the new one is used.
+  let fireDone2: ((j: DownloadJob) => void) | null = null;
+  mgr.downloads = { ...fakeDownloadEngine(), onAnyDone: (cb) => { fireDone2 = cb; return () => {}; } };
+  fs.writeFileSync(path.join(dataDir, 'grib', 'b.grb2'), Buffer.alloc(8));
+  assert.equal(await count(), 2, 'a new engine invalidates by itself');
+  assert.equal(fireDone, null, 'hook on the replaced engine was removed');
+  fs.writeFileSync(path.join(dataDir, 'grib', 'c.grb2'), Buffer.alloc(8));
+  assert.equal(await count(), 2);
+  fireDone2!({ id: 'k', catalogSourceId: 's', state: 'error', bytes: 0, totalBytes: null });
+  assert.equal(await count(), 3);
+
+  // 3. Mutation routes.
+  const del = await call('DELETE', '/datasets/:id', { params: { id: 'orphan:grib:grib/c.grb2' } });
+  assert.equal(del.statusCode, 200);
+  assert.equal(await count(), 2, 'DELETE invalidates');
+
+  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] } as InstallManifest, {
+    id: 'inst-1', catalogSourceId: 'src', type: 'grib2', files: ['grib/a.grb2'], downloaded_at: new Date().toISOString(), size_bytes: 64,
+  } as any));
+  fireDone2!({ id: 'm', catalogSourceId: 'src', state: 'done', bytes: 64, totalBytes: 64 });
+  const pri = async () => ((await call('GET', '/priority', anon)).body as any);
+  assert.deepEqual((await pri()).datasets, ['inst-1']);
+  const datasetsNow = (await call('GET', '/datasets', anon)).body as any[];
+  assert.equal(datasetsNow.find((d) => d.id === 'inst-1').autoUpdate, false);
+  assert.equal((await call('PUT', '/datasets/:id/auto-update', { params: { id: 'inst-1' }, body: { enabled: true } })).statusCode, 200);
+  assert.equal(((await call('GET', '/datasets', anon)).body as any[]).find((d) => d.id === 'inst-1').autoUpdate, true, 'auto-update invalidates');
+
+  assert.equal((await call('PUT', '/priority', { body: { order: ['harmonic', 'utcef', 'grib2'] } })).statusCode, 200);
+  assert.deepEqual((await pri()).order, ['harmonic', 'utcef', 'grib2'], 'PUT /priority invalidates');
+
+  // 4. A catalog that re-synced (new fetchedAt) invalidates too.
+  let fetchedAt = '2026-01-01T00:00:00Z';
+  mgr.catalog = { get: () => ({ status: 'cached', document: null, fetchedAt, error: null, sourceUrl: '', warnings: [] }), refresh: async () => mgr.catalog.get() } as CatalogClient;
+  await count();
+  fs.writeFileSync(path.join(dataDir, 'grib', 'd.grb2'), Buffer.alloc(8));
+  const n = await count();
+  fetchedAt = '2026-01-02T00:00:00Z';
+  assert.equal(await count(), n + 1, 'catalog re-sync invalidates');
+});
+
+test('a failing read is a 500 (generic text for non-admins, verbatim for admins) and is not cached', async () => {
+  const { mgr } = baseMgr();
+  let fail = true;
+  mgr.getPriority = () => { if (fail) throw new Error('boom /secret/path'); return [...DEFAULT_PRIORITY]; };
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const anon = { skPrincipal: { permissions: 'readonly' } };
+  const r1 = await call('GET', '/priority', anon);
+  assert.equal(r1.statusCode, 500);
+  assert.ok(!JSON.stringify(r1.body).includes('secret'));
+  const a1 = await call('GET', '/priority', { skPrincipal: { permissions: 'admin' } });
+  assert.equal(a1.statusCode, 500, 'a synchronous throw on the admin path is a 500 too, not an unhandled rejection');
+  assert.match(JSON.stringify(a1.body), /boom/, 'admins see the real error');
+  fail = false;
+  const r2 = await call('GET', '/priority', anon);
+  assert.equal(r2.statusCode, 200, 'the failure was not cached');
 });
 
 for (const route of ['/downloads/events', '/downloads/:id/events']) test(`SSE ${route} caps concurrent non-admin viewers (503 beyond MAX_PUBLIC_SSE_CLIENTS); admins are never capped`, () => {

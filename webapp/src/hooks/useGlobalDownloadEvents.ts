@@ -21,6 +21,9 @@ export function useGlobalDownloadEvents(): void {
   const [fellBack, setFellBack] = useState(false);
 
   useEffect(() => {
+    // Wait until access is known: opening while 'unknown' and again once it
+    // resolves would cost every page load two streams (and two public SSE slots).
+    if (access === 'unknown') return;
     if (typeof EventSource === 'undefined') {
       setFellBack(true);
       return;
@@ -48,19 +51,21 @@ export function useGlobalDownloadEvents(): void {
     // `access` is a dependency so a login (read-only -> admin) reopens a feed that was refused or dropped to polling.
   }, [setDownloadJob, reconcileDownloads, access]);
 
-  usePollingFallback(fellBack, setDownloadJob);
+  usePollingFallback(fellBack, reconcileDownloads);
 }
 
-function usePollingFallback(active: boolean, setDownloadJob: (job: DownloadJob) => void): void {
+function usePollingFallback(active: boolean, reconcileDownloads: (jobs: DownloadJob[]) => void): void {
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => {
-      api.listDownloads().then((jobs) => jobs.forEach(setDownloadJob)).catch((e) => {
+      // reconcileDownloads, not setDownloadJob per job: historical finished
+      // jobs the store never saw in flight must not each trigger a refetch.
+      api.listDownloads().then(reconcileDownloads).catch((e) => {
         // A refused read (old server without per-route readonly access) won't
         // fix itself — stop polling; other failures are transient, next tick retries.
         if (isPermissionError(e)) clearInterval(id);
       });
     }, 3000);
     return () => clearInterval(id);
-  }, [active, setDownloadJob]);
+  }, [active, reconcileDownloads]);
 }

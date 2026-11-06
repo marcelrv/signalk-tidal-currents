@@ -180,7 +180,9 @@ administrators. On signalk-server ≥ 2.35 the plugin marks the manager's
 **read** routes readable by read-only users (incl. anonymous visitors with
 `allow_readonly`, e.g. a public demo), who get a read-only manager view; the
 mutating ones (catalog refresh, downloads, dataset delete / auto-update,
-priority changes) stay admin-only.
+priority changes) stay admin-only. Read-only viewers never see the data
+directory path, the configured catalog URL or raw error texts (they get a
+generic "download failed" / "catalog sync failed").
 
 | Endpoint | Description |
 | --- | --- |

@@ -42,12 +42,12 @@ export interface ManagerRouteOptions {
 /** Concurrent SSE streams allowed for non-admin viewers (shared by both feeds) — beyond it they get a 503 and the webapp falls back to polling. */
 export const MAX_PUBLIC_SSE_CLIENTS = 32;
 
-/** How long non-admin /storage and /datasets requests reuse one data-dir scan (the walks are synchronous — anonymous visitors must not be able to trigger them at will). */
+/** Upper bound on how long non-admin /datasets, /storage and /priority reads reuse one computed result (the scans are synchronous — anonymous visitors must not be able to trigger them at will). Any change made through the plugin invalidates the shared copy at once; the TTL only bounds staleness for files dropped into the data directory by hand. */
 export const PUBLIC_SCAN_TTL_MS = 30_000;
-/** Former name of PUBLIC_SCAN_TTL_MS, kept for importers. */
-export const PUBLIC_STORAGE_TTL_MS = PUBLIC_SCAN_TTL_MS;
 
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** What non-admins see instead of a job's / the catalog's error text, which can carry filesystem paths or the configured catalog URL. */
+export const PUBLIC_DOWNLOAD_ERROR = 'download failed';
+export const PUBLIC_CATALOG_ERROR = 'catalog sync failed';
 interface MRes {
   json(body: unknown): void;
   status(code: number): MRes;
@@ -230,24 +230,79 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     return req.skPrincipal?.permissions === 'admin';
   };
   // Read-only visitors must not learn the server's filesystem layout or the
-  // operator's config: strip the data directory from download error strings
-  // (e.g. "ENOSPC … '/home/…/x.grb2'") and the configured catalog URL from
-  // /catalog. Admins see everything verbatim.
-  // Only whole-path occurrences of the ABSOLUTE (resolved) data dir are
-  // replaced — '/data' must not match inside 'https://host/data/x', and a
-  // relative form (e.g. 'data') would hit ordinary words while revealing no
-  // filesystem layout anyway.
-  const dataDirRe = () => {
-    const abs = mgr.dataDir ? path.resolve(mgr.dataDir).replace(/[\\/]+$/, '') : '';
-    if (abs === '') return null; // unset, or the filesystem root
-    return new RegExp(`(^|[^\\w.:/\\\\-])${escapeRegExp(abs)}(?=[\\\\/]|$|[^\\w.-])`, 'g');
-  };
-  const redactPath = (s: string) => {
-    const re = dataDirRe();
-    return re ? s.replace(re, '$1<data dir>') : s;
-  };
+  // operator's config. Error texts can carry both (an fs error names the
+  // absolute path, a fetch error the URL derived from the configured catalog
+  // URL), so non-admins get a fixed generic text instead — no string
+  // rewriting to get wrong. Admins see everything verbatim.
   const jobFor = (req: MReq) => <T extends { error?: string }>(job: T): T =>
-    job.error && !isAdminRequest(req) ? { ...job, error: redactPath(job.error) } : job;
+    job.error && !isAdminRequest(req) ? { ...job, error: PUBLIC_DOWNLOAD_ERROR } : job;
+
+  // --- Shared results for non-admin reads -------------------------------
+  // `gen` changes whenever the data behind /datasets, /storage or /priority
+  // may have changed through the plugin: a download finishing, a mutation
+  // route below, or start()/restart swapping in a new engine, catalog client
+  // or data directory (registration can run before start(), so the
+  // completion hook follows whichever engine is current at request time).
+  let gen = 0;
+  const invalidatePublic = () => { gen++; };
+  let hookedEngine: DownloadEngine | null = null;
+  let unhookEngine: () => void = () => {};
+  let lastStamp: unknown[] = [];
+  const currentGen = () => {
+    if (mgr.downloads !== hookedEngine) {
+      unhookEngine();
+      hookedEngine = mgr.downloads;
+      unhookEngine = hookedEngine.onAnyDone(invalidatePublic);
+    }
+    const stamp = [mgr.downloads, mgr.catalog, mgr.dataDir, mgr.manifestPath, mgr.catalog.get().fetchedAt];
+    if (stamp.length !== lastStamp.length || stamp.some((v, i) => v !== lastStamp[i])) {
+      lastStamp = stamp;
+      gen++;
+    }
+    return gen;
+  };
+  /**
+   * A read with one shared result for non-admins. `shared()` serves it:
+   * recomputed when `gen` moved or after PUBLIC_SCAN_TTL_MS, overlapping
+   * requests share the in-flight promise, a failure is not cached. `fresh()`
+   * (admins) always computes, returns the full result and refreshes the
+   * shared copy with its public view — tagged with the gen read BEFORE
+   * computing, so a change landing mid-compute still invalidates it.
+   * Both return promises, so a synchronous throw in `compute` is a rejection
+   * that `sendRead` turns into a 500, never an unhandled one.
+   */
+  const sharedRead = <F, P = F>(compute: () => F | Promise<F>, toPublic: (full: F) => P = (full) => full as unknown as P) => {
+    let entry: { at: number; gen: number; value: Promise<P> } | null = null;
+    const run = () => new Promise<F>((resolve) => resolve(compute()));
+    return {
+      shared(): Promise<P> {
+        const g = currentGen();
+        if (!entry || entry.gen !== g || Date.now() - entry.at > PUBLIC_SCAN_TTL_MS) {
+          const e = { at: Date.now(), gen: g, value: run().then(toPublic) };
+          entry = e;
+          e.value.catch(() => { if (entry === e) entry = null; });
+        }
+        return entry.value;
+      },
+      fresh(): Promise<F> {
+        const g = currentGen();
+        const full = run();
+        full.then((f) => { entry = { at: Date.now(), gen: g, value: Promise.resolve(toPublic(f)) }; }, () => undefined);
+        return full;
+      },
+    };
+  };
+  /** Serves `read` — the full fresh result to admins, the shared public view to everyone else. */
+  const serveRead = <F, P>(req: MReq, res: MRes, read: { shared(): Promise<P>; fresh(): Promise<F> }) =>
+    sendRead<F | P>(req, res, isAdminRequest(req) ? read.fresh() : read.shared());
+  /** Sends a shared/fresh read result; a failure becomes a 500 (generic text for non-admins) instead of an unhandled rejection. */
+  const sendRead = async <T>(req: MReq, res: MRes, value: Promise<T>) => {
+    try {
+      res.json(await value);
+    } catch (e) {
+      res.status(500).json({ error: isAdminRequest(req) ? (e instanceof Error ? e.message : String(e)) : 'read failed' });
+    }
+  };
 
   let publicSseClients = 0;
   /** Admits an SSE subscriber; returns a release callback, or null (503 already sent) when non-admin viewers are at the cap. */
@@ -271,13 +326,12 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
       res.json(state);
       return;
     }
-    const { sourceUrl, ...rest } = state;
-    const error = state.error && sourceUrl ? state.error.split(sourceUrl).join('<catalog url>') : state.error;
-    res.json({ ...rest, sourceUrl: '', error: error === null ? null : redactPath(error) });
+    res.json({ ...state, sourceUrl: '', error: state.error ? PUBLIC_CATALOG_ERROR : null });
   });
 
   router.post('/catalog/refresh', async (_req, res) => {
     const state = await mgr.catalog.refresh();
+    invalidatePublic(); // dataset names/status derive from the catalog document
     if (state.error) {
       res.status(502).json(state);
       return;
@@ -285,22 +339,10 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     res.json(state);
   });
 
-  // Same sharing as /storage below: the scan is synchronous (manifest read,
-  // per-file existsSync, recursive walks), so non-admins reuse one result
-  // per PUBLIC_SCAN_TTL_MS; admins compute fresh and refresh the shared copy.
-  let publicDatasets: { at: number; list: unknown[] } | null = null;
-  reads.get('/datasets', (req, res) => {
-    if (isAdminRequest(req)) {
-      const list = [...installedDatasets(mgr), ...orphanDatasets(mgr)];
-      publicDatasets = { at: Date.now(), list };
-      res.json(list);
-      return;
-    }
-    if (!publicDatasets || Date.now() - publicDatasets.at > PUBLIC_SCAN_TTL_MS) {
-      publicDatasets = { at: Date.now(), list: [...installedDatasets(mgr), ...orphanDatasets(mgr)] };
-    }
-    res.json(publicDatasets.list);
-  });
+  // The scan is synchronous (manifest read, per-file existsSync, recursive
+  // walks) — non-admins share one result (see sharedRead).
+  const datasetsRead = sharedRead(() => [...installedDatasets(mgr), ...orphanDatasets(mgr)]);
+  reads.get('/datasets', (req, res) => serveRead(req, res, datasetsRead));
 
   router.delete('/datasets/:id', (req, res) => {
     const id = req.params.id;
@@ -316,6 +358,7 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
         try { fs.unlinkSync(t); } catch { /* already gone */ }
       }
       writeManifestAtomic(mgr.manifestPath, removeInstall(manifest, id));
+      invalidatePublic();
       res.json({ ok: true });
       return;
     }
@@ -343,6 +386,7 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
         res.status(404).json({ error: `file not found: ${filename}` });
         return;
       }
+      invalidatePublic();
       res.json({ ok: true });
       return;
     }
@@ -368,28 +412,15 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     }
     const updated = { ...install, autoUpdate: body.enabled };
     writeManifestAtomic(mgr.manifestPath, upsertInstall(manifest, updated));
+    invalidatePublic();
     res.json({ ok: true, autoUpdate: body.enabled });
   });
 
-  // Non-admins share one scan per PUBLIC_SCAN_TTL_MS (overlapping
-  // requests await the same promise); admins always scan fresh, and their
-  // result refreshes the shared copy (e.g. right after a download/delete).
-  let publicStorage: { at: number; stats: Promise<Omit<StorageStats, 'path'>> } | null = null;
+  // Non-admins share one scan (see sharedRead) and never see the absolute
+  // data directory; admins scan fresh and refresh the shared copy.
   const publicView = ({ path: _dataDir, ...rest }: StorageStats) => rest;
-  reads.get('/storage', async (req, res) => {
-    if (isAdminRequest(req)) {
-      const stats = await statStorage(mgr.dataDir);
-      publicStorage = { at: Date.now(), stats: Promise.resolve(publicView(stats)) };
-      res.json(stats);
-      return;
-    }
-    if (!publicStorage || Date.now() - publicStorage.at > PUBLIC_SCAN_TTL_MS) {
-      const stats = statStorage(mgr.dataDir).then(publicView);
-      publicStorage = { at: Date.now(), stats };
-      stats.catch(() => { if (publicStorage?.stats === stats) publicStorage = null; }); // don't cache a failure
-    }
-    res.json(await publicStorage.stats);
-  });
+  const storageRead = sharedRead(() => statStorage(mgr.dataDir), publicView);
+  reads.get('/storage', (req, res) => serveRead(req, res, storageRead));
 
   router.get('/cleanup-candidates', (req, res) => {
     const parsed = parseFloat(String(req.query.maxDistanceNm));
@@ -543,9 +574,8 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
   const resolvedStack = () =>
     resolveDatasetStack(mgr.getDatasetStack(), mgr.getPriority(), readManifest(mgr.manifestPath).installs);
 
-  reads.get('/priority', (_req, res) => {
-    res.json({ order: mgr.getPriority(), default: DEFAULT_PRIORITY, datasets: resolvedStack().map((e) => e.id) });
-  });
+  const priorityRead = sharedRead(() => ({ order: mgr.getPriority(), default: DEFAULT_PRIORITY, datasets: resolvedStack().map((e) => e.id) }));
+  reads.get('/priority', (req, res) => serveRead(req, res, priorityRead));
 
   router.put('/priority', (req, res) => {
     const body = (req.body ?? {}) as { order?: unknown; datasets?: unknown };
@@ -563,6 +593,7 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     }
     if (body.order !== undefined) mgr.setPriority(body.order as SourceType[]);
     if (body.datasets !== undefined) mgr.setDatasetStack(body.datasets as string[]);
+    invalidatePublic();
     res.json({ order: mgr.getPriority(), default: DEFAULT_PRIORITY, datasets: resolvedStack().map((e) => e.id) });
   });
 }

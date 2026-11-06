@@ -299,8 +299,8 @@ export const useAppStore = create<AppState>((set, get) => {
     // download started (looking like the click "did nothing"), since the
     // job leaving `active` state is the only signal that data changed.
     if (job.state !== prev?.state && (job.state === 'done' || job.state === 'error')) {
-      get().fetchDatasets();
-      get().fetchStorage();
+      get().fetchDatasets().catch(() => undefined);
+      get().fetchStorage().catch(() => undefined);
     }
   },
 
