@@ -86,6 +86,12 @@ export interface AppState {
   pollDownload: (id: string) => Promise<void>;
   /** Pure setter shared by the SSE hook and the polling fallback — one place that writes job state into the store. */
   setDownloadJob: (job: DownloadJob) => void;
+  /**
+   * Catch-up merge of a full job list (e.g. `/downloads` after the completion
+   * feed (re)connects). Refetches datasets/storage once, and only when a job
+   * the store already knew as queued/active has since finished.
+   */
+  reconcileDownloads: (jobs: DownloadJob[]) => void;
 
   view: 'map' | 'list';
   setView: (v: 'map' | 'list') => void;
@@ -295,6 +301,33 @@ export const useAppStore = create<AppState>((set, get) => {
     if (job.state !== prev?.state && (job.state === 'done' || job.state === 'error')) {
       get().fetchDatasets();
       get().fetchStorage();
+    }
+  },
+
+  reconcileDownloads: (jobs) => {
+    const known = get().downloads;
+    // Only a job we saw in flight that has now finished proves data changed.
+    // Historical finished jobs (prev undefined) must not trigger refetches:
+    // datasets are already loaded, and the server keeps old jobs in memory.
+    const finishedWhileAway = jobs.some((job) => {
+      const prev = known[job.id];
+      return (
+        !!prev &&
+        (prev.state === 'queued' || prev.state === 'active') &&
+        (job.state === 'done' || job.state === 'error')
+      );
+    });
+    const terminal = (j?: DownloadJob) => j?.state === 'done' || j?.state === 'error';
+    set((s) => {
+      const downloads = { ...s.downloads };
+      // Job states only move forward: never let this (possibly older) snapshot
+      // revert a completion the live feed delivered while it was in flight.
+      for (const job of jobs) if (!(terminal(s.downloads[job.id]) && !terminal(job))) downloads[job.id] = job;
+      return { downloads };
+    });
+    if (finishedWhileAway) {
+      get().fetchDatasets().catch(() => undefined);
+      get().fetchStorage().catch(() => undefined);
     }
   },
 

@@ -16,6 +16,7 @@ import { DownloadJob } from '../api/types';
  */
 export function useGlobalDownloadEvents(): void {
   const setDownloadJob = useAppStore((s) => s.setDownloadJob);
+  const reconcileDownloads = useAppStore((s) => s.reconcileDownloads);
   const access = useAppStore((s) => s.access);
   const [fellBack, setFellBack] = useState(false);
 
@@ -33,13 +34,19 @@ export function useGlobalDownloadEvents(): void {
         // malformed frame — ignore, the next one (or the polling fallback) will correct the state
       }
     };
+    // The feed only carries FUTURE completions (no snapshot on connect), so
+    // each (re)connect catches up on jobs that finished while no feed was open
+    // (initial load, the gap when reopening on an `access` change, after a 401/403).
+    source.onopen = () => {
+      api.listDownloads().then(reconcileDownloads).catch(() => undefined);
+    };
     source.onerror = () => {
       setFellBack(true);
       source.close();
     };
     return () => source.close();
     // `access` is a dependency so a login (read-only -> admin) reopens a feed that was refused or dropped to polling.
-  }, [setDownloadJob, access]);
+  }, [setDownloadJob, reconcileDownloads, access]);
 
   usePollingFallback(fellBack, setDownloadJob);
 }
