@@ -77,7 +77,7 @@ export function UpdateAllBanner() {
       setConfirmingOverfull(true);
       return;
     }
-    begin();
+    void begin(); // reports its own errors via setError
   };
 
   // "~" because forecast re-downloads are estimated from the prior cycle's
@@ -141,7 +141,7 @@ export function UpdateAllBanner() {
               type="button"
               onClick={() => {
                 setConfirmingOverfull(false);
-                begin();
+                void begin();
               }}
               className="min-h-11 rounded bg-accent px-4 font-medium text-surface"
             >

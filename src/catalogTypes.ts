@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Marcel Verpaalen
 // SPDX-License-Identifier: Apache-2.0
+/* eslint-disable @typescript-eslint/no-explicit-any -- the validators below deliberately probe untrusted catalog JSON of unknown shape */
 
 /**
  * Tide/Current Catalog document types (see specs/tide-current-catalog.md,
