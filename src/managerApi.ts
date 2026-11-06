@@ -221,19 +221,24 @@ export type ManagerReadRouterLike = Pick<ManagerRouterLike, 'get'>;
  * public only if it is registered on `reads` — never by HTTP method alone.
  */
 export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerState, reads: ManagerReadRouterLike = router, opts: ManagerRouteOptions = {}): void {
-  // Admin iff security is off or the principal is admin. With security on,
-  // every request reaching a plugin route carries a principal (anonymous
-  // `allow_readonly` visitors get 'readonly'); a MISSING one must not fail
-  // open to admin, so it is only trusted when security is known to be off.
+  /**
+   * Admin iff security is off or the principal is admin. With security on,
+   * every request reaching a plugin route carries a principal (anonymous
+   * `allow_readonly` visitors get 'readonly'); a MISSING one must not fail
+   * open to admin, so it is only trusted when security is known to be off.
+   */
   const isAdminRequest = (req: MReq) => {
     if (opts.securityEnabled ? !opts.securityEnabled() : !req.skPrincipal) return true;
     return req.skPrincipal?.permissions === 'admin';
   };
-  // Read-only visitors must not learn the server's filesystem layout or the
-  // operator's config. Error texts can carry both (an fs error names the
-  // absolute path, a fetch error the URL derived from the configured catalog
-  // URL), so non-admins get a fixed generic text instead — no string
-  // rewriting to get wrong. Admins see everything verbatim.
+  /**
+   * Returns the per-request view of a download job. Read-only visitors must
+   * not learn the server's filesystem layout or the operator's config. Error
+   * texts can carry both (an fs error names the absolute path, a fetch error
+   * the URL derived from the configured catalog URL), so non-admins get a
+   * fixed generic text instead — no string rewriting to get wrong. Admins
+   * see everything verbatim.
+   */
   const jobFor = (req: MReq) => <T extends { error?: string }>(job: T): T =>
     job.error && !isAdminRequest(req) ? { ...job, error: PUBLIC_DOWNLOAD_ERROR } : job;
 
@@ -248,6 +253,12 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
   let hookedEngine: DownloadEngine | null = null;
   let unhookEngine: () => void = () => {};
   let lastStamp: unknown[] = [];
+  /**
+   * The current generation of the shared non-admin reads. Hooks the
+   * completion listener onto whichever download engine is current (dropping
+   * the one on a replaced engine), and bumps `gen` when the engine, catalog
+   * client, data directory, manifest path or catalog sync time changed.
+   */
   const currentGen = () => {
     if (mgr.downloads !== hookedEngine) {
       unhookEngine();

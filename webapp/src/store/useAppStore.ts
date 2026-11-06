@@ -141,6 +141,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
   return {
   access: 'unknown',
+  /** Reads /skServer/loginStatus into `access` (latest call wins; fails closed; retries transient failures) and reloads what a read-only phase may have missed once the visitor becomes admin. */
   fetchAccess: async () => {
     if (accessRetry) clearTimeout(accessRetry);
     accessRetry = null;
@@ -182,6 +183,7 @@ export const useAppStore = create<AppState>((set, get) => {
   catalogLoading: false,
   catalogError: null,
   readsDenied: false,
+  /** Loads the cached catalog. A 401/403 sets `readsDenied` (the read-only view isn't offered); any other failure sets `catalogError`. */
   fetchCatalog: async () => {
     set({ catalogLoading: true });
     try {
@@ -197,6 +199,7 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ catalogLoading: false });
     }
   },
+  /** Asks the server to re-sync the catalog (admin-only). On failure keeps showing the cached copy and surfaces why in `catalogError`. */
   refreshCatalog: async () => {
     set({ catalogLoading: true });
     try {
@@ -220,6 +223,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
   datasets: [],
   datasetsLoading: false,
+  /** Loads installed datasets; opens the first-run wizard on an empty install, for a confirmed admin only. */
   fetchDatasets: async () => {
     set({ datasetsLoading: true });
     try {
@@ -290,6 +294,7 @@ export const useAppStore = create<AppState>((set, get) => {
     const job = await api.getDownload(id);
     get().setDownloadJob(job);
   },
+  /** Stores one job update; refetches datasets/storage when the job just reached a terminal state. */
   setDownloadJob: (job) => {
     const prev = get().downloads[job.id];
     set((s) => ({ downloads: { ...s.downloads, [job.id]: job } }));
@@ -304,6 +309,7 @@ export const useAppStore = create<AppState>((set, get) => {
     }
   },
 
+  /** Merges a full job snapshot without reverting completions (see AppState.reconcileDownloads). */
   reconcileDownloads: (jobs) => {
     const known = get().downloads;
     // Only a job we saw in flight that has now finished proves data changed.

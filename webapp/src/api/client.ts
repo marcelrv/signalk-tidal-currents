@@ -25,6 +25,7 @@ export class ApiError extends Error {
   }
 }
 
+/** True for an ApiError with HTTP 401/403 — the server refused the request for this visitor (as opposed to a real failure). */
 export function isPermissionError(e: unknown): boolean {
   return e instanceof ApiError && (e.status === 401 || e.status === 403);
 }

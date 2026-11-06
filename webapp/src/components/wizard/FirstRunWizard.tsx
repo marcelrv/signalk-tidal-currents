@@ -81,9 +81,12 @@ export function FirstRunWizard() {
   // just failed: a 401/403 flips access to read-only mid-flow.
   if (!wizard.open || (readOnly && !error)) return null;
 
-  // A row whose download is already queued/active is never (re)started, however
-  // the selection got there — e.g. after a partial failure, when a started row
-  // finishing shifts the recommendations and the selection resets.
+  /**
+   * True when the row's download is already queued/active. Such a row is
+   * never (re)started, however the selection got there — e.g. after a
+   * partial failure, when a started row finishing shifts the recommendations
+   * and the selection resets.
+   */
   const inFlight = (row: SourceRow) => {
     const id = jobIdBySource[downloadKeyFor(row.source.id, row.regionId, row.fileType, row.variant)];
     const state = id ? downloads[id]?.state : undefined;

@@ -62,6 +62,7 @@ export function App() {
   // Read-only can come from an expired session (a 401/403 on a write) —
   // re-check on focus so logging back in elsewhere restores the controls.
   useEffect(() => {
+    /** Re-reads loginStatus, but only while the UI is read-only. */
     const recheck = () => {
       if (useAppStore.getState().access === 'readonly') fetchAccess();
     };

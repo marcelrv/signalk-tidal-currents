@@ -54,6 +54,11 @@ export function useGlobalDownloadEvents(): void {
   usePollingFallback(fellBack, reconcileDownloads);
 }
 
+/**
+ * Polls `/downloads` every 3 s while `active` (the completion feed is unavailable or was
+ * refused), merging each snapshot via `reconcileDownloads`. Stops for good on a 401/403;
+ * other failures are retried on the next tick.
+ */
 function usePollingFallback(active: boolean, reconcileDownloads: (jobs: DownloadJob[]) => void): void {
   useEffect(() => {
     if (!active) return;

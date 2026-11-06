@@ -545,17 +545,19 @@ function pluginConstructor(app: any) {
       app.setPluginStatus('Stopped');
     },
 
+    /**
+     * Mounts the v1 plugin path: /plugins/signalk-tidal-currents/… — admin-only
+     * by default. signalk-server ≥ 2.35 lets a plugin mark individual routes
+     * readable by read-only users via router.access('readonly'); the
+     * prediction API and the manager's read-only view use it so the manager
+     * webapp can browse on a locked-down server (e.g. a public demo with
+     * allow_readonly). Older servers: everything stays admin-only.
+     */
     registerWithRouter(router: RouterLike & ManagerRouterLike & { access?: (level: 'readonly') => RouterLike & ManagerReadRouterLike }) {
-      // v1 plugin path: /plugins/signalk-tidal-currents/… — admin-only by
-      // default. signalk-server ≥ 2.35 lets a plugin mark individual routes
-      // readable by read-only users via router.access('readonly'); the
-      // prediction API and the manager's read-only view use it so the
-      // manager webapp can browse on a locked-down server (e.g. a public
-      // demo with allow_readonly). Older servers: everything stays admin-only.
       const reads: RouterLike & ManagerReadRouterLike = typeof router.access === 'function' ? router.access('readonly') : router;
       registerRoutes(reads, state);
-      // Fail closed: with security on, a request lacking a principal is not admin.
       registerManagerRoutes(router, mgr, reads, {
+        /** True unless the server runs the dummy (security disabled) strategy, so a request lacking a principal fails closed — never admin — with security on. */
         securityEnabled: () => {
           const sec = app.securityStrategy;
           return !!sec && !(typeof sec.isDummy === 'function' && sec.isDummy());
