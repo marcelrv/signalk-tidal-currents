@@ -599,21 +599,28 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
     }
   }
   // stationAt() probed AT a station's own position is time- and
-  // viewport-independent, so it is memoised per (station, maxKm, files) —
-  // /grid re-asks it for every in-view station on every animation frame.
-  const ownMemo = new WeakMap<UtcefCurrentStation, Map<string, UtcefCurrentStation | null>>();
+  // viewport-independent, so it is memoised per (maxKm, files) key — /grid
+  // re-asks it for every in-view station on every request. One WeakMap per
+  // key (a handful of keys) instead of a Map per station keeps the memo at a
+  // single weak entry per station, which matters on small ARM boxes with
+  // hundreds of thousands of stations.
+  const ownMemo = new Map<string, WeakMap<UtcefCurrentStation, UtcefCurrentStation | null>>();
   const inFiles = (s: UtcefCurrentStation, files?: ReadonlySet<string>) =>
     !files || (s.file !== undefined && files.has(s.file));
   const index = {
-    /** stationAt(s.latitude, s.longitude, …), memoised; `filesKey` must identify `files` (e.g. its sorted names). */
-    stationAtStation(s: UtcefCurrentStation, maxKm: number, files?: ReadonlySet<string>, filesKey = ''): UtcefCurrentStation | null {
-      let m = ownMemo.get(s);
-      if (!m) ownMemo.set(s, (m = new Map()));
+    /**
+     * stationAt(s.latitude, s.longitude, …), memoised. `filesKey` must uniquely
+     * identify `files` — and must differ from the key used for `files ===
+     * undefined` (the unrestricted probe); api.ts Layer.filesKey guarantees both.
+     */
+    stationAtStation(s: UtcefCurrentStation, maxKm: number, files: ReadonlySet<string> | undefined, filesKey: string): UtcefCurrentStation | null {
       const k = `${maxKm}|${filesKey}`;
-      let r = m.get(k);
+      let m = ownMemo.get(k);
+      if (!m) ownMemo.set(k, (m = new WeakMap()));
+      let r = m.get(s);
       if (r === undefined) {
         r = index.stationAt(s.latitude, s.longitude, maxKm, files);
-        m.set(k, r);
+        m.set(s, r);
       }
       return r;
     },

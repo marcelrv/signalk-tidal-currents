@@ -284,6 +284,22 @@ export function gribVectorAt(
   timeMs: number,
   files?: ReadonlySet<string>,
 ): CurrentSample | null {
+  return gribVectorAtDetail(data, lat, lon, timeMs, files)?.sample ?? null;
+}
+
+/**
+ * gribVectorAt plus the grid geometry the answer was interpolated from (the
+ * slot that contributed; s0's grid when both bracketing slots did). /grid
+ * uses it to emit a lattice sample only from the grid /vector would answer
+ * from, so overlapping regions don't produce two disagreeing lattices.
+ */
+export function gribVectorAtDetail(
+  data: GribCurrentsData,
+  lat: number,
+  lon: number,
+  timeMs: number,
+  files?: ReadonlySet<string>,
+): { sample: CurrentSample; grid: Grib2Grid } | null {
   if (files) return vectorAtSlots(slotsForFiles(data, files), lat, lon, timeMs);
   const merged = vectorAtSlots(data.slots, lat, lon, timeMs);
   if (merged) return merged;
@@ -297,6 +313,16 @@ export function gribVectorAt(
     if (hit) return hit;
   }
   return null;
+}
+
+/** Number of distinct grid geometries loaded (one per region). */
+export function gribGridCount(data: GribCurrentsData): number {
+  return gridGroups(data).length;
+}
+
+/** True when two grids have the same geometry (origin, spacing, size). */
+export function gribSameGrid(a: Grib2Grid, b: Grib2Grid): boolean {
+  return sameGrid(a, b);
 }
 
 /** Bracketing slot pair of a time within a sorted slot list, or null when out of range (beyond the clamp slack). */
@@ -353,7 +379,7 @@ export function gribPairsCover(pairs: readonly { s0: TimeSlot; s1: TimeSlot }[],
  * Bilinear-in-space, linear-in-time current at a point from a sorted slot list;
  * null when the time is outside the slots or the point is uncovered.
  */
-function vectorAtSlots(slots: TimeSlot[], lat: number, lon: number, timeMs: number): CurrentSample | null {
+function vectorAtSlots(slots: TimeSlot[], lat: number, lon: number, timeMs: number): { sample: CurrentSample; grid: Grib2Grid } | null {
   const br = bracketSlots(slots, timeMs);
   if (!br) return null;
   const { s0, s1 } = br;
@@ -375,11 +401,14 @@ function vectorAtSlots(slots: TimeSlot[], lat: number, lon: number, timeMs: numb
   const speedMs = Math.hypot(u, v);
   const direction = speedMs > 1e-6 ? ((Math.atan2(u, v) * RAD2DEG) % 360 + 360) % 360 : 0;
   return {
-    time: new Date(timeMs).toISOString(),
-    speedKn: Math.round((speedMs / KNOTS_TO_MS) * 100) / 100,
-    direction: Math.round(direction * 10) / 10,
-    u: Math.round(u * 1000) / 1000,
-    v: Math.round(v * 1000) / 1000,
+    sample: {
+      time: new Date(timeMs).toISOString(),
+      speedKn: Math.round((speedMs / KNOTS_TO_MS) * 100) / 100,
+      direction: Math.round(direction * 10) / 10,
+      u: Math.round(u * 1000) / 1000,
+      v: Math.round(v * 1000) / 1000,
+    },
+    grid: (a ? s0 : s1).grid,
   };
 }
 
@@ -499,14 +528,14 @@ export function gribGridSamples(
   return gribGridSamplesWithFiles(data, bbox, timeMs, maxPoints).map((x) => x.sample);
 }
 
-/** Like gribGridSamples, but each sample carries the (stable) file set of the grid it was sampled from. */
+/** Like gribGridSamples, but each sample carries the (stable) file set and the grid geometry it was sampled from. */
 export function gribGridSamplesWithFiles(
   data: GribCurrentsData,
   bbox: { west: number; south: number; east: number; north: number },
   timeMs: number,
   maxPoints = 400,
   opts?: { strideFromBbox?: boolean },
-): { sample: GridSample; files: ReadonlySet<string> }[] {
+): { sample: GridSample; files: ReadonlySet<string>; grid: Grib2Grid }[] {
   // Each downloaded region is its own grid geometry. Sample every region
   // whose lattice overlaps the viewport — not just the merged grid — or a
   // viewport over any region the same-time dedup dropped from `slots` (e.g.
@@ -521,7 +550,7 @@ export function gribGridSamplesWithFiles(
   // near maxPoints (regions are mostly disjoint, so usually there is one).
   const perGrid = Math.max(1, Math.floor(maxPoints / windows.length));
 
-  const points: { sample: GridSample; files: ReadonlySet<string> }[] = [];
+  const points: { sample: GridSample; files: ReadonlySet<string>; grid: Grib2Grid }[] = [];
   for (const { grid, files, win } of windows) {
     const { iMin, iMax, jMin, jMax } = win;
     const iCount = iMax - iMin + 1;
@@ -560,6 +589,7 @@ export function gribGridSamplesWithFiles(
               v: sample.v,
             },
             files,
+            grid,
           });
           if (points.length >= maxPoints) return points;
         }

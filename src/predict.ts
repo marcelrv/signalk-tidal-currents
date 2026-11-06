@@ -243,6 +243,18 @@ export function stationsInBbox(
 }
 
 /**
+ * Exact angular longitude half-width (degrees, slightly padded) of a circle of
+ * angular radius `dLatDeg` centred at `lat`: asin(sin d / cos(|lat|+d)).
+ * Returns 360 when the circle reaches a pole (all longitudes).
+ */
+export function lonHalfWidthDeg(lat: number, dLatDeg: number): number {
+  const cosP = Math.cos((Math.abs(lat) + dLatDeg) * DEG2RAD);
+  const ratio = cosP > 0 ? Math.sin(dLatDeg * DEG2RAD) / cosP : 2;
+  if (Math.abs(lat) + dLatDeg >= 90 || ratio >= 1) return 360;
+  return (Math.asin(ratio) / DEG2RAD) * 1.01 + 1e-6;
+}
+
+/**
  * Spatial index over a dataset's current + resolvable legacy stations (same
  * cell scheme as utcefCoverageIndex: 0.5° cells, antimeridian-wrapped keys).
  * `stationAt` returns EXACTLY the station api.ts `stationVectorAt` picks:
@@ -259,18 +271,6 @@ export function stationsInBbox(
  * sort by (distance, array order — the stable-sort tie-break), keep 10, then
  * take the first vector-capable one.
  */
-/**
- * Exact angular longitude half-width (degrees, slightly padded) of a circle of
- * angular radius `dLatDeg` centred at `lat`: asin(sin d / cos(|lat|+d)).
- * Returns 360 when the circle reaches a pole (all longitudes).
- */
-export function lonHalfWidthDeg(lat: number, dLatDeg: number): number {
-  const cosP = Math.cos((Math.abs(lat) + dLatDeg) * DEG2RAD);
-  const ratio = cosP > 0 ? Math.sin(dLatDeg * DEG2RAD) / cosP : 2;
-  if (Math.abs(lat) + dLatDeg >= 90 || ratio >= 1) return 360;
-  return (Math.asin(ratio) / DEG2RAD) * 1.01 + 1e-6;
-}
-
 export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
   const stations = data.stations.filter((s) => s.isCurrent && isStationResolvable(data, s));
   const capable = (s: IdxStation) => !!(s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null);
@@ -286,6 +286,8 @@ export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
     else cells.set(k, [s]);
   }
   return {
+    /** True when at least one indexed station is vector-capable (computed once per dataset). */
+    hasVectorCapable: stations.some(capable),
     stationAt(lat: number, lon: number, maxKm: number): IdxStation | null {
       const cand: Array<{ s: IdxStation; d: number }> = [];
       const consider = (s: IdxStation) => {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { strict as assert } from 'node:assert';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -23,11 +23,14 @@ const gridTime = new Date(T0).toISOString();
 function gridField(param: number, value: number): EncodeField {
   return { param, refTime: T0, forecastHours: 0, la1: 52.9, lo1: 4.9, dLat: 0.1, dLon: 0.1, ni: 7, nj: 7, values: new Array(49).fill(value) };
 }
-const uvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gu-'));
+// Every temp dir of this file lives under ROOT, removed once after all tests.
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gu-'));
+after(() => fs.rmSync(ROOT, { recursive: true, force: true }));
+const uvDir = fs.mkdtempSync(path.join(ROOT, 'uv-'));
 fs.writeFileSync(path.join(uvDir, 'currents.grb2'), encodeGrib2File([gridField(2, 1), gridField(3, 0)]));
 
 function writeUtcefDir(files: Record<string, Array<[string, number, number, number[][][]?]>>): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gu-u-'));
+  const dir = fs.mkdtempSync(path.join(ROOT, 'u-'));
   for (const [name, stations] of Object.entries(files)) {
     const doc = {
       metadata: { schema_version: '1.0.0' },
@@ -337,7 +340,7 @@ test('coverage index with a large maxKm matches the linear scan', () => {
 const fld = (param: number, value: number, la1: number, lo1: number, d: number, n: number, forecastHours = 0): EncodeField =>
   ({ param, refTime: T0, forecastHours, la1, lo1, dLat: d, dLon: d, ni: n, nj: n, values: new Array(n * n).fill(value) });
 function gribDirOf(files: Record<string, EncodeField[]>): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-gu-g-'));
+  const dir = fs.mkdtempSync(path.join(ROOT, 'g-'));
   for (const [n, f] of Object.entries(files)) fs.writeFileSync(path.join(dir, n), encodeGrib2File(f));
   return dir;
 }
@@ -400,7 +403,10 @@ test('/grid UTCEF-station GRIB-coverage memo stays correct within and across slo
 });
 
 // ---- /grid budget: far-away UTCEF must not thin GRIB; area-bounded stride ----
-const bigGrib = () => createGribSource(gribDirOf({ 'big.grb2': [fld(2, 1, 52.9, 4.9, 0.02, 31), fld(3, 0, 52.9, 4.9, 0.02, 31)] }), 0);
+// Built once and shared (read-only) by every test that needs the 31×31 grid.
+let bigGribSource: ReturnType<typeof createGribSource> | null = null;
+const bigGrib = () =>
+  (bigGribSource ??= createGribSource(gribDirOf({ 'big.grb2': [fld(2, 1, 52.9, 4.9, 0.02, 31), fld(3, 0, 52.9, 4.9, 0.02, 31)] }), 0));
 const nlBbox = '4.9,52.9,5.5,53.5';
 const gridCall = (utcefDir: string | null, preferGrib: boolean, bbox: string, maxPoints: number) =>
   makeApi({ data: null, error: null, grib: bigGrib(), utcef: utcefDir ? createUtcefSource(utcefDir, 0) : null, preferGrib })(
@@ -411,7 +417,6 @@ test('/grid: a far-away UTCEF station does not reduce GRIB density', (t) => {
   t.after(() => fs.rmSync(far, { recursive: true, force: true }));
   const without = gridCall(null, true, nlBbox, 400);
   const withFar = gridCall(far, true, nlBbox, 400);
-  console.log(`far-UTCEF test: without=${without.length} with=${withFar.length}`);
   assert.ok(without.length > 121);
   assert.equal(withFar.length, without.length);
 });
@@ -424,7 +429,6 @@ test('/grid: grid covering a quarter of the bbox shares the budget with UTCEF', 
   const pts = gridCall(dir, true, '4.9,52.9,6.1,54.1', 400);
   const grib = pts.filter((p) => p.source === 'grib').length;
   const utcef = pts.filter((p) => p.source === 'utcef').length;
-  console.log(`quarter-grid test: grib=${grib} utcef=${utcef} total=${pts.length}`);
   assert.ok(grib > 0 && utcef > 0);
   assert.ok(grib <= 0.5 * 400 * 1.5, `grib ${grib} too dense`);
   assert.ok(pts.length <= 400);
@@ -564,7 +568,9 @@ test('/grid stations=1: legacy station without a sample at `time` falls through 
   const on = call('1');
   const off = call('0');
   assert.ok(off.length > 10);
-  assert.ok(on.length >= off.length, `${on.length} < ${off.length}`);
+  // With the opt-in, a station that wins its position shares the budget with
+  // the lattice, so `on` may be sparser than `off`; it must still agree with /vector.
+  assert.ok(on.length > 10, `${on.length} points`);
   for (const p of on) {
     const rv = resolveVector(state, p.latitude, p.longitude, tOut);
     assert.equal(p.source, rv ? (rv.source === 'station' ? 'station' : rv.source) : 'none', `${p.latitude},${p.longitude}`);
@@ -573,9 +579,8 @@ test('/grid stations=1: legacy station without a sample at `time` falls through 
   assert.equal(own?.source, resolveVector(state, 53.2, 5.2, tOut)?.source);
 });
 
-test('/grid stations=1 without UTCEF: harmonic above GRIB leaves room for in-view station', (t) => {
-  void t;
-  const grib = createGribSource(gribDirOf({ 'big.grb2': [fld(2, 1, 52.9, 4.9, 0.02, 31), fld(3, 0, 52.9, 4.9, 0.02, 31)] }), 0);
+test('/grid stations=1 without UTCEF: harmonic above GRIB leaves room for in-view station', () => {
+  const grib = bigGrib();
   const state = { data: legacyData, error: null, grib, utcef: createUtcefSource(writeUtcefDir({}), 0), preferGrib: false } as unknown as ApiState;
   const sub = legacyData.stations.find((s) => s.latitude === 53.2 && s.longitude === 5.2)!;
   for (const mp of [10, 40]) {
@@ -600,4 +605,89 @@ test('coverage index matches the linear scan close to the pole', () => {
       assert.equal(idx.stationAt(lat, lon, maxKm)?.id ?? null, want, `${lat},${lon} @${maxKm}`);
     }
   }
+});
+
+// ---- review fixes: exact /vector agreement, budget, memo keys, 503, duplicates ----
+const HOUR = 3600_000;
+/** /grid points whose source/station/value differs from resolveVector at the same position. */
+function gridVsVector(state: ApiState, query: Record<string, string>, timeMs: number) {
+  const pts = makeApi(state)('/grid', query).points as P[];
+  const bad = pts.filter((p) => {
+    const rv = resolveVector(state, p.latitude, p.longitude, timeMs);
+    if (!rv || rv.source !== p.source) return true;
+    const id = rv.utcefStation?.id ?? rv.station?.id;
+    return (p.stationId !== undefined && id !== p.stationId) || Math.abs(rv.sample.u! - p.u) > 1e-9 || Math.abs(rv.sample.v! - p.v) > 1e-9;
+  });
+  return { pts, bad };
+}
+
+test('/grid: UTCEF loaded elsewhere does not thin a grid that covers only part of the view', (t) => {
+  const far = farUtcef();
+  t.after(() => fs.rmSync(far, { recursive: true, force: true }));
+  const bbox = '3.0,51.5,7.0,55.0'; // the 0.6° grid covers ~3% of it
+  assert.equal(gridCall(far, true, bbox, 400).length, gridCall(null, true, bbox, 400).length);
+});
+
+test('/grid: a stack GRIB layer without data at `time` does not win for a same-grid sibling', () => {
+  // Two forecast-day files on ONE grid, a UTCEF dataset ranked between them.
+  const grib = createGribSource(gribDirOf({
+    'day0.grb2': [fld(2, 1, 52.9, 4.9, 0.1, 7, 0), fld(3, 0, 52.9, 4.9, 0.1, 7, 0), fld(2, 1, 52.9, 4.9, 0.1, 7, 6), fld(3, 0, 52.9, 4.9, 0.1, 7, 6)],
+    'day2.grb2': [fld(2, 3, 52.9, 4.9, 0.1, 7, 48), fld(3, 0, 52.9, 4.9, 0.1, 7, 48), fld(2, 3, 52.9, 4.9, 0.1, 7, 54), fld(3, 0, 52.9, 4.9, 0.1, 7, 54)],
+  }), 0);
+  const utcef = createUtcefSource(writeUtcefDir({ 'u.utcef': [['U', 53.2, 5.2]] }), 0);
+  const stack = [
+    { id: 'd0', type: 'grib2' as const, files: ['day0.grb2'] },
+    { id: 'u', type: 'utcef' as const, files: ['u.utcef'] },
+    { id: 'd2', type: 'grib2' as const, files: ['day2.grb2'] },
+  ];
+  const state: ApiState = { data: null, error: null, grib, utcef, preferGrib: true, datasetRank: () => stack };
+  const tMs = T0 + 50 * HOUR; // only day2 has data
+  const { pts, bad } = gridVsVector(state, { bbox: '5.0,53.0,5.4,53.4', time: new Date(tMs).toISOString() }, tMs);
+  assert.ok(pts.length > 0);
+  assert.deepEqual(bad, []);
+});
+
+test('/grid: overlapping GRIB grids without a stack agree with /vector', () => {
+  const grib = createGribSource(gribDirOf({
+    'a-coast.grb2': [fld(2, 2, 52.9, 4.9, 0.05, 13), fld(3, 0, 52.9, 4.9, 0.05, 13)],
+    'b-global.grb2': [fld(2, 1, 50, 2, 0.5, 15), fld(3, 0, 50, 2, 0.5, 15)],
+  }), 0);
+  const state: ApiState = { data: null, error: null, grib, utcef: null, preferGrib: true };
+  const { pts, bad } = gridVsVector(state, { bbox: '4.0,52.0,6.0,54.0', time: gridTime }, T0);
+  assert.ok(pts.length > 0);
+  assert.deepEqual(bad, []);
+});
+
+test('/grid: stack entries with an empty file list do not poison the unrestricted layer memo', () => {
+  // UTCEF stack entry with no files, probed BEFORE the type-rank layer.
+  const utcef = createUtcefSource(writeUtcefDir({ 'k.utcef': [['K', 51.96, 3.66]] }), 0);
+  const grib = createGribSource(uvDir, 0);
+  const emptyU: ApiState = { data: null, error: null, grib, utcef, preferGrib: true, datasetRank: () => [{ id: 'e', type: 'utcef', files: [] }] };
+  const q = { bbox: '3.5,51.9,3.85,52.0', time: gridTime };
+  assert.deepEqual(makeApi(emptyU)('/grid', q).points.map((p: P) => p.stationId), ['K']);
+  const plain: ApiState = { data: null, error: null, grib, utcef, preferGrib: true };
+  assert.deepEqual(makeApi(plain)('/grid', q).points.map((p: P) => p.stationId), ['K']);
+  // GRIB stack entry with no files: type-rank GRIB still covers station G.
+  const utcefG = createUtcefSource(writeUtcefDir({ 'g.utcef': [['G', 53.2, 5.2]] }), 0);
+  const emptyG: ApiState = { data: null, error: null, grib, utcef: utcefG, preferGrib: true, datasetRank: () => [{ id: 'eg', type: 'grib2', files: [] }] };
+  const { pts, bad } = gridVsVector(emptyG, { bbox: '5.15,53.15,5.25,53.25', time: gridTime, maxPoints: '400' }, T0);
+  assert.ok(pts.length > 0);
+  assert.deepEqual(bad, []);
+});
+
+test('/grid stations=1 serves harmonic stations when only harmonics are loaded', () => {
+  const body = makeApi({ data: legacyData, error: null, grib: null, utcef: null, preferGrib: false })('/grid', { bbox: nlBbox, time: gridTime, stations: '1' });
+  assert.ok(Array.isArray(body.points), JSON.stringify(body));
+  assert.ok(body.points.some((p: P) => p.source === 'station'));
+  // Without the opt-in there is still nothing to show → 503 body.
+  assert.ok(makeApi({ data: legacyData, error: null, grib: null, utcef: null, preferGrib: false })('/grid', { bbox: nlBbox, time: gridTime }).error);
+});
+
+test('/grid: a station on a lattice node is not emitted twice', () => {
+  const utcef = createUtcefSource(writeUtcefDir({ 'g.utcef': [['G', 53.2, 5.2]] }), 0);
+  const pts: P[] = makeApi({ data: null, error: null, grib: createGribSource(uvDir, 0), utcef, preferGrib: false })(
+    '/grid', { bbox: '5.0,53.0,5.4,53.4', time: gridTime, maxPoints: '400' }).points;
+  const keys = pts.map((p) => `${p.latitude},${p.longitude}`);
+  assert.equal(new Set(keys).size, keys.length);
+  assert.ok(pts.some((p) => p.latitude === 53.2 && p.longitude === 5.2 && p.stationId === 'G'));
 });

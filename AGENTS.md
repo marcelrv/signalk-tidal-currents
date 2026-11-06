@@ -80,11 +80,15 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   a station whose `representative_area` polygon contains the point (first in
   array order), else nearest within `maxKm` (ties: earliest in array). A
   finite `maxKm` goes through `utcefCoverageIndexFor(data).stationAt()` (cell
-  buckets for stations and small polygons; falls back to a linear station pass when the search box would cover more cells than there are stations, e.g. large radii or near a pole; polygons whose bbox spans > 64
-  cells live in a rank-ordered `largeAreas` list with a bbox pre-test, mind
-  the ±360 frames); `Infinity` keeps the linear scan. A parity test pins the
-  index path to the linear algorithm. `createUtcefSource(dir)` mirrors the GRIB source's
-  1×/min reload and per-file parse cache.
+  buckets for stations and small polygons; falls back to a linear station
+  pass when the search box would cover more cells than there are stations,
+  e.g. large radii or near a pole; polygons whose bbox spans > 64 cells live
+  in a rank-ordered `largeAreas` list with a bbox pre-test, mind the ±360
+  frames); `Infinity` keeps the linear scan. A parity test pins the index
+  path to the linear algorithm. `stationAtStation()` memoises own-position
+  probes as one WeakMap per `maxKm|filesKey` (not a Map per station — RAM on
+  small boxes). `createUtcefSource(dir)` mirrors the GRIB source's 1×/min
+  reload and per-file parse cache.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).
@@ -116,27 +120,35 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   SAME ordered layer list as `resolveVector` (`orderedLayers()` — per-dataset
   stack entries, then the type rank; cached per `datasetRank()` array
   identity + rank + maxStationKm, one stable `Set` per stack entry so
-  Set-keyed caches such as `slotsForFiles` hit), skipping harmonic layers
-  by default (legacy stations claim no positions; clients use
-  `/stations?bbox=`). Opt-in `stations=1` (`includeStations`) lets harmonic
-  layers participate: probe = `legacyCoverageIndexFor(data).stationAt`
-  (exactly `stationVectorAt`'s pick; see its comment for why top-10
-  parity only needs stations within maxKm), lattice samples won become
-  `source:'station'` vectors, and in-view vector-capable winners are
-  thinned together with UTCEF winners in one `thinByCellLadder` call. A
-  lattice sample won by UTCEF station S is ALWAYS emitted as S's vector at
-  the sample position (`source:'utcef'`, `stationId`), whether or not S is
-  drawn; in-view stations are drawn only where they win, thinned by
-  `thinByCellLadder` into `maxPoints − lattice.length`. The GRIB request is
-  `maxPoints`, or `ceil(maxPoints/2)` when UTCEF data is loaded and ranks
-  above GRIB (rank only, not the view); with UTCEF loaded the lattice
-  stride is also `max(window stride, area stride)` (`strideFromBbox`,
-  `GRID_GRIB_DENSITY_BOOST`) so far-away UTCEF doesn't thin GRIB and
-  stride stays on the fixed index lattice (pan-stable); total ≤ `maxPoints`. Single pass:
-  each lattice sample's winner is evaluated once. The GRIB winner is
-  layer-specific: a lattice sample whose grid is not covered by the winning
-  stack layer's files is dropped (that dataset's own lattice covers the
-  area). Both `/stations?bbox=` and
+  Set-keyed caches such as `slotsForFiles` hit; `filesKey` is `f:`+sorted
+  files for stack layers and `*` for type-rank layers, so a stack entry
+  with an EMPTY file list never shares a memo key with the unrestricted
+  layer), skipping harmonic layers by default (legacy stations claim no
+  positions; clients use `/stations?bbox=`). Opt-in `stations=1`
+  (`includeStations`) lets harmonic layers participate: probe =
+  `legacyCoverageIndexFor(data).stationAt` (exactly `stationVectorAt`'s
+  pick; see its comment for why top-10 parity only needs stations within
+  maxKm), lattice samples won become `source:'station'` vectors, in-view
+  vector-capable winners are thinned together with UTCEF winners, and the
+  route serves harmonics-only setups (no 503). GRIB layers are probed
+  EXACTLY as `resolveVector` probes them (`gribVectorAtDetail` with the
+  layer's files — no "the sample's files intersect the layer" shortcut,
+  which let a same-grid stack file without data at `time` win); a winning
+  GRIB layer's own value is emitted, and only when it comes from the
+  sample's own grid (`gribSameGrid`) — where an overlapping grid answers,
+  that grid's lattice covers the area, so the map never shows two
+  disagreeing lattices. A lattice sample won by station S is ALWAYS emitted
+  as S's vector at the sample position (`stationId`). Budget: the in-view
+  winners (stations that win their own position) are found FIRST; with none,
+  GRIB gets the full `maxPoints` at its normal stride — station data
+  elsewhere (another continent) never thins it. With winners, the GRIB
+  request is `maxPoints`, or `ceil(maxPoints/2)` when a station layer ranks
+  above GRIB, and the stride is also `max(window stride, area stride)`
+  (`strideFromBbox`, `GRID_GRIB_DENSITY_BOOST`), still on the fixed index
+  lattice; winners whose position a lattice point already shows are
+  skipped, the rest thinned into `maxPoints − lattice.length`; total ≤
+  `maxPoints`. Station GRIB coverage is memoised per (GRIB data, layer,
+  bracketing pairs) as one weak boolean per station. Both `/stations?bbox=` and
   `/grid?bbox=` exist so a map can show full-viewport current coverage
   instead of a fixed nearest-N station list.
 - `src/index.ts` — plugin entry. Publishes `environment.current` deltas

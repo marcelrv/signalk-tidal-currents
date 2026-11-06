@@ -601,7 +601,7 @@ const openApiSpec = {
           { name: 'maxPoints', in: 'query', schema: { type: 'integer', default: 400, maximum: 5000 } },
           { name: 'stations', in: 'query', schema: { type: 'boolean', default: false }, description: 'Opt in: legacy harmonic (vector-capable) stations take part in the source arbitration and are returned with source "station".' },
         ],
-        responses: { '200': { description: 'OK' }, '503': { description: 'Neither GRIB nor UTCEF current data loaded' } },
+        responses: { '200': { description: 'OK' }, '503': { description: 'Neither GRIB nor UTCEF current data loaded (nor harmonic data, with stations=1)' } },
       },
     },
     '/stations/{id}': {
