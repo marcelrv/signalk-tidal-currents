@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0 — 2026-11-06
+
+### Added
+
+- Read-only manager view for read-only users and anonymous visitors
+  (signalk-server ≥ 2.35, e.g. a public demo). Changes stay admin-only;
+  paths, catalog URL and raw errors are hidden.
+- Chart arrows now also come from UTCEF stations, so areas without GRIB
+  data no longer look empty. Source priority decides when both cover a point.
+
+### Changed
+
+- Overlapping GRIB regions with different grids no longer shadow or blend
+  into each other.
+- Chart arrows stay put while panning and zooming.
+- The chart overlay is much faster and lighter on memory with large datasets.
+
+### Fixed
+
+- Stations are no longer lost or duplicated across the ±180° meridian.
+- The chart no longer shows stale sources after a data reload.
+- The manager no longer misses downloads that finish while its live feed is
+  closed.
+- The first-run wizard no longer restarts a download already in progress.
+
 ## 0.3.3 — 2026-07-16
 
 ### Fixed
