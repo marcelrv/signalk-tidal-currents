@@ -17,6 +17,7 @@
  * directions, which is what turns the signed speed into a set/drift vector.
  */
 
+import { createCellIndex, distanceKm } from './geoindex.js';
 import {
   ConstituentTable,
   findStationHarmonics,
@@ -24,6 +25,8 @@ import {
   HarmonicStation,
   IdxStation,
 } from './harmonics.js';
+
+export { distanceKm, lonHalfWidthDeg, lonInSpan } from './geoindex.js';
 
 export const KNOTS_TO_MS = 0.514444;
 const DEG2RAD = Math.PI / 180;
@@ -150,17 +153,6 @@ export function timeline(
   return out;
 }
 
-/** Great-circle distance in km. */
-export function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * DEG2RAD;
-  const dLon = (lon2 - lon1) * DEG2RAD;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * DEG2RAD) * Math.cos(lat2 * DEG2RAD) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(Math.min(1, a)));
-}
-
 // Resolvability memo: whether a station's (or its reference's) harmonic
 // record exists is a pure function of the loaded dataset, so cache it per
 // station object instead of re-running a FULL harmonic prediction per station
@@ -205,25 +197,11 @@ export function nearestCurrentStations(
 }
 
 /**
- * True when the longitude spans [w1, e1] and [w2, e2] overlap modulo 360 —
- * map clients (Freeboard) send viewports past ±180 (e.g. 170…190 across the
- * antimeridian) while stations are stored in −180…180.
- */
-export function lonSpansOverlap(w1: number, e1: number, w2: number, e2: number): boolean {
-  const k = Math.ceil((w2 - e1) / 360);
-  return w1 + 360 * k <= e2;
-}
-
-/** True when `lon` (any range) falls inside [west, east] modulo 360. */
-export function lonInSpan(lon: number, west: number, east: number): boolean {
-  return lonSpansOverlap(lon, lon, west, east);
-}
-
-/**
  * All current stations inside a lat/lon bounding box (no distance sort or
  * nearest-N cutoff — the point is to cover every station a map viewport can
- * see, not just the closest handful to one reference point). `limit` is
- * still applied as a safety cap on the response size.
+ * see, not just the closest handful to one reference point). Gathered through
+ * the cell index (O(stations in view)), in array order. `limit` is still
+ * applied as a safety cap on the response size.
  */
 export function stationsInBbox(
   data: HarmonicsData,
@@ -233,38 +211,18 @@ export function stationsInBbox(
   north: number,
   limit: number = 500,
 ): Array<{ station: IdxStation; vectorCapable: boolean }> {
-  const result: Array<{ station: IdxStation; vectorCapable: boolean }> = [];
-  for (const s of data.stations) {
-    if (!s.isCurrent) continue;
-    if (s.latitude < south || s.latitude > north || !lonInSpan(s.longitude, west, east)) continue;
-    if (!isStationResolvable(data, s)) continue;
-    result.push({
-      station: s,
-      vectorCapable: isVectorCapable(s),
-    });
-    if (result.length >= limit) break;
-  }
-  return result;
+  const found = legacyCoverageIndexFor(data).index.inBbox(west, south, east, north);
+  return (found.length > limit ? found.slice(0, limit) : found).map((station) => ({
+    station,
+    vectorCapable: isVectorCapable(station),
+  }));
 }
 
 /**
- * Exact angular longitude half-width (degrees, slightly padded) of a circle of
- * angular radius `dLatDeg` centred at `lat`: asin(sin d / cos(|lat|+d)).
- * Returns 360 when the circle reaches a pole (all longitudes).
- */
-export function lonHalfWidthDeg(lat: number, dLatDeg: number): number {
-  const cosP = Math.cos((Math.abs(lat) + dLatDeg) * DEG2RAD);
-  const ratio = cosP > 0 ? Math.sin(dLatDeg * DEG2RAD) / cosP : 2;
-  if (Math.abs(lat) + dLatDeg >= 90 || ratio >= 1) return 360;
-  return (Math.asin(ratio) / DEG2RAD) * 1.01 + 1e-6;
-}
-
-/**
- * Spatial index over a dataset's current + resolvable legacy stations (same
- * cell scheme as utcefCoverageIndex: 0.5° cells, antimeridian-wrapped keys).
- * `stationAt` returns EXACTLY the station api.ts `stationVectorAt` picks:
- * nearestCurrentStations(…, 10) filtered by `vectorCapable && distanceKm <=
- * maxKm`, first element.
+ * Spatial index over a dataset's current + resolvable legacy stations (the
+ * shared cell index, geoindex.ts). `stationAt` returns the first
+ * vector-capable station of `nearestCurrentStations(…, 10)` within `maxKm`
+ * (the REST/delta selection rule: top-10 nearest, then capable, then in range).
  *
  * Why only stations within maxKm matter: that result is the first capable
  * station among the 10 nearest, restricted to d <= maxKm. Sorted by rounded
@@ -278,49 +236,19 @@ export function lonHalfWidthDeg(lat: number, dLatDeg: number): number {
  */
 export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
   const stations = data.stations.filter((s) => s.isCurrent && isStationResolvable(data, s));
-  const capable = isVectorCapable;
-  const rank = new Map<IdxStation, number>();
-  stations.forEach((s, i) => rank.set(s, i));
-  const nLon = Math.round(360 / cellDeg);
-  const key = (j: number, i: number) => `${j}:${((i % nLon) + nLon) % nLon}`;
-  const cells = new Map<string, IdxStation[]>();
-  for (const s of stations) {
-    const k = key(Math.floor(s.latitude / cellDeg), Math.floor(s.longitude / cellDeg));
-    const l = cells.get(k);
-    if (l) l.push(s);
-    else cells.set(k, [s]);
-  }
-  const capableStations = stations.filter(capable);
+  const index = createCellIndex(stations, (s) => s.latitude, (s) => s.longitude, cellDeg);
+  const capableStations = stations.filter(isVectorCapable);
   return {
+    index,
     /** The vector-capable indexed stations (computed once per dataset). */
     capable: capableStations,
     /** True when at least one indexed station is vector-capable (computed once per dataset). */
     hasVectorCapable: capableStations.length > 0,
     stationAt(lat: number, lon: number, maxKm: number): IdxStation | null {
-      const cand: Array<{ s: IdxStation; d: number }> = [];
-      const consider = (s: IdxStation) => {
-        const d = Math.round(distanceKm(lat, lon, s.latitude, s.longitude) * 100) / 100;
-        if (d <= maxKm) cand.push({ s, d });
-      };
-      let linear = !Number.isFinite(maxKm);
-      if (!linear) {
-        const dLat = maxKm / 110;
-        // Exact angular half-width of a radius-d circle: asin(sin d / cos(lat))
-        // (the small-angle d/cos(lat) under-covers close to a pole).
-        const dLon = lonHalfWidthDeg(lat, dLat);
-        const polar = dLon >= 360;
-        const j0 = Math.floor((lat - dLat) / cellDeg);
-        const j1 = Math.floor((lat + dLat) / cellDeg);
-        const i0 = Math.floor((lon - dLon) / cellDeg);
-        const i1 = polar ? i0 + nLon - 1 : Math.min(Math.floor((lon + dLon) / cellDeg), i0 + nLon - 1);
-        if ((j1 - j0 + 1) * (i1 - i0 + 1) > stations.length) linear = true;
-        else {
-          for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) for (const s of cells.get(key(j, i)) ?? []) consider(s);
-        }
-      }
-      if (linear) for (const s of stations) consider(s);
-      cand.sort((a, b) => a.d - b.d || rank.get(a.s)! - rank.get(b.s)!);
-      for (const c of cand.slice(0, 10)) if (capable(c.s)) return c.s;
+      const cand: Array<{ s: IdxStation; d: number; r: number }> = [];
+      index.within(lat, lon, maxKm, (s, d, r) => cand.push({ s, d, r }));
+      cand.sort((a, b) => a.d - b.d || a.r - b.r);
+      for (const c of cand.slice(0, 10)) if (isVectorCapable(c.s)) return c.s;
       return null;
     },
   };

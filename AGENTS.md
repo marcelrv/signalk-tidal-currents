@@ -53,12 +53,19 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   to `skipped`, never throw.
 - `src/gribcurrents.ts` — GRIB current source. Pairs discipline 10 /
   category 1 fields (u/v params 2/3 or dir/speed 0/1; direction =
-  TOWARD) per valid time, shallowest level wins. `gribVectorAt` =
-  bilinear in space (NaN corners dropped + weights renormalized for
-  coastlines) and linear in time (±3 h clamp slack at the range edges).
-  Without `files` and a merged-slot miss it probes every distinct grid group
-  (same-time dedup keeps only one region's grid in the merged `slots`).
-  `createGribSource(dir)` re-stats the dir at most 1×/min and reloads on
+  TOWARD) per valid time, shallowest level wins. **Series model**: one
+  `GridSeries` per distinct grid geometry (`data.series`, no merged slot
+  list, no cross-grid dedup). A series dedups per valid time **within its
+  grid**: shallowest depth, then newest `refTime`, then later file name; series
+  are ordered finest-resolution first, then by file name. `gribVectorAt` =
+  the first series with a value: bilinear in space (NaN corners dropped +
+  weights renormalized for coastlines) and linear in time (±3 h clamp slack at
+  the range edges). Stack layers use `gribSeriesFor(data, files, filesKey)` —
+  cached per data by the filesKey **string** (cap 32), subset series share the
+  data's canonical grid object. Each series carries a per-cell `cellMask`
+  (bit 0 = defined in some slot, bit 1 = defined in every slot) built at load,
+  so `gribSeriesCovers` (the claim probe) is exact yet O(1) in the common
+  case. `createGribSource(dir)` re-stats the dir at most 1×/min and reloads on
   file-set change, re-decoding only files whose size/mtime changed (per-file
   parse cache — a full re-decode of every file on each change froze small
   ARM boxes once many regions were installed).
@@ -76,81 +83,64 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   published** (this is a currents plugin); `relative_time_offset` is
   counted as unsupported (needs reference-port HW/range-ratio — deferred).
   Canonical id is the top-level `Feature.id`; `station_id` is only an
-  alias. Rejects unknown schema **major** versions. `utcefVectorAt` prefers
-  a station whose `representative_area` polygon contains the point (first in
-  array order), else nearest within `maxKm` (ties: earliest in array). A
-  finite `maxKm` goes through `utcefCoverageIndexFor(data).stationAt()` (cell
-  buckets for stations and small polygons; falls back to a linear station
-  pass when the search box would cover more cells than there are stations,
-  e.g. large radii or near a pole; polygons whose bbox spans > 64 cells live
-  in a rank-ordered `largeAreas` list with a bbox pre-test, mind the ±360
-  frames); `Infinity` keeps the linear scan. A parity test pins the index
-  path to the linear algorithm. `stationAtStation()` memoises own-position
-  probes as one WeakMap per `maxKm|filesKey` (not a Map per station — RAM on
-  small boxes). `createUtcefSource(dir)` mirrors the GRIB source's 1×/min
-  reload and per-file parse cache.
+  alias. Rejects unknown schema **major** versions; a
+  `representative_area` ring that encircles a pole (unwrapped ring does not
+  close) is rejected with a warning (nearest-station lookup applies).
+  `utcefVectorAt` prefers a station whose `representative_area` polygon
+  contains the point (first in array order), else nearest within `maxKm`
+  (ties: earliest in array). A finite `maxKm` goes through
+  `utcefCoverageIndexFor(data).stationAt()` (shared `geoindex.ts` cell index
+  for stations; small polygons in per-cell lists, polygons whose bbox spans
+  > 64 cells in coarse 10° buckets with a bbox pre-test — mind the ±360
+  frames); `Infinity` keeps the linear scan. Parity tests pin the index path
+  to the linear algorithm. `createUtcefSource(dir)` mirrors the GRIB source's
+  1×/min reload and per-file parse cache.
+- `src/geoindex.ts` — the one shared cell index (`createCellIndex`) used by
+  the UTCEF and legacy indexes: antimeridian-wrapped keys, padded box with a
+  linear fallback when the box covers more cells than there are items,
+  `nearestWithin` (rounded distance, ties by array rank, d = 0 fast path),
+  `within`, `inBbox`. Also home of `distanceKm`/`lonHalfWidthDeg`/`lonInSpan`.
+- `src/resolve.ts` — **THE resolver**; no other module decides who answers at
+  (lat, lon, t). `orderedLayers()` (dataset stack, then type rank GRIB →
+  UTCEF → legacy station, or UTCEF → station → GRIB when `preferGrib` is
+  false; a stack UTCEF probe's nearest radius is clamped to 50 km) builds the
+  layers; `createResolveCtx(state, maxKm, {bbox?, legacy?})` keeps those that
+  can answer (an optional `bbox` drops layers whose 10°-bucket extent cannot
+  reach it). `claimAt` returns WHO answers (GRIB series / UTCEF station /
+  legacy station) without sampling; `resolveAt` is claim + sample; both run
+  the same private layer loop. `ctx.counters` (claims, resolves,
+  layerProbes, samples) is what the tests assert the cost bounds on.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).
-  `resolveVector()` walks `orderedLayers()` (dataset stack, then type rank
-  GRIB → UTCEF → legacy station, or UTCEF → station → GRIB when `preferGrib`
-  is false; a stack UTCEF probe's nearest radius is clamped to 50 km);
-  `/timeline` (positional) selects the source **per sample** so windows
-  past the GRIB horizon degrade to the other sources. Station endpoints
-  (`/stations`, `/stations/:id[/timeline]`) serve **both** harmonics and
-  UTCEF stations. `speedKn` is signed for legacy station samples, a
-  magnitude for UTCEF and GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
+  `resolveVector()`, `/vector`, `/timeline` (one `resolveAt` per sample, so
+  windows past the GRIB horizon degrade to the other sources) and `/grid` all
+  go through `resolve.ts`. Station endpoints (`/stations`,
+  `/stations/:id[/timeline]`) serve **both** harmonics and UTCEF stations.
+  `speedKn` is signed for legacy station samples, a magnitude for UTCEF and
+  GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
   `?latitude=&longitude=` form) returns the current stations inside a
-  viewport, thinned to `maxPoints` (default 500, max 5000; legacy alias
-  `limit`) via `thinByCellLadder()` — a stable spatial cell ladder
-  (`CELL_LADDER_DEG`, fine→coarse) that keeps ONE representative (nearest
-  the cell centre) per occupied cell at the finest level whose occupancy
-  fits the budget. Cells are aligned to the **global origin**, not the
-  bbox, so which stations survive depends only on where they are — panning
-  reveals/hides from one stable set, zooming re-grids like a tile pyramid.
-  A zoomed-out client passes a small `maxPoints` (else Europe = millions of
-  arrows); zoomed-in passes more, or a small bbox where everything fits and
-  nothing is thinned. This replaced the old first-500-in-array-order
-  truncation (arbitrary, reshuffled on pan). `/grid?bbox=…` is the gridded
-  equivalent for GRIB coverage (`gribGridSamples()` in `gribcurrents.ts`):
-  samples are chosen from the source grid's own fixed (i, j) index
-  lattice at a stride targeting the request (never finer than native
-  resolution) — same stable-across-pan/zoom philosophy, applied to the
-  regular lattice instead of irregular stations. `/grid` arbitrates with the
-  SAME ordered layer list as `resolveVector` (`orderedLayers()` — per-dataset
-  stack entries, then the type rank; cached per `datasetRank()` array
-  identity + rank + maxStationKm, one stable `Set` per stack entry so
-  Set-keyed caches such as `slotsForFiles` hit; `filesKey` is `f:`+sorted
-  files for stack layers and `*` for type-rank layers, so a stack entry
-  with an EMPTY file list never shares a memo key with the unrestricted
-  layer), skipping harmonic layers by default (legacy stations claim no
-  positions; clients use `/stations?bbox=`). Opt-in `stations=1`
-  (`includeStations`) lets harmonic layers participate: probe =
-  `legacyCoverageIndexFor(data).stationAt` (exactly `stationVectorAt`'s
-  pick; see its comment for why top-10 parity only needs stations within
-  maxKm), lattice samples won become `source:'station'` vectors, in-view
-  vector-capable winners are thinned together with UTCEF winners, and the
-  route serves harmonics-only setups (no 503). GRIB layers are probed
-  EXACTLY as `resolveVector` probes them (`gribVectorAtDetail` with the
-  layer's files — no "the sample's files intersect the layer" shortcut,
-  which let a same-grid stack file without data at `time` win); a winning
-  GRIB layer's own value is emitted, and only when it comes from the
-  sample's own grid (`gribSameGrid`) — where an overlapping grid answers,
-  that grid's lattice covers the area, so the map never shows two
-  disagreeing lattices. A lattice sample won by station S is ALWAYS emitted
-  as S's vector at the sample position (`stationId`). Budget: the in-view
-  winners (stations that win their own position) are found FIRST; with none,
-  GRIB gets the full `maxPoints` at its normal stride — station data
-  elsewhere (another continent) never thins it. With winners, the GRIB
-  request is `maxPoints`, or `ceil(maxPoints/2)` when a station layer ranks
-  above GRIB, and the stride is also `max(window stride, area stride)`
-  (`strideFromBbox`, `GRID_GRIB_DENSITY_BOOST`), still on the fixed index
-  lattice; winners whose position a lattice point already shows are
-  skipped, the rest thinned into `maxPoints − lattice.length`; total ≤
-  `maxPoints`. Station GRIB coverage is memoised per (GRIB data, layer,
-  bracketing pairs) as one weak boolean per station. Both `/stations?bbox=` and
-  `/grid?bbox=` exist so a map can show full-viewport current coverage
-  instead of a fixed nearest-N station list.
+  viewport (gathered through the cell index), thinned to `maxPoints` (default
+  500, max 5000; legacy alias `limit`) via `thinByCellLadder()` — a stable
+  spatial cell ladder (`CELL_LADDER_DEG`, fine→coarse) keeping ONE
+  representative (nearest the cell centre) per occupied cell at the finest
+  level whose occupancy fits. Cells are aligned to the **global origin**, not
+  the bbox, so which stations survive depends only on where they are.
+  **`/grid?bbox=…` has three rules** (`gridPoints`):
+  1. *Single resolver.* `/grid` only chooses candidate positions (lattice
+     nodes, in-view stations); every one is decided by `resolveAt`/`claimAt`.
+     It never probes GRIB/UTCEF/legacy itself, so each point equals `/vector`
+     at its coordinates.
+  2. *Series model.* A lattice belongs to a grid geometry; a GRIB answer from
+     another grid is dropped (that grid's own lattice shows it), a station
+     answer is emitted as that station's vector (`stationId`).
+  3. *Geometry-only stride.* Per grid, a power-of-two base stride from the
+     bbox size and the grid's cell size alone (`baseStride`), nodes = the
+     grid's own (i, j) multiples of the stride from index 0 (lattices nest).
+     Station winners (claimAt at their own position) are counted first; the
+     fill level is the densest `max(1, base / 2^k)` with candidates + winners
+     ≤ `maxPoints` (index arithmetic, one resolve pass, no trial passes).
+     Total ≤ `maxPoints` by construction. No content-dependent heuristics.
 - `src/index.ts` — plugin entry. Publishes `environment.current` deltas
   (v1 data model) via `resolveVector` (GRIB not distance-limited;
   stations within `maxStationDistanceKm`). Both **named and default
