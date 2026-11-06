@@ -65,3 +65,62 @@ test('thinByCellLadder falls back to a truncated coarsest set when maxPoints is 
   const thinned = thinByCellLadder(items, 3);
   assert.equal(thinned.length, 3);
 });
+
+// ── Reference implementation: the original object/Map-based algorithm ──
+
+const LADDER = [0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 40];
+function refPick<T extends { lat: number; lon: number }>(items: T[], size: number, limit: number): T[] | null {
+  const slotOf = new Map<number, number>();
+  const reps: T[] = [];
+  const d2s: number[] = [];
+  for (const it of items) {
+    const ci = Math.floor(it.lon / size);
+    const cj = Math.floor(it.lat / size);
+    const d2 = (it.lon - (ci + 0.5) * size) ** 2 + (it.lat - (cj + 0.5) * size) ** 2;
+    const key = cj * 1048576 + ci;
+    const slot = slotOf.get(key);
+    if (slot === undefined) {
+      if (reps.length >= limit) return null;
+      slotOf.set(key, reps.length);
+      reps.push(it);
+      d2s.push(d2);
+    } else {
+      const cur = reps[slot];
+      if (d2 < d2s[slot] || (d2 === d2s[slot] && (it.lat < cur.lat || (it.lat === cur.lat && it.lon < cur.lon)))) {
+        reps[slot] = it;
+        d2s[slot] = d2;
+      }
+    }
+  }
+  return reps;
+}
+function refThin<T extends { lat: number; lon: number }>(items: T[], max: number): T[] {
+  if (items.length <= max) return items;
+  let chosen: T[] | null = null;
+  for (let i = LADDER.length - 1; i >= 0; i--) {
+    const reps = refPick(items, LADDER[i], max);
+    if (reps) chosen = reps;
+    else break;
+  }
+  return chosen ?? refPick(items, LADDER[LADDER.length - 1], Infinity)!.slice(0, max);
+}
+
+test('thinByCellLadder (typed-array cells) picks exactly what the original Map-based algorithm picked, in the same order', () => {
+  let a = 12345;
+  const rand = () => ((a = (Math.imul(a, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const scenes: Array<Array<{ lat: number; lon: number; id: number }>> = [
+    // Random, with duplicated coordinates and negative / antimeridian-side values.
+    Array.from({ length: 6000 }, (_, id) => ({ lat: -80 + rand() * 160, lon: -180 + rand() * 360, id })),
+    // A regular lattice: many exact distance ties (resolved by lat, lon).
+    gridStations(70, 50, 0, 0.01).map((s, id) => ({ lat: s.lat, lon: s.lon, id })),
+    // A dense cluster plus far outliers.
+    Array.from({ length: 4000 }, (_, id) => ({ lat: id % 50 === 0 ? 10 + rand() * 60 : 51.9 + rand() * 0.2, lon: id % 50 === 0 ? -40 + rand() * 80 : 3.9 + rand() * 0.4, id })),
+  ];
+  for (const [n, items] of scenes.entries()) {
+    for (const max of [0, 1, 2, 3, 7, 25, 100, 500, 3000]) {
+      const got = thinByCellLadder(items, max).map((s) => s.id);
+      const want = refThin(items, max).map((s) => s.id);
+      assert.deepEqual(got, want, `scene ${n} max ${max}`);
+    }
+  }
+});

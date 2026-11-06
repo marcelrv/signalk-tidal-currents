@@ -131,7 +131,7 @@ test('a context built with a bbox drops layers that cannot reach it; legacy:fals
   const view = { west: 4.5, south: 52.5, east: 5.8, north: 53.8 };
   const near = createResolveCtx(state, 50, { bbox: view });
   assert.ok(all.layers.length > near.layers.length);
-  assert.deepEqual(near.layers.filter((l) => l.stack).map((l) => l.filesKey), ['f:near.grb2']);
+  assert.deepEqual(near.layers.filter((l) => l.stack).map((l) => [...l.files!]), [['near.grb2']]);
   // Type-rank layers reach the view (they hold the near data too).
   assert.deepEqual(near.layers.filter((l) => !l.stack).map((l) => l.type), ['grib2', 'utcef', 'harmonic']);
   // Resolution inside the view is unchanged by the pre-filter.

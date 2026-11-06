@@ -63,6 +63,15 @@ export interface CellIndex<T> {
   within(lat: number, lon: number, maxKm: number, fn: (item: T, km: number, rank: number) => void): void;
   /** Items inside a lon/lat box (inclusive; longitudes compared modulo 360), in array order. */
   inBbox(west: number, south: number, east: number, north: number): T[];
+  /**
+   * The array positions (ranks) of the same items, ascending — no per-item
+   * objects. `ordered = false` skips the sort (cell order, still deterministic)
+   * for callers that do not care about array order.
+   */
+  inBboxRanks(west: number, south: number, east: number, north: number, ordered?: boolean): Uint32Array;
+  /** Position of item `rank` (typed-array reads for callers that hold only ranks). */
+  latAt(rank: number): number;
+  lonAt(rank: number): number;
 }
 
 export function createCellIndex<T>(
@@ -149,6 +158,41 @@ export function createCellIndex<T>(
     return { j0, j1, i0, i1 };
   };
 
+  const inBboxRanks = (west: number, south: number, east: number, north: number, ordered = true): Uint32Array => {
+    // Growable typed buffer: a zoomed-out viewport holds hundreds of thousands of items.
+    let found = new Uint32Array(Math.min(items.length, 1024));
+    let count = 0;
+    const j0 = Math.floor(south / cellDeg);
+    const j1 = Math.floor(north / cellDeg);
+    const wide = east - west >= 360;
+    const i0 = wide ? 0 : Math.floor(west / cellDeg);
+    const i1 = wide ? nLon - 1 : Math.floor(east / cellDeg);
+    const take = (r: number) => {
+      const lat = lats[r];
+      if (lat >= south && lat <= north && lonInSpan(lons[r], west, east)) {
+        if (count === found.length) {
+          const bigger = new Uint32Array(Math.max(1024, found.length * 2));
+          bigger.set(found);
+          found = bigger;
+        }
+        found[count++] = r;
+      }
+    };
+    if ((j1 - j0 + 1) * (i1 - i0 + 1) > items.length) {
+      for (let r = 0; r < items.length; r++) take(r);
+    } else {
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          const list = cells.get(cellKey(j, i)) ?? EMPTY;
+          for (let n = 0; n < list.length; n++) take(list[n]);
+        }
+      }
+    }
+    const out = found.subarray(0, count);
+    // Array order (typed-array sort: numeric and fast).
+    return ordered ? out.sort() : out;
+  };
+
   return {
     items,
     keyAt: (lat, lon) => cellKey(Math.floor(lat / cellDeg), Math.floor(lon / cellDeg)),
@@ -219,29 +263,12 @@ export function createCellIndex<T>(
       }
     },
 
+    latAt: (rank) => lats[rank],
+    lonAt: (rank) => lons[rank],
+
+    inBboxRanks,
     inBbox(west, south, east, north) {
-      const found: number[] = [];
-      const j0 = Math.floor(south / cellDeg);
-      const j1 = Math.floor(north / cellDeg);
-      const wide = east - west >= 360;
-      const i0 = wide ? 0 : Math.floor(west / cellDeg);
-      const i1 = wide ? nLon - 1 : Math.floor(east / cellDeg);
-      const take = (r: number) => {
-        const lat = lats[r];
-        if (lat >= south && lat <= north && lonInSpan(lons[r], west, east)) found.push(r);
-      };
-      if ((j1 - j0 + 1) * (i1 - i0 + 1) > items.length) {
-        for (let r = 0; r < items.length; r++) take(r);
-      } else {
-        for (let j = j0; j <= j1; j++) {
-          for (let i = i0; i <= i1; i++) {
-            const list = cells.get(cellKey(j, i)) ?? EMPTY;
-            for (let n = 0; n < list.length; n++) take(list[n]);
-          }
-        }
-      }
-      // Array order (typed-array sort: numeric and fast).
-      const ranks = Uint32Array.from(found).sort();
+      const ranks = inBboxRanks(west, south, east, north);
       const out = new Array<T>(ranks.length);
       for (let n = 0; n < ranks.length; n++) out[n] = items[ranks[n]];
       return out;

@@ -60,12 +60,25 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   are ordered finest-resolution first, then by file name. `gribVectorAt` =
   the first series with a value: bilinear in space (NaN corners dropped +
   weights renormalized for coastlines) and linear in time (±3 h clamp slack at
-  the range edges). Stack layers use `gribSeriesFor(data, files, filesKey)` —
-  cached per data by the filesKey **string** (cap 32), subset series share the
-  data's canonical grid object. Each series carries a per-cell `cellMask`
-  (bit 0 = defined in some slot, bit 1 = defined in every slot) built at load,
-  so `gribSeriesCovers` (the claim probe) is exact yet O(1) in the common
-  case. `createGribSource(dir)` re-stats the dir at most 1×/min and reloads on
+  the range edges). Stack layers use `gribSubsetSeries(data, files)` (uncached
+  here; `resolve.ts` keeps the result per layer): per geometry, a file subset
+  that equals the canonical series' whole file set **reuses the canonical
+  `GridSeries` object** (no second dedup pass or cell mask); only a strict
+  subset is built, on the canonical grid object. Each series carries a
+  per-cell `cellMask` (bit 0 = defined in some slot, bit 1 = defined in every
+  slot) built at load, so `gribSeriesCovers` (the claim probe) is exact yet
+  O(1) in the common case; it raises an optional `TimeDependence` out-flag
+  when it had to sample the bracketing slots (partially-defined cell), the one
+  case where its answer changes with the time while the series stays in range
+  (`gribSeriesInRange` is the other, coarse, time dependence).
+  **Cycle seam (accepted behaviour):** the per-time dedup keeps the newest
+  cycle for each valid time, so where a newer forecast cycle starts *later*
+  than an older one covers, the time between the last old-cycle-only slot and
+  the first slot of the newer cycle is bracketed ACROSS the two cycles for
+  that one step (old cycle on one side, new on the other). Inside the newer
+  cycle's range nothing is ever blended with an older cycle. This is
+  deliberate — the alternative (dropping the older cycle's tail) would leave a
+  gap — so do not "fix" it. `createGribSource(dir)` re-stats the dir at most 1×/min and reloads on
   file-set change, re-decoding only files whose size/mtime changed (per-file
   parse cache — a full re-decode of every file on each change froze small
   ARM boxes once many regions were installed).
@@ -108,8 +121,35 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   can answer (an optional `bbox` drops layers whose 10°-bucket extent cannot
   reach it). `claimAt` returns WHO answers (GRIB series / UTCEF station /
   legacy station) without sampling; `resolveAt` is claim + sample; both run
-  the same private layer loop. `ctx.counters` (claims, resolves,
-  layerProbes, samples) is what the tests assert the cost bounds on.
+  the same private layer loop (which takes an optional `TimeDependence`
+  out-flag raised when a GRIB probe before the winner went through the
+  mask-partial branch). `ctx.counters` (claims, resolves, layerProbes,
+  samples) is what the tests assert the cost bounds on.
+  **Long-lived caches hang off (data object, layer snapshot)** — the snapshot
+  being the array `orderedLayers()` returns — in a two-level `WeakMap`, so they
+  are freed when the data reloads or the stack changes, are keyed by layer
+  OBJECT (never by Set identity or a name string), and have **no count caps**:
+  their size is bounded by the number of stack layers. Per layer: the GRIB
+  series (`gribSubsetSeries`, built once; canonical series reused where the
+  files equal a region's whole file set) and, for UTCEF, the bbox pre-filter
+  extent = the union of per-FILE extents (one pass over the stations builds
+  every file's extent for a radius; a layer's extent is <= 648 bucket keys).
+  Capped FIFO caches here thrashed as soon as the stack had more layers than
+  the cap (every manually dropped file is its own layer) — don't reintroduce
+  one. `resolveBuildCounts` / `gribBuildCounts` are the test hooks asserting
+  each entry is built once.
+  **`ownWinFor(ctx, 'utcef' | 'station', t)`** = per station, whether it wins
+  its OWN position: a `Uint8Array` (0 loses, 1 wins, 2 time-dependent), one
+  byte per station, indexed by array position (UTCEF: `currentStations`;
+  legacy: the legacy index's station list). Filled once per
+  (snapshot, legacy flag, maxStationKm, `rangeKey`) by the same claim loop,
+  against the **unpruned** `ctx.fullLayers` (it covers stations outside the
+  current view, so it must not see a bbox-pruned layer list). `rangeKey` = which
+  GRIB series are in range at `t`, so crossing a forecast-horizon edge selects
+  or builds another array; stations flagged 2 (coastline cells, partially
+  defined GRIB) are re-decided per request with `claimAt`. LRU of
+  `OWN_WIN_CACHE_CAP` (4) arrays per (data, snapshot). It is NOT a per-station
+  memo map.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).
@@ -137,7 +177,16 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   3. *Geometry-only stride.* Per grid, a power-of-two base stride from the
      bbox size and the grid's cell size alone (`baseStride`), nodes = the
      grid's own (i, j) multiples of the stride from index 0 (lattices nest).
-     Station winners (claimAt at their own position) are counted first; the
+     Station winners are counted first — in-view stations are gathered as
+     array positions through the cell index (`inBboxRanks`, unsorted), read
+     from the `ownWin` array (`resolve.ts`) and only the time-dependent ones go
+     through `claimAt`; winners live in parallel typed arrays (zoomed out with
+     nothing covering them, ~200k stations all win: per-station objects there
+     cost hundreds of MB of transient RSS), are thinned by index
+     (`thinIndicesByCellLadder`, typed-array cell table — same selection as the
+     object version) and only the survivors (<= `maxPoints`) re-derive their
+     claim for sampling. Station points are therefore in thinning order, not
+     station-array order. The
      fill level is the densest `max(1, base / 2^k)` with candidates + winners
      ≤ `maxPoints` (index arithmetic, one resolve pass, no trial passes).
      Total ≤ `maxPoints` by construction. No content-dependent heuristics.

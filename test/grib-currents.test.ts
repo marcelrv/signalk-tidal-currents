@@ -13,9 +13,7 @@ import {
   createGribSource,
   gribVectorAt,
   gribSeriesFor,
-  gribSeriesCacheSize,
   gribSummary,
-  SERIES_CACHE_CAP,
   loadGribDir,
   GRIB_TIME_SLACK_MS,
 } from '../dist/gribcurrents.js';
@@ -686,13 +684,11 @@ test('series dedup: one slot per valid time — shallowest depth first, then new
   assert.equal(data.series[0].slots[0].file, 'new.grb2');
 });
 
-test('gribSeriesFor is cached by the filesKey string and capped', () => {
+test('gribSeriesFor: a file subset that is a region\'s whole file set IS the canonical series; a strict subset is built on the canonical grid', () => {
   const data = loadGribDir(uvDir)!;
-  const a = gribSeriesFor(data, new Set(['currents.grb2']), 'f:currents.grb2');
-  const b = gribSeriesFor(data, new Set(['currents.grb2']), 'f:currents.grb2'); // a DIFFERENT Set instance, same key
-  assert.equal(a, b);
-  assert.equal(a[0].grid, data.series[0].grid, 'subset series share the canonical grid object');
-  assert.deepEqual(gribSeriesFor(data, new Set(['nope.grb2']), 'f:nope.grb2'), []);
-  for (let i = 0; i < SERIES_CACHE_CAP * 3; i++) gribSeriesFor(data, new Set([`x${i}`]), `f:x${i}`);
-  assert.ok(gribSeriesCacheSize(data) <= SERIES_CACHE_CAP);
+  const whole = gribSeriesFor(data, new Set(['currents.grb2']));
+  assert.equal(whole.length, 1);
+  assert.equal(whole[0], data.series[0], 'whole file set → the canonical GridSeries object, no copy');
+  assert.deepEqual(gribSeriesFor(data, new Set(['nope.grb2'])), []);
+  assert.equal(gribSeriesFor(data), data.series);
 });

@@ -28,12 +28,14 @@ import { HarmonicsData, IdxStation } from './harmonics.js';
 import { DatasetRankEntry, SourceType } from './priority.js';
 import { CurrentSample, isVectorCapable, nearestCurrentStations, stationsInBbox, timeline } from './predict.js';
 import {
-  Claim,
+  OWN_LOSES,
+  OWN_TIME_DEPENDENT,
   REST_FALLBACK_MAX_KM,
   ResolveCtx,
   ResolvedVector,
   claimAt,
   createResolveCtx,
+  ownWinFor,
   resolveAt,
   sampleClaimAt,
 } from './resolve.js';
@@ -207,57 +209,90 @@ interface GeoItem {
  * station grid puts two points exactly equidistant from a cell center, and
  * a "first seen wins" tiebreak would otherwise make the thinned set depend
  * on iteration order (and so shuffle as sources reload).
+ *
+ * Works on position arrays (item k sits at lat[k], lon[k]) and returns the
+ * chosen indices in first-seen cell order: this runs over every in-view
+ * station (hundreds of thousands zoomed out, once per ladder level), so no
+ * per-item objects and no Map — cells live in a small open-addressing table
+ * sized for the budget. Cell indices stay far below 2^31 at the finest level.
+ * Null when there are more occupied cells than `limit` (this level is too fine).
  */
-function pickCellReps<T extends GeoItem>(items: T[], sizeDeg: number, limit: number): T[] | null {
-  // Numeric cell keys and parallel arrays: this runs over every in-view
-  // station (hundreds of thousands zoomed out), so no string keys / per-item
-  // objects. Cell indices stay far below 2^19 at the finest ladder level.
-  const slotOf = new Map<number, number>();
-  const reps: T[] = [];
-  const d2s: number[] = [];
-  for (const it of items) {
-    const ci = Math.floor(it.lon / sizeDeg);
-    const cj = Math.floor(it.lat / sizeDeg);
+function pickCellReps(lat: ArrayLike<number>, lon: ArrayLike<number>, n: number, sizeDeg: number, limit: number): Int32Array | null {
+  const cells = Math.min(limit, n);
+  let cap = 16;
+  while (cap < cells * 2 + 2) cap *= 2;
+  const mask = cap - 1;
+  const tj = new Int32Array(cap);
+  const ti = new Int32Array(cap);
+  const tRep = new Int32Array(cap).fill(-1); // item index representing the cell, -1 = empty
+  const tD2 = new Float64Array(cap);
+  const order = new Int32Array(cells); // table slots in first-seen order
+  let used = 0;
+  for (let k = 0; k < n; k++) {
+    const la = lat[k];
+    const lo = lon[k];
+    const ci = Math.floor(lo / sizeDeg);
+    const cj = Math.floor(la / sizeDeg);
     const centerLon = (ci + 0.5) * sizeDeg;
     const centerLat = (cj + 0.5) * sizeDeg;
-    const d2 = (it.lon - centerLon) ** 2 + (it.lat - centerLat) ** 2;
-    const key = cj * 1048576 + ci;
-    const slot = slotOf.get(key);
-    if (slot === undefined) {
-      if (reps.length >= limit) return null; // more occupied cells than the budget: this level is too fine
-      slotOf.set(key, reps.length);
-      reps.push(it);
-      d2s.push(d2);
+    const d2 = (lo - centerLon) ** 2 + (la - centerLat) ** 2;
+    let h = (Math.imul(cj, 73856093) ^ Math.imul(ci, 19349663)) & mask;
+    while (tRep[h] !== -1 && (tj[h] !== cj || ti[h] !== ci)) h = (h + 1) & mask;
+    if (tRep[h] === -1) {
+      if (used >= limit) return null; // more occupied cells than the budget: this level is too fine
+      tj[h] = cj;
+      ti[h] = ci;
+      tRep[h] = k;
+      tD2[h] = d2;
+      order[used++] = h;
     } else {
-      const cur = reps[slot];
-      if (d2 < d2s[slot] || (d2 === d2s[slot] && (it.lat < cur.lat || (it.lat === cur.lat && it.lon < cur.lon)))) {
-        reps[slot] = it;
-        d2s[slot] = d2;
+      const cur = tRep[h];
+      if (d2 < tD2[h] || (d2 === tD2[h] && (la < lat[cur] || (la === lat[cur] && lo < lon[cur])))) {
+        tRep[h] = k;
+        tD2[h] = d2;
       }
     }
   }
+  const reps = new Int32Array(used);
+  for (let u = 0; u < used; u++) reps[u] = tRep[order[u]];
   return reps;
 }
 
 /**
- * Thin `items` down to at most `maxPoints`, keeping one representative per
- * grid cell at the finest ladder level whose occupancy fits the budget
- * (see CELL_LADDER_DEG for why this is stable across pan/zoom). Returns the
- * input untouched when it already fits — the "zoomed in, show everything"
- * case. Coarse → fine so we stop the moment a level overflows (occupancy
- * only grows as cells shrink).
+ * The indices of the items kept when thinning to at most `maxPoints`: one
+ * representative per grid cell at the finest ladder level whose occupancy fits
+ * the budget (see CELL_LADDER_DEG for why this is stable across pan/zoom).
+ * Null when everything already fits. Coarse → fine so we stop the moment a
+ * level overflows (occupancy only grows as cells shrink).
  */
-export function thinByCellLadder<T extends GeoItem>(items: T[], maxPoints: number): T[] {
-  if (items.length <= maxPoints) return items;
-  let chosen: T[] | null = null;
+export function thinIndicesByCellLadder(lat: ArrayLike<number>, lon: ArrayLike<number>, n: number, maxPoints: number): Int32Array | null {
+  if (n <= maxPoints) return null;
+  let chosen: Int32Array | null = null;
   for (let i = CELL_LADDER_DEG.length - 1; i >= 0; i--) {
-    const reps = pickCellReps(items, CELL_LADDER_DEG[i], maxPoints);
+    const reps = pickCellReps(lat, lon, n, CELL_LADDER_DEG[i], maxPoints);
     if (reps) chosen = reps;
     else break;
   }
   // Even the coarsest level overflows (maxPoints smaller than the number of
   // occupied 40° cells): fall back to that coarsest set, truncated.
-  return chosen ?? pickCellReps(items, CELL_LADDER_DEG[CELL_LADDER_DEG.length - 1], Infinity)!.slice(0, maxPoints);
+  return chosen ?? pickCellReps(lat, lon, n, CELL_LADDER_DEG[CELL_LADDER_DEG.length - 1], Infinity)!.subarray(0, maxPoints);
+}
+
+/**
+ * Thin `items` down to at most `maxPoints` (thinIndicesByCellLadder). Returns
+ * the input untouched when it already fits — the "zoomed in, show everything"
+ * case.
+ */
+export function thinByCellLadder<T extends GeoItem>(items: T[], maxPoints: number): T[] {
+  if (items.length <= maxPoints) return items;
+  const lat = new Float64Array(items.length);
+  const lon = new Float64Array(items.length);
+  for (let k = 0; k < items.length; k++) {
+    lat[k] = items[k].lat;
+    lon[k] = items[k].lon;
+  }
+  const keep = thinIndicesByCellLadder(lat, lon, items.length, maxPoints)!;
+  return Array.from(keep, (k) => items[k]);
 }
 
 export function registerRoutes(router: RouterLike, state: ApiState): void {
@@ -583,8 +618,11 @@ const multiplesIn = (min: number, max: number, stride: number): number => {
  *      the grid's own (i, j) indices that are multiples of the stride, from
  *      index 0, so lattices at different strides NEST: a density change only
  *      adds or removes nodes, it never moves one.
- *   2. Station winners (in-view stations that win their own position, via
- *      claimAt) are found first; W = their number.
+ *   2. Station winners (in-view stations that win their own position) are
+ *      found first; W = their number. Winning one's own position is almost
+ *      static, so it is read from a one-byte-per-station array filled once by
+ *      the resolver (ownWinFor); only the stations flagged time-dependent
+ *      (coastline cells) go through claimAt per request.
  *   3. Fill level k: every grid uses stride max(1, base / 2^k). The densest k
  *      with C(k) + W <= maxPoints is chosen, C(k) being the number of lattice
  *      CANDIDATES at that level (index arithmetic, no probing); k = 0 if none
@@ -595,32 +633,54 @@ const multiplesIn = (min: number, max: number, stride: number): number => {
  *      grid's own lattice shows it), a station answer is emitted as that
  *      station's vector (stationId), no answer is dropped.
  *   5. Winners whose position a lattice point already shows are skipped; the
- *      rest are thinned (thinByCellLadder) into what the lattice left.
+ *      rest are thinned (thinByCellLadder) into what the lattice left, and
+ *      only the survivors (<= maxPoints) re-derive their claim for sampling.
  * The lattice never exceeds maxPoints (candidates are thinned first if k = 0
  * still overflows), so the total is <= maxPoints by construction.
  */
 export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints: number): GridPoint[] {
-  // 1. Station winners (cheap: claim only, no sampling).
-  interface Winner {
-    lat: number;
-    lon: number;
-    claim: Claim;
-  }
-  const winners: Winner[] = [];
+  // 1. Station winners. Whether a station wins its OWN position is almost
+  // static (resolve.ts ownWinFor: one byte per station, filled once by the very
+  // same claim loop), so the in-view stations are gathered as array positions
+  // and only the time-dependent ones (coastline cells) are re-decided with
+  // claimAt. Winners live in parallel typed arrays (no per-station objects, even
+  // when every station in a zoomed-out view wins): a Winner object exists only
+  // for the survivors of the thinning below.
   const hasLayer = (type: 'utcef' | 'harmonic') => ctx.layers.some((l) => l.type === type);
-  if (ctx.utcef && hasLayer('utcef')) {
-    for (const s of utcefStationsInBbox(ctx.utcef, bbox)) {
-      const claim = claimAt(ctx, s.latitude, s.longitude, time);
-      if (claim && claim.source === 'utcef' && claim.station === s) winners.push({ lat: s.latitude, lon: s.longitude, claim });
-    }
+  type Source = { kind: 'utcef' | 'station'; ranks: Uint32Array; items: readonly (UtcefCurrentStation | IdxStation)[]; own: Uint8Array; lat(r: number): number; lon(r: number): number };
+  const sources: Source[] = [];
+  if (ctx.utcef && ctx.utcefIndex && hasLayer('utcef')) {
+    const index = ctx.utcefIndex.points;
+    sources.push({ kind: 'utcef', ranks: index.inBboxRanks(bbox.west, bbox.south, bbox.east, bbox.north, false), items: ctx.utcef.currentStations, own: ownWinFor(ctx, 'utcef', time), lat: index.latAt, lon: index.lonAt });
   }
-  if (ctx.harmonics && hasLayer('harmonic')) {
-    for (const { station, vectorCapable } of stationsInBbox(ctx.harmonics, bbox.west, bbox.south, bbox.east, bbox.north, Infinity)) {
-      if (!vectorCapable) continue;
-      const claim = claimAt(ctx, station.latitude, station.longitude, time);
-      if (claim && claim.source === 'station' && claim.station === station) winners.push({ lat: station.latitude, lon: station.longitude, claim });
-    }
+  if (ctx.harmonics && ctx.legacyIndex && hasLayer('harmonic')) {
+    const index = ctx.legacyIndex.index;
+    sources.push({ kind: 'station', ranks: index.inBboxRanks(bbox.west, bbox.south, bbox.east, bbox.north, false), items: index.items, own: ownWinFor(ctx, 'station', time), lat: index.latAt, lon: index.lonAt });
   }
+  let capacity = 0;
+  for (const src of sources) for (const r of src.ranks) if (src.own[r] !== OWN_LOSES) capacity++;
+  const wRank = new Uint32Array(capacity);
+  const wSrc = new Uint8Array(capacity);
+  const wLat = new Float64Array(capacity);
+  const wLon = new Float64Array(capacity);
+  let wCount = 0;
+  sources.forEach((src, si) => {
+    for (let n = 0; n < src.ranks.length; n++) {
+      const rank = src.ranks[n];
+      const o = src.own[rank];
+      if (o === OWN_LOSES) continue;
+      if (o === OWN_TIME_DEPENDENT) {
+        const s = src.items[rank];
+        const claim = claimAt(ctx, s.latitude, s.longitude, time);
+        if (!claim || claim.source !== src.kind || (claim as { station?: unknown }).station !== s) continue;
+      }
+      wRank[wCount] = rank;
+      wSrc[wCount] = si;
+      wLat[wCount] = src.lat(rank);
+      wLon[wCount] = src.lon(rank);
+      wCount++;
+    }
+  });
 
   // 2. Lattice plans: one per distinct grid geometry the GRIB layers answer from.
   const plans: LatticePlan[] = [];
@@ -646,7 +706,7 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
   let level = 0;
   const maxLevel = plans.reduce((m, p) => Math.max(m, Math.log2(p.base)), 0);
   for (let k = maxLevel; k >= 1; k--) {
-    if (candidateCount(k) + winners.length <= maxPoints) {
+    if (candidateCount(k) + wCount <= maxPoints) {
       level = k;
       break;
     }
@@ -688,12 +748,31 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
     points.push(pt);
   }
 
-  // 4. Station winners the lattice does not already show, thinned into the rest of the budget.
-  const free = taken.size === 0 ? winners : winners.filter((w) => !taken.has(posKey(w.lat, w.lon)));
-  for (const w of thinByCellLadder(free, Math.max(0, maxPoints - points.length))) {
-    const r = sampleClaimAt(ctx, w.claim, w.lat, w.lon, time);
-    const pt = r ? gridPointOf(r, w.lat, w.lon) : null;
-    if (pt) points.push(pt);
+  // 4. Station winners the lattice does not already show, thinned into the rest
+  // of the budget. Only the survivors (<= maxPoints) re-derive their claim.
+  if (taken.size > 0) {
+    let kept = 0;
+    for (let k = 0; k < wCount; k++) {
+      if (taken.has(posKey(wLat[k], wLon[k]))) continue;
+      wRank[kept] = wRank[k];
+      wSrc[kept] = wSrc[k];
+      wLat[kept] = wLat[k];
+      wLon[kept] = wLon[k];
+      kept++;
+    }
+    wCount = kept;
   }
+  const keep = thinIndicesByCellLadder(wLat, wLon, wCount, Math.max(0, maxPoints - points.length));
+  const emit = (k: number) => {
+    const src = sources[wSrc[k]];
+    const s = src.items[wRank[k]];
+    const claim = claimAt(ctx, s.latitude, s.longitude, time);
+    if (!claim || claim.source !== src.kind || (claim as { station?: unknown }).station !== s) return; // cannot happen: ownWin said this station wins here
+    const r = sampleClaimAt(ctx, claim, s.latitude, s.longitude, time);
+    const pt = r ? gridPointOf(r, s.latitude, s.longitude) : null;
+    if (pt) points.push(pt);
+  };
+  if (keep) for (const k of keep) emit(k);
+  else for (let k = 0; k < wCount; k++) emit(k);
   return points;
 }

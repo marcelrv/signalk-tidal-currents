@@ -57,7 +57,7 @@ export interface GridSeries {
   files: string[];
   /** Deduped per valid time, sorted by time. */
   slots: TimeSlot[];
-  /** Every candidate slot before the per-time dedup (what gribSeriesFor subsets are built from). */
+  /** Every candidate slot before the per-time dedup (what gribSubsetSeries subsets are built from). */
   raw: TimeSlot[];
   /**
    * Per-cell coverage bits (index j0*ni + i0 of locateGridCell): bit 0 = the
@@ -237,6 +237,27 @@ function buildCellMask(grid: Grib2Grid, slots: TimeSlot[]): Uint8Array {
   return mask;
 }
 
+/** Work counter for tests: how many series (dedup + cell mask) were built. A subset series is built once per (data, layer snapshot) — see gribSubsetSeries. */
+export const gribBuildCounts = { series: 0 };
+
+/** One series from the candidate slots `raw` of ONE grid: dedup per valid time (shallowest depth, then newest refTime, then later file) and the cell mask. */
+function makeSeries(grid: Grib2Grid, raw: TimeSlot[]): GridSeries {
+  gribBuildCounts.series++;
+  const ranked = raw
+    .slice()
+    .sort(
+      (a, b) =>
+        a.time - b.time ||
+        a.depth - b.depth ||
+        b.refTime - a.refTime ||
+        (a.file < b.file ? 1 : a.file > b.file ? -1 : 0),
+    );
+  const slots: TimeSlot[] = [];
+  for (const s of ranked) if (slots.length === 0 || slots[slots.length - 1].time !== s.time) slots.push(s);
+  const files = [...new Set(raw.map((s) => s.file))].sort();
+  return { grid, files, slots, raw, cellMask: buildCellMask(grid, slots) };
+}
+
 /**
  * Group slots by grid geometry into series. Within a grid, one slot per valid
  * time: shallowest depth, then newest refTime, then later file name. Ordered
@@ -249,23 +270,7 @@ export function buildGridSeries(all: TimeSlot[]): GridSeries[] {
     if (!g) groups.push((g = { grid: s.grid, raw: [] }));
     g.raw.push(s);
   }
-  const out: GridSeries[] = [];
-  for (const { grid, raw } of groups) {
-    const ranked = raw
-      .slice()
-      .sort(
-        (a, b) =>
-          a.time - b.time ||
-          a.depth - b.depth ||
-          b.refTime - a.refTime ||
-          (a.file < b.file ? 1 : a.file > b.file ? -1 : 0),
-      );
-    const slots: TimeSlot[] = [];
-    for (const s of ranked) if (slots.length === 0 || slots[slots.length - 1].time !== s.time) slots.push(s);
-    const files = [...new Set(raw.map((s) => s.file))].sort();
-    out.push({ grid, files, slots, raw, cellMask: buildCellMask(grid, slots) });
-  }
-  return out.sort(seriesOrder);
+  return groups.map(({ grid, raw }) => makeSeries(grid, raw)).sort(seriesOrder);
 }
 
 /** Parse every GRIB2 file in a directory (recursively — catalog filenames may carry subdir paths) into per-grid series. Pass a `cache` (owned by a long-lived source) to re-parse only files whose size/mtime changed. */
@@ -327,51 +332,32 @@ export function loadGribDir(dir: string, cache?: GribFileCache): GribCurrentsDat
   return { dir, files, series: buildGridSeries(slots), warnings };
 }
 
-/** Upper bound on cached file-subset series lists per data object (one per stack layer; a handful in practice). */
-export const SERIES_CACHE_CAP = 32;
-// Per data object, keyed by the filesKey STRING (never by Set identity): freed
-// together with the data on reload.
-const seriesCache = new WeakMap<GribCurrentsData, Map<string, GridSeries[]>>();
-
-/** The key a file subset is cached under (matches resolve.ts Layer.filesKey for stack layers). */
-export function gribFilesKey(files: Iterable<string>): string {
-  return 'f:' + [...files].sort().join('\n');
-}
-
-/** Number of cached file-subset series lists for `data` (bounded by SERIES_CACHE_CAP; for tests). */
-export function gribSeriesCacheSize(data: GribCurrentsData): number {
-  return seriesCache.get(data)?.size ?? 0;
-}
-
 /**
  * The series a lookup restricted to `files` works on, built from the files'
- * own slots (same dedup/order rules as the unrestricted series). `undefined`
- * files = every file (`data.series`). Cached per data by `filesKey`.
+ * own slots (same dedup/order rules as the unrestricted series). NOT cached
+ * here: the resolver keeps one result per (data, layer snapshot) so it is built
+ * once per stack layer and freed with the data or the stack (resolve.ts).
+ *
+ * Per geometry, a file subset that equals the canonical series' full file set
+ * (the common case — a dataset's files ARE a region's files) reuses the
+ * canonical `GridSeries` object itself: no second dedup pass, no second cell
+ * mask, and `grid` identity with the unrestricted series comes for free. Only a
+ * strict subset (e.g. one cycle of a region that also has another) is built,
+ * on the data's canonical grid object.
  */
-export function gribSeriesFor(
-  data: GribCurrentsData,
-  files?: ReadonlySet<string>,
-  filesKey?: string,
-): readonly GridSeries[] {
-  if (!files) return data.series;
-  const key = filesKey ?? gribFilesKey(files);
-  let perData = seriesCache.get(data);
-  if (!perData) seriesCache.set(data, (perData = new Map()));
-  let list = perData.get(key);
-  if (!list) {
-    const raw: TimeSlot[] = [];
-    for (const s of data.series) for (const slot of s.raw) if (files.has(slot.file)) raw.push(slot);
-    list = buildGridSeries(raw);
-    // Share the data's canonical grid object per geometry, so callers can
-    // compare "same grid" by identity across the unrestricted and file-subset series.
-    for (const sub of list) {
-      const canon = data.series.find((x) => sameGrid(x.grid, sub.grid));
-      if (canon) sub.grid = canon.grid;
-    }
-    perData.set(key, list);
-    if (perData.size > SERIES_CACHE_CAP) perData.delete(perData.keys().next().value!);
+export function gribSubsetSeries(data: GribCurrentsData, files: ReadonlySet<string>): GridSeries[] {
+  const out: GridSeries[] = [];
+  for (const canon of data.series) {
+    const raw = canon.raw.filter((slot) => files.has(slot.file));
+    if (raw.length === 0) continue;
+    out.push(raw.length === canon.raw.length ? canon : makeSeries(canon.grid, raw));
   }
-  return list;
+  return out.sort(seriesOrder);
+}
+
+/** `data.series` for every file (`files` undefined), else the file-subset series (uncached — see gribSubsetSeries). */
+export function gribSeriesFor(data: GribCurrentsData, files?: ReadonlySet<string>): readonly GridSeries[] {
+  return files ? gribSubsetSeries(data, files) : data.series;
 }
 
 function sampleSlot(slot: TimeSlot, lat: number, lon: number): { u: number; v: number } | null {
@@ -399,6 +385,16 @@ function bracketIndex(slots: TimeSlot[], timeMs: number): number {
 
 const scratchCell: GridCell = { i0: 0, i1: 0, j0: 0, j1: 0, wx: 0, wy: 0 };
 
+/** Is `timeMs` inside the series' slots (± the clamp slack)? The only time dependence of a coverage probe besides partially-defined cells. */
+export function gribSeriesInRange(series: GridSeries, timeMs: number): boolean {
+  return bracketIndex(series.slots, timeMs) >= 0;
+}
+
+/** Out-flag of a coverage probe: set when the answer depended on the time beyond the series' range check. */
+export interface TimeDependence {
+  timeDependent: boolean;
+}
+
 /**
  * Does `series` answer at (lat, lon, timeMs)? EXACTLY the non-null condition
  * of gribSeriesSample, without building a sample: the cell mask settles the
@@ -406,8 +402,13 @@ const scratchCell: GridCell = { i0: 0, i1: 0, j0: 0, j1: 0, wx: 0, wy: 0 };
  * partially-defined cell (coastline) falls back to sampling the two
  * bracketing slots. The mask is time-independent, so scrolling time never
  * rebuilds it.
+ *
+ * `td` (optional) is raised when the probe had to sample the bracketing slots:
+ * only then can the answer change with `timeMs` while the series stays in
+ * range. The out-of-range outcome is a function of the time too, but of a
+ * coarse one the caller keys on separately (gribSeriesInRange).
  */
-export function gribSeriesCovers(series: GridSeries, lat: number, lon: number, timeMs: number): boolean {
+export function gribSeriesCovers(series: GridSeries, lat: number, lon: number, timeMs: number, td?: TimeDependence): boolean {
   const lo = bracketIndex(series.slots, timeMs);
   if (lo < 0) return false;
   const cell = locateGridCell(series.grid, lat, lon, scratchCell);
@@ -415,19 +416,21 @@ export function gribSeriesCovers(series: GridSeries, lat: number, lon: number, t
   const m = series.cellMask[cell.j0 * series.grid.ni + cell.i0];
   if (m & 2) return true;
   if (!(m & 1)) return false;
+  if (td) td.timeDependent = true;
   const s0 = series.slots[lo];
   const s1 = series.slots[Math.min(lo + 1, series.slots.length - 1)];
   return sampleSlot(s0, lat, lon) !== null || (s1 !== s0 && sampleSlot(s1, lat, lon) !== null);
 }
 
-/** The first series (in the given order) that answers at the point, or null. */
+/** The first series (in the given order) that answers at the point, or null. `td` is raised if any probe consulted was time-dependent. */
 export function gribClaimSeries(
   list: readonly GridSeries[],
   lat: number,
   lon: number,
   timeMs: number,
+  td?: TimeDependence,
 ): GridSeries | null {
-  for (const s of list) if (gribSeriesCovers(s, lat, lon, timeMs)) return s;
+  for (const s of list) if (gribSeriesCovers(s, lat, lon, timeMs, td)) return s;
   return null;
 }
 
@@ -479,8 +482,8 @@ export function gribSeriesSample(
  * Interpolated current vector at a position/time: the first series (finest
  * grid first) with a value there — no merged slot list, no fallback pass.
  * `files` restricts the lookup to those files' own series (per-dataset
- * priority, PRD §5.3 Phase 3); pass `filesKey` when the caller already has
- * one so the cache lookup doesn't re-derive it.
+ * priority, PRD §5.3 Phase 3) — built per call, so a hot path (the resolver)
+ * holds on to the series instead (resolve.ts).
  */
 export function gribVectorAt(
   data: GribCurrentsData,
@@ -488,9 +491,8 @@ export function gribVectorAt(
   lon: number,
   timeMs: number,
   files?: ReadonlySet<string>,
-  filesKey?: string,
 ): { sample: CurrentSample; series: GridSeries } | null {
-  for (const series of gribSeriesFor(data, files, filesKey)) {
+  for (const series of gribSeriesFor(data, files)) {
     const sample = gribSeriesSample(series, lat, lon, timeMs);
     if (sample) return { sample, series };
   }

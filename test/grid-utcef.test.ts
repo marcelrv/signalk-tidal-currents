@@ -19,9 +19,9 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerRoutes, resolveVector, gridPoints, REST_FALLBACK_MAX_KM, ApiState } from '../dist/api.js';
-import { createGribSource, gribSeriesCacheSize, SERIES_CACHE_CAP } from '../dist/gribcurrents.js';
+import { createGribSource, gribBuildCounts } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
-import { createResolveCtx, extentCacheSize, resolveAt, EXTENT_CACHE_CAP } from '../dist/resolve.js';
+import { claimAt, createResolveCtx, orderedLayers, ownWinCacheSize, ownWinFor, resolveAt, resolveBuildCounts, OWN_TIME_DEPENDENT, OWN_WIN_CACHE_CAP } from '../dist/resolve.js';
 import { createUtcefSource, utcefStationsInBbox } from '../dist/utcef.js';
 import { encodeGrib2File, EncodeField } from './grib2-testutil.js';
 import { T0, HOUR, gridTime, uvFields, gribDirOf, writeUtcefDir, rect, makeApi, rng, P, UtcefStationSpec } from './grid-testutil.js';
@@ -49,6 +49,19 @@ function assertParity(state: ApiState, pts: P[], timeMs: number, label = '') {
 
 const key = (p: { latitude: number; longitude: number }) => `${p.latitude},${p.longitude}`;
 
+type Box = { west: number; south: number; east: number; north: number };
+/** In-view stations (UTCEF and legacy) whose own-position winner depends on the time. */
+function timeDependentInView(ctx: ReturnType<typeof createResolveCtx>, view: Box, t: number): number {
+  let n = 0;
+  const count = (kind: 'utcef' | 'station', ranks: Uint32Array) => {
+    const own = ownWinFor(ctx, kind, t);
+    for (const r of ranks) if (own[r] === OWN_TIME_DEPENDENT) n++;
+  };
+  if (ctx.utcef && ctx.utcefIndex && ctx.layers.some((l) => l.type === 'utcef')) count('utcef', ctx.utcefIndex.points.inBboxRanks(view.west, view.south, view.east, view.north));
+  if (ctx.harmonics && ctx.legacyIndex && ctx.layers.some((l) => l.type === 'harmonic')) count('station', ctx.legacyIndex.index.inBboxRanks(view.west, view.south, view.east, view.north));
+  return n;
+}
+
 // ── 1. Parity: /grid == /vector over randomized synthetic setups ──
 
 test('parity: every /grid point equals /vector at its coordinates (randomized setups)', () => {
@@ -60,7 +73,8 @@ test('parity: every /grid point equals /vector at its coordinates (randomized se
     'a.grb2': [0, 6].flatMap((h) => uvFields(52.9, 4.9, 0.1, 7, { u: ramp(7, 0.3 + h * 0.05, true), v: ramp(7, -0.2), forecastHours: h })),
     // Newer cycle of the SAME grid as a.grb2.
     'a2.grb2': [0, 6].flatMap((h) => uvFields(52.9, 4.9, 0.1, 7, { u: ramp(7, 2), v: ramp(7, 1), forecastHours: h, refTime: T0 + 3 * HOUR })),
-    'b.grb2': [0, 6, 12].flatMap((h) => uvFields(52.9, 4.9, 0.05, 13, { u: ramp(13, 0.1 * h), v: 0.4, forecastHours: h })),
+    // At +6h some nodes are missing: cells that are defined in only SOME slots (coastline, time-dependent coverage).
+    'b.grb2': [0, 6, 12].flatMap((h) => uvFields(52.9, 4.9, 0.05, 13, { u: ramp(13, 0.1 * h).map((x, k) => (h === 6 && k % 11 < 4 ? NaN : x)), v: 0.4, forecastHours: h })),
     'c.grb2': uvFields(53.3, 5.3, 0.1, 7, { u: 3, v: -1 }),
     'd.grb2': uvFields(40, -10, 0.1, 7, { u: 0.5, v: 0.5 }),
   };
@@ -398,6 +412,10 @@ test('counted work: a request costs O(output + in-view stations), layers out of 
       const label = `preferGrib=${preferGrib} maxPoints=${maxPoints}`;
       assert.ok(pts.length <= maxPoints, label);
       assert.ok(c.resolves <= maxPoints, `${label}: resolves ${c.resolves}`);
+      // claimAt runs only for the time-dependent in-view stations and for the thinned survivors.
+      const stationPts = pts.filter((p) => p.source !== 'grib').length;
+      const tdInView = timeDependentInView(ctx, view, T0);
+      assert.ok(c.claims <= tdInView + stationPts, `${label}: claims ${c.claims} > time-dependent ${tdInView} + station points ${stationPts}`);
       assert.ok(c.claims <= inView, `${label}: claims ${c.claims} > in-view stations ${inView}`);
       assert.ok(c.samples <= pts.length, `${label}: samples ${c.samples} > points ${pts.length}`);
       // The 25 out-of-view datasets never became layers; probes are bounded by output × layers actually kept.
@@ -407,35 +425,199 @@ test('counted work: a request costs O(output + in-view stations), layers out of 
       const again = run();
       assert.deepEqual(again.ctx.counters, c, label);
       assert.deepEqual(again.pts, pts, label);
-      console.log(`  counters ${label}: points=${pts.length} resolves=${c.resolves} claims=${c.claims} (in-view ${inView}) samples=${c.samples} layerProbes=${c.layerProbes} layers=${ctx.layers.length}`);
+      console.log(`  counters ${label}: points=${pts.length} resolves=${c.resolves} claims=${c.claims} (in-view ${inView}, time-dependent ${tdInView}, station points ${stationPts}) samples=${c.samples} layerProbes=${c.layerProbes} layers=${ctx.layers.length}`);
     }
   }
 });
 
 // ── 13. No cache growth ──
 
-test('no cache growth: 1000 /grid requests over varying bboxes and times keep every cache at its cap', () => {
+test('no cache growth: 1000 /grid requests over varying bboxes and times build every cache entry once', () => {
   const grib = createGribSource(gribDirOf({ 'g.grb2': uvFields(52.9, 4.9, 0.1, 7, { u: 1 }, ) }), 0);
-  const utcef = createUtcefSource(writeUtcefDir({ 'u.utcef': [['U', 53.2, 5.2]] }), 0);
-  // A different stack snapshot AND a different radius per request would grow per-request caches without bound.
+  const utcef = createUtcefSource(writeUtcefDir({ 'u.utcef': [['U', 53.2, 5.2]], 'x.utcef': [['X', 52.5, 5.5]] }), 0);
+  // One stable stack snapshot (what the plugin's memoised datasetRank hands out).
+  const stack = [
+    { id: 'g', type: 'grib2' as const, files: ['g.grb2'] },
+    { id: 'u', type: 'utcef' as const, files: ['u.utcef'] },
+    { id: 'x', type: 'utcef' as const, files: ['x.utcef'] },
+  ];
+  const state: ApiState = { data: legacyData, error: null, grib, utcef, preferGrib: true, datasetRank: () => stack };
   const rand = rng(7);
-  let k = 0;
-  const state: ApiState = {
-    data: legacyData, error: null, grib, utcef, preferGrib: true,
-    datasetRank: () => [{ id: 'g', type: 'grib2', files: ['g.grb2'] }, { id: `x${k++ % 100}`, type: 'utcef', files: [`x${k % 50}.utcef`] }],
-  };
   const call = makeApi(state);
-  let total = 0;
-  for (let n = 0; n < 1000; n++) {
+  const req = () => {
     const w = 4 + rand() * 2;
     const s = 52 + rand() * 1.5;
-    const pts = call('/grid', { bbox: `${w},${s},${w + 0.1 + rand()},${s + 0.1 + rand()}`, time: isoAt(T0 + Math.floor(rand() * 200) * HOUR), maxPoints: String(10 + Math.floor(rand() * 400)), stations: '1' }).points as P[];
-    total += pts.length;
-  }
+    return call('/grid', { bbox: `${w},${s},${w + 0.1 + rand()},${s + 0.1 + rand()}`, time: isoAt(T0 + Math.floor(rand() * 200) * HOUR), maxPoints: String(10 + Math.floor(rand() * 400)), stations: '1' }).points as P[];
+  };
+  let total = req().length;
+  const warm = { ...resolveBuildCounts };
+  for (let n = 0; n < 1000; n++) total += req().length;
   assert.ok(total > 0);
+  // Per-layer series and extents were built by the first requests and never again.
+  assert.equal(resolveBuildCounts.gribLayerSeries, warm.gribLayerSeries);
+  assert.equal(resolveBuildCounts.layerExtents, warm.layerExtents);
+  assert.equal(resolveBuildCounts.fileExtentPasses, warm.fileExtentPasses);
+  // The station-winner arrays: one per (range state, source), however many requests and times.
+  assert.ok(resolveBuildCounts.ownWin - warm.ownWin <= 4, `ownWin builds ${resolveBuildCounts.ownWin - warm.ownWin}`);
+  const snapshot = orderedLayers(state, REST_FALLBACK_MAX_KM);
+  assert.ok(ownWinCacheSize(utcef.get()!, snapshot) <= OWN_WIN_CACHE_CAP);
+});
+
+// ── 13b. Per-snapshot layer caches: no thrash with many stack layers ──
+
+/** Every cache counter the layer caches expose, as one comparable object. */
+const buildCounts = () => ({ gribSeries: gribBuildCounts.series, ...resolveBuildCounts });
+
+test('layer caches: 40 single-file GRIB and 40 single-file UTCEF stack layers build each layer\'s series / extent once', () => {
+  const N = 40;
+  // GRIB: 20 regions × 2 cycles, one file each. A layer holds ONE file, which is a strict subset of its
+  // region's series (two cycles), so every layer needs its own built series — the case a capped cache thrashes on.
+  const gfiles: Record<string, EncodeField[]> = {};
+  for (let r = 0; r < N / 2; r++) {
+    for (const [tag, cycleH] of [['a', 0], ['b', 3]] as const) {
+      gfiles[`r${r}${tag}.grb2`] = uvFields(-60 + r * 5, 10 + r * 7, 0.1, 4, { u: 1 + r * 0.1 + cycleH / 10, forecastHours: 0, refTime: T0 + cycleH * HOUR });
+    }
+  }
+  const ufiles: Record<string, UtcefStationSpec[]> = {};
+  for (let k = 0; k < N; k++) ufiles[`s${k}.utcef`] = [[`S${k}`, -60 + k * 3, -170 + k * 8]];
+  const grib = createGribSource(gribDirOf(gfiles), 0);
+  const utcef = createUtcefSource(writeUtcefDir(ufiles), 0);
+  const stack = Object.keys(gfiles).flatMap((g, k) => [
+    { id: `g${k}`, type: 'grib2' as const, files: [g] },
+    { id: `u${k}`, type: 'utcef' as const, files: [`s${k}.utcef`] },
+  ]);
+  assert.equal(stack.length, 2 * N);
+  const state: ApiState = { data: null, error: null, grib, utcef, preferGrib: true, datasetRank: () => stack };
+  const call = makeApi(state);
+  grib.get();
+  utcef.get();
+
+  // Repeated /vector and /grid requests, at several places and (in-range) times.
+  const round = () => {
+    const out: unknown[] = [];
+    for (let r = 0; r < N / 2; r += 3) {
+      for (const h of [0, 2]) out.push(resolveVector(state, -60 + r * 5 + 0.15, 10 + r * 7 + 0.15, T0 + h * HOUR));
+    }
+    for (const bbox of ['9,-61,40,-30', '-171,-61,-100,-20', '-180,-85,180,85']) {
+      for (const h of [0, 1]) out.push(call('/grid', { bbox, time: isoAt(T0 + h * HOUR), maxPoints: '300' }));
+    }
+    return out;
+  };
+  const before = buildCounts();
+  const first = round();
+  const afterFirst = buildCounts();
+  assert.equal(afterFirst.gribLayerSeries - before.gribLayerSeries, N, 'each GRIB layer\'s series built once');
+  assert.equal(afterFirst.gribSeries - before.gribSeries, N, 'one series (dedup + cell mask) per layer, no duplicates');
+  assert.equal(afterFirst.fileExtentPasses - before.fileExtentPasses, 1, 'one pass over the stations for all per-file extents');
+  const utcefLayers = orderedLayers(state, REST_FALLBACK_MAX_KM).filter((l) => l.type === 'utcef').length;
+  assert.equal(afterFirst.layerExtents - before.layerExtents, utcefLayers, 'each UTCEF layer\'s extent assembled once');
+  assert.equal(utcefLayers, N + 1);
+  // Many more rounds: nothing is rebuilt, results are unchanged.
+  for (let n = 0; n < 5; n++) assert.deepEqual(round(), first);
+  assert.deepEqual(buildCounts(), afterFirst, 'no cache entry was built twice');
+  const delta = (k: keyof ReturnType<typeof buildCounts>) => afterFirst[k] - before[k];
+  console.log(`  layer caches: ${N}+${N} stack layers; builds in round 1 = series ${delta('gribSeries')}, layer series ${delta('gribLayerSeries')}, extent passes ${delta('fileExtentPasses')}, layer extents ${delta('layerExtents')}, ownWin ${delta('ownWin')}; builds in rounds 2-6 = 0`);
+});
+
+test('layer caches: a layer whose files are a region\'s whole file set reuses the canonical series (no build, no second cell mask)', () => {
+  const N = 40;
+  const gfiles: Record<string, EncodeField[]> = {};
+  for (let k = 0; k < N; k++) gfiles[`g${k}.grb2`] = uvFields(-60 + k * 2, -170 + k * 8, 0.1, 4, { u: 1 + k * 0.01 });
+  const grib = createGribSource(gribDirOf(gfiles), 0);
   const data = grib.get()!;
-  assert.ok(gribSeriesCacheSize(data) <= SERIES_CACHE_CAP, `series cache ${gribSeriesCacheSize(data)}`);
-  assert.ok(extentCacheSize(utcef.get()!) <= EXTENT_CACHE_CAP, `extent cache ${extentCacheSize(utcef.get()!)}`);
+  const stack = Object.keys(gfiles).map((g, k) => ({ id: `g${k}`, type: 'grib2' as const, files: [g] }));
+  const state: ApiState = { data: null, error: null, grib, utcef: null, preferGrib: true, datasetRank: () => stack };
+  const before = buildCounts();
+  const ctx = createResolveCtx(state);
+  const layers = ctx.layers.filter((l) => l.stack);
+  assert.equal(layers.length, N);
+  for (const l of layers) assert.equal(l.series![0], data.series.find((s) => s.files[0] === [...l.files!][0]), `${[...l.files!]}`);
+  createResolveCtx(state);
+  assert.equal(gribBuildCounts.series, before.gribSeries, 'no series built');
+  assert.equal(makeApi(state)('/grid', { bbox: '-171,-61,-100,20', time: gridTime, maxPoints: '200' }).points.length > 0, true);
+  assert.equal(gribBuildCounts.series, before.gribSeries);
+});
+
+// ── 13c. Station winners: static ownWin array, time-dependent only on coastline cells ──
+
+test('station winners: coastline (partial-cell) stations are re-decided per time; a sweep across a GRIB horizon edge stays equal to /vector', () => {
+  // 8×8 nodes at 0.1°, lat 52.9..53.6, lon 4.9..5.6. Two slots (T0, T0+6h).
+  const n = 8;
+  const hole = (i0: number, j0: number) => (k: number) => { const i = k % n, j = Math.floor(k / n); return i >= i0 && i <= i0 + 1 && j >= j0 && j <= j0 + 1; };
+  const atT0 = Array.from({ length: n * n }, (_, k) => (hole(5, 5)(k) ? NaN : 0.5));
+  const at6 = Array.from({ length: n * n }, (_, k) => (hole(5, 5)(k) || hole(2, 2)(k) ? NaN : 0.5));
+  const grib = createGribSource(gribDirOf({
+    'coast.grb2': [
+      ...uvFields(52.9, 4.9, 0.1, n, { u: atT0, v: 0.2, forecastHours: 0 }),
+      ...uvFields(52.9, 4.9, 0.1, n, { u: at6, v: 0.2, forecastHours: 6 }),
+    ],
+  }), 0);
+  const specs: UtcefStationSpec[] = [
+    ['A-partial', 53.137, 5.141], // cell (2,2): defined at +0h, missing at +6h → covered or not depending on the time
+    ['B-land', 53.451, 5.453], // cell (5,5): never defined → always the station
+    ['C-sea', 53.027, 4.963], // fully defined → GRIB while the series is in range, else the station
+    ['D-outside', 54.5, 5.5], // outside the grid → always the station
+  ];
+  const utcef = createUtcefSource(writeUtcefDir({ 'u.utcef': specs }), 0);
+  const state: ApiState = { data: null, error: null, grib, utcef, preferGrib: true };
+  const view = { west: 4.8, south: 52.8, east: 5.8, north: 54.6 };
+  const stations = utcef.get()!.currentStations;
+  const sweep = () => {
+    const seen = new Map<string, number[]>();
+    for (let h = -6; h <= 12; h++) {
+      const t = T0 + h * HOUR;
+      const ctx = createResolveCtx(state, REST_FALLBACK_MAX_KM, { bbox: view });
+      const pts = gridPoints(ctx, view, t, 5000) as P[];
+      assertParity(state, pts, t, `h=${h}`);
+      // Oracle: brute-force claimAt for every in-view station.
+      const oracle = createResolveCtx(state, REST_FALLBACK_MAX_KM);
+      const expected = stations.filter((s) => { const c = claimAt(oracle, s.latitude, s.longitude, t); return c?.source === 'utcef' && c.station === s; }).map((s) => s.id).sort();
+      const got = stations.filter((s) => pts.some((p) => p.stationId === s.id && p.latitude === s.latitude && p.longitude === s.longitude)).map((s) => s.id).sort();
+      assert.deepEqual(got, expected, `h=${h}`);
+      for (const id of got) seen.set(id, [...(seen.get(id) ?? []), h]);
+      // claimAt ran for the time-dependent stations and the survivors only (nothing is thinned at 5000).
+      assert.equal(ctx.counters.claims, timeDependentInView(ctx, view, t) + got.length, `h=${h}: claims`);
+      assert.equal(timeDependentInView(ctx, view, t), h >= -3 && h <= 9 ? 1 : 0, `h=${h}: only the coastline station is time-dependent, and only while the series is in range`);
+    }
+    return seen;
+  };
+  const b0 = buildCounts();
+  const seen = sweep();
+  const hours = (id: string) => seen.get(id) ?? [];
+  assert.deepEqual(hours('B-land'), Array.from({ length: 19 }, (_, i) => i - 6));
+  assert.deepEqual(hours('D-outside'), Array.from({ length: 19 }, (_, i) => i - 6));
+  assert.deepEqual(hours('C-sea'), [-6, -5, -4, 10, 11, 12], 'GRIB covers C while the series is in range');
+  assert.deepEqual(hours('A-partial'), [-6, -5, -4, 6, 7, 8, 9, 10, 11, 12], 'A is covered by GRIB only while the +0h slot brackets it');
+  // 19 time steps, two range states (in / out of range) → the array was filled twice, then served from the LRU.
+  assert.equal(resolveBuildCounts.ownWin - b0.ownWin, 2);
+  sweep();
+  assert.equal(resolveBuildCounts.ownWin - b0.ownWin, 2, 'a second sweep builds nothing');
+  assert.ok(ownWinCacheSize(utcef.get()!, orderedLayers(state, REST_FALLBACK_MAX_KM)) <= OWN_WIN_CACHE_CAP);
+});
+
+test('station winners: one build per key — a request at another time in the same range builds nothing', () => {
+  const grib = createGribSource(gribDirOf({ 'g.grb2': [0, 6, 12].flatMap((h) => uvFields(52.9, 4.9, 0.1, 7, { u: 1, forecastHours: h })) }), 0);
+  const stations: UtcefStationSpec[] = [];
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) stations.push([`S${i}-${j}`, 52.5 + i * 0.12, 4.5 + j * 0.12]);
+  const utcef = createUtcefSource(writeUtcefDir({ 's.utcef': stations }), 0);
+  const state: ApiState = { data: null, error: null, grib, utcef, preferGrib: true };
+  const call = makeApi(state);
+  const grid = (h: number, bbox = '4.5,52.5,5.8,53.7') => call('/grid', { bbox, time: isoAt(T0 + h * HOUR), maxPoints: '400' }).points as P[];
+  const b0 = resolveBuildCounts.ownWin;
+  grid(0);
+  assert.equal(resolveBuildCounts.ownWin - b0, 1);
+  for (const h of [1, 2.5, 5, 9, 12, 14]) grid(h);
+  assert.equal(resolveBuildCounts.ownWin - b0, 1, 'times inside the range (± slack) reuse the array');
+  grid(0, '4.9,52.9,5.2,53.2'); // another viewport: same array
+  assert.equal(resolveBuildCounts.ownWin - b0, 1);
+  grid(40); // past the horizon: GRIB out of range → a second array
+  assert.equal(resolveBuildCounts.ownWin - b0, 2);
+  grid(1);
+  grid(41);
+  assert.equal(resolveBuildCounts.ownWin - b0, 2, 'both range states stay cached (LRU)');
+  // The array is one byte per station.
+  const ctx = createResolveCtx(state);
+  assert.equal(ownWinFor(ctx, 'utcef', T0).byteLength, stations.length);
 });
 
 // ── 14. Thin API surface ──

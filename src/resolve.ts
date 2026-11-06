@@ -16,15 +16,23 @@
  * Probes are O(1) per layer: GRIB cell masks, UTCEF / legacy cell indexes. A
  * context built with a `bbox` drops layers that cannot reach it, so datasets
  * installed elsewhere cost nothing per point.
+ *
+ * Long-lived caches (per-layer GRIB series, UTCEF extents, the station-winner
+ * arrays) hang off a (loaded data object, layer snapshot) pair, where the
+ * snapshot is the array orderedLayers() returns: they are built lazily, once
+ * per layer, never evicted by a count cap, and freed when the data reloads or
+ * the dataset stack changes.
  */
 
 import type { ApiState } from './api.js';
 import {
   GribCurrentsData,
   GridSeries,
+  TimeDependence,
   gribClaimSeries,
-  gribSeriesFor,
+  gribSeriesInRange,
   gribSeriesSample,
+  gribSubsetSeries,
 } from './gribcurrents.js';
 import { HarmonicsData, IdxStation } from './harmonics.js';
 import { DatasetRankEntry, SourceType } from './priority.js';
@@ -32,6 +40,7 @@ import {
   CurrentSample,
   currentSampleAt,
   distanceKm,
+  isVectorCapable,
   legacyCoverageIndexFor,
   lonHalfWidthDeg,
 } from './predict.js';
@@ -89,12 +98,6 @@ export interface Layer {
   type: SourceType;
   /** Stack layers only: the dataset's own files. */
   files?: ReadonlySet<string>;
-  /**
-   * Identifies `files` for memoisation: `f:` + sorted file names joined by
-   * '\n' for stack layers (an EMPTY file list gives 'f:', never colliding),
-   * '*' for type-rank (unrestricted) layers.
-   */
-  filesKey: string;
   /** Nearest-station radius for a UTCEF probe: a stack layer is clamped to UTCEF_DATASET_FALLBACK_MAX_KM, a type-rank layer uses maxStationKm. */
   utcefMaxKm: number;
   /** True for a per-dataset stack layer, false for a type-rank (fallback) layer. */
@@ -149,12 +152,11 @@ export function orderedLayers(state: ApiState, maxStationKm: number): readonly L
     layers.push({
       type: entry.type,
       files: new Set(entry.files),
-      filesKey: 'f:' + [...entry.files].sort().join('\n'),
       utcefMaxKm: stackKm,
       stack: true,
     });
   }
-  for (const type of rank) layers.push({ type, filesKey: '*', utcefMaxKm: maxStationKm, stack: false });
+  for (const type of rank) layers.push({ type, utcefMaxKm: maxStationKm, stack: false });
   entries.push({ rank: rank.slice(), maxStationKm, layers });
   if (entries.length > LAYER_CACHE_CAP) entries.shift();
   return layers;
@@ -208,29 +210,66 @@ class Extent {
     this.addBox(lon - dLon, lat - dLat, lon + dLon, lat + dLat);
   }
 
+  /** Union with another extent (the 10° bucket sets are tiny: <= 648 keys). */
+  addAll(other: Extent): void {
+    for (const k of other.keys) this.keys.add(k);
+  }
+
   intersects(b: Bbox): boolean {
     return this.forEach(b.west, b.south, b.east, b.north, (k) => this.keys.has(k));
   }
 }
 
-/** Max cached extents per data object (one per distinct layer file set / radius). */
-export const EXTENT_CACHE_CAP = 32;
-const extentCache = new WeakMap<object, Map<string, Extent>>();
-function cachedExtent(data: object, key: string, build: () => Extent): Extent {
-  let m = extentCache.get(data);
-  if (!m) extentCache.set(data, (m = new Map()));
-  let e = m.get(key);
-  if (!e) {
-    e = build();
-    m.set(key, e);
-    if (m.size > EXTENT_CACHE_CAP) m.delete(m.keys().next().value!);
-  }
-  return e;
+/**
+ * Everything cached for one (loaded data object, layer snapshot) pair. The
+ * snapshot is the layer array orderedLayers() hands out, so entries are keyed
+ * by LAYER OBJECT (never by file-set identity or a name string) and their
+ * number is bounded by the number of layers. The two-level WeakMap frees them
+ * when the data reloads or the stack changes.
+ */
+class SnapshotCache {
+  /** GRIB: the series a stack layer answers from. */
+  gribSeries = new Map<Layer, readonly GridSeries[]>();
+  /** UTCEF: radius → file → that file's extent (one pass over the stations builds all files of one radius). */
+  fileExtents = new Map<number, Map<string, Extent>>();
+  /** UTCEF: a layer's extent, the union of its files' extents. */
+  layerExtents = new Map<Layer, Extent>();
+  /** Legacy: the extent of the vector-capable stations at this snapshot's radius. */
+  legacyExtent: Extent | null = null;
+  /** Station-winner arrays, LRU (see ownWinFor). */
+  ownWin = new Map<string, Uint8Array>();
+}
+const snapshotCaches = new WeakMap<object, WeakMap<readonly Layer[], SnapshotCache>>();
+function cacheFor(data: object, snapshot: readonly Layer[]): SnapshotCache {
+  let perData = snapshotCaches.get(data);
+  if (!perData) snapshotCaches.set(data, (perData = new WeakMap()));
+  let c = perData.get(snapshot);
+  if (!c) perData.set(snapshot, (c = new SnapshotCache()));
+  return c;
 }
 
-/** Number of cached extents for `data` (bounded by EXTENT_CACHE_CAP; for tests). */
-export function extentCacheSize(data: object): number {
-  return extentCache.get(data)?.size ?? 0;
+/** Build counters for tests: each expensive cache entry must be built once, however many requests follow. */
+export const resolveBuildCounts = {
+  /** GRIB: series built for a stack layer — see gribBuildCounts.series for the series themselves. */
+  gribLayerSeries: 0,
+  /** UTCEF: passes over a data object's stations that produced the per-file extents. */
+  fileExtentPasses: 0,
+  /** Layer extents assembled (unions of per-file extents). */
+  layerExtents: 0,
+  /** Station-winner arrays filled. */
+  ownWin: 0,
+};
+
+/** The series a layer answers from: the data's own for a type-rank layer, else the file-subset series (built once per layer). */
+function layerSeries(grib: GribCurrentsData, snapshot: readonly Layer[], l: Layer): readonly GridSeries[] {
+  if (!l.files) return grib.series;
+  const cache = cacheFor(grib, snapshot);
+  let series = cache.gribSeries.get(l);
+  if (!series) {
+    resolveBuildCounts.gribLayerSeries++;
+    cache.gribSeries.set(l, (series = gribSubsetSeries(grib, l.files)));
+  }
+  return series;
 }
 
 function gribExtent(series: readonly GridSeries[]): Extent {
@@ -244,25 +283,55 @@ function gribExtent(series: readonly GridSeries[]): Extent {
   return e;
 }
 
-function utcefExtent(u: UtcefData, files: ReadonlySet<string> | undefined, filesKey: string, radiusKm: number): Extent {
-  return cachedExtent(u, `${filesKey}|${radiusKm}`, () => {
-    const e = new Extent();
+/** Key of the per-file extent of stations that carry no `file` (hand-built data). */
+const NO_FILE = '';
+
+/** One pass over the stations → one Extent per file (padded by `radiusKm`). */
+function fileExtentsFor(cache: SnapshotCache, u: UtcefData, radiusKm: number): Map<string, Extent> {
+  let perFile = cache.fileExtents.get(radiusKm);
+  if (!perFile) {
+    resolveBuildCounts.fileExtentPasses++;
+    perFile = new Map();
+    let lastFile: string | undefined;
+    let e!: Extent;
     for (const s of u.currentStations) {
-      if (files && !(s.file !== undefined && files.has(s.file))) continue;
+      const f = s.file ?? NO_FILE;
+      if (f !== lastFile) {
+        lastFile = f;
+        e = perFile.get(f) ?? perFile.set(f, new Extent()).get(f)!;
+      }
       e.addPoint(s.latitude, s.longitude, radiusKm);
       const b = utcefAreaBounds(s);
       if (b) e.addBox(b.west, b.south, b.east, b.north);
     }
-    return e;
-  });
+    cache.fileExtents.set(radiusKm, perFile);
+  }
+  return perFile;
 }
 
-function legacyExtent(d: HarmonicsData, capable: readonly IdxStation[], radiusKm: number): Extent {
-  return cachedExtent(d, `legacy|${radiusKm}`, () => {
+/** A UTCEF layer's extent: the union of its files' extents (every file's, for a type-rank layer). */
+function utcefExtent(u: UtcefData, snapshot: readonly Layer[], l: Layer): Extent {
+  const cache = cacheFor(u, snapshot);
+  let e = cache.layerExtents.get(l);
+  if (!e) {
+    resolveBuildCounts.layerExtents++;
+    e = new Extent();
+    const perFile = fileExtentsFor(cache, u, l.utcefMaxKm);
+    if (l.files) for (const f of l.files) { const fe = perFile.get(f); if (fe) e.addAll(fe); }
+    else for (const fe of perFile.values()) e.addAll(fe);
+    cache.layerExtents.set(l, e);
+  }
+  return e;
+}
+
+function legacyExtent(d: HarmonicsData, snapshot: readonly Layer[], capable: readonly IdxStation[], radiusKm: number): Extent {
+  const cache = cacheFor(d, snapshot);
+  if (!cache.legacyExtent) {
     const e = new Extent();
     for (const s of capable) e.addPoint(s.latitude, s.longitude, radiusKm);
-    return e;
-  });
+    cache.legacyExtent = e;
+  }
+  return cache.legacyExtent;
 }
 
 // ── Context ──
@@ -287,6 +356,10 @@ export interface CtxLayer extends Layer {
 export interface ResolveCtx {
   /** Layers that can answer (data present; and, with a bbox, able to reach it), in resolution order. */
   layers: CtxLayer[];
+  /** The same without the bbox pre-filter (identical to `layers` when no bbox was given): what a position-independent decision must be made against. */
+  fullLayers: CtxLayer[];
+  /** The layer snapshot (orderedLayers) the layers came from — the key of the per-snapshot caches. */
+  snapshot: readonly Layer[];
   grib: GribCurrentsData | null;
   utcef: UtcefData | null;
   harmonics: HarmonicsData | null;
@@ -294,6 +367,8 @@ export interface ResolveCtx {
   utcefIndex: ReturnType<typeof utcefCoverageIndexFor> | null;
   legacyIndex: ReturnType<typeof legacyCoverageIndexFor> | null;
   maxStationKm: number;
+  /** Legacy harmonic layers participate. */
+  legacy: boolean;
   counters: ResolveCounters;
 }
 
@@ -307,7 +382,7 @@ export interface CtxOptions {
 /**
  * Build the per-request / per-delta-tick context: the ordered layers that can
  * answer, with their data resolved once. Cheap (everything long-lived is
- * cached on the data objects); nothing in it survives the request.
+ * cached per (data, layer snapshot)); nothing in it survives the request.
  */
 export function createResolveCtx(
   state: ApiState,
@@ -318,42 +393,52 @@ export function createResolveCtx(
   const utcefRaw = state.utcef?.get() ?? null;
   const utcef = utcefRaw && utcefRaw.currentStations.length > 0 ? utcefRaw : null;
   const harmonics = state.data;
-  const legacyIdx = opts.legacy !== false && harmonics ? legacyCoverageIndexFor(harmonics) : null;
+  const legacy = opts.legacy !== false;
+  const legacyIdx = legacy && harmonics ? legacyCoverageIndexFor(harmonics) : null;
   const legacyOk = !!legacyIdx && legacyIdx.hasVectorCapable;
   const bbox = opts.bbox;
 
-  const layers: CtxLayer[] = [];
+  const snapshot = orderedLayers(state, maxStationKm);
+  const full: CtxLayer[] = [];
+  const reach: CtxLayer[] = [];
   let legacyAdded = false;
-  for (const l of orderedLayers(state, maxStationKm)) {
+  for (const l of snapshot) {
     if (l.type === 'grib2') {
       if (!grib) continue;
-      let series = gribSeriesFor(grib, l.files, l.filesKey);
+      const series = layerSeries(grib, snapshot, l);
+      if (series.length === 0) continue;
+      const cl: CtxLayer = { ...l, series };
+      full.push(cl);
       // With a viewport, only the series that reach it take part in the loop: a
       // hundred regions installed elsewhere cost nothing per point.
-      if (bbox) series = series.filter((s) => gribExtent([s]).intersects(bbox));
-      if (series.length === 0) continue;
-      layers.push({ ...l, series });
+      if (!bbox) continue;
+      const near = series.filter((s) => gribExtent([s]).intersects(bbox));
+      if (near.length === series.length) reach.push(cl);
+      else if (near.length > 0) reach.push({ ...l, series: near });
     } else if (l.type === 'utcef') {
       if (!utcef) continue;
-      if (bbox && !utcefExtent(utcef, l.files, l.filesKey, l.utcefMaxKm).intersects(bbox)) continue;
-      layers.push(l);
+      full.push(l);
+      if (bbox && utcefExtent(utcef, snapshot, l).intersects(bbox)) reach.push(l);
     } else {
       // Every harmonic layer probes the whole legacy source (it has no
       // per-file provenance), so only the first can ever answer.
       if (!legacyOk || legacyAdded) continue;
-      if (bbox && !legacyExtent(harmonics!, legacyIdx!.capable, maxStationKm).intersects(bbox)) continue;
-      layers.push(l);
+      full.push(l);
+      if (bbox && legacyExtent(harmonics!, snapshot, legacyIdx!.capable, maxStationKm).intersects(bbox)) reach.push(l);
       legacyAdded = true;
     }
   }
   return {
-    layers,
+    layers: bbox ? reach : full,
+    fullLayers: full,
+    snapshot,
     grib,
     utcef,
     harmonics: legacyOk ? harmonics : null,
     utcefIndex: utcef ? utcefCoverageIndexFor(utcef) : null,
     legacyIndex: legacyOk ? legacyIdx : null,
     maxStationKm,
+    legacy,
     counters: { claims: 0, resolves: 0, layerProbes: 0, samples: 0 },
   };
 }
@@ -366,12 +451,24 @@ export type Claim =
   | { source: 'utcef'; layer: CtxLayer; station: UtcefCurrentStation }
   | { source: 'station'; layer: CtxLayer; station: IdxStation };
 
-/** THE layer loop. The first layer whose probe claims the position wins. */
-function claimLoop(ctx: ResolveCtx, lat: number, lon: number, timeMs: number): Claim | null {
-  for (const layer of ctx.layers) {
+/**
+ * THE layer loop. The first layer whose probe claims the position wins.
+ * `td` (optional out-flag) is raised when a probe before the winner depended
+ * on the time beyond the coarse series-in-range test (a GRIB cell defined in
+ * only some slots): the decision may then differ at another time.
+ */
+function claimLoop(
+  ctx: ResolveCtx,
+  layers: readonly CtxLayer[],
+  lat: number,
+  lon: number,
+  timeMs: number,
+  td?: TimeDependence,
+): Claim | null {
+  for (const layer of layers) {
     ctx.counters.layerProbes++;
     if (layer.type === 'grib2') {
-      const series = gribClaimSeries(layer.series!, lat, lon, timeMs);
+      const series = gribClaimSeries(layer.series!, lat, lon, timeMs, td);
       if (series) return { source: 'grib', layer, series };
     } else if (layer.type === 'utcef') {
       const station = ctx.utcefIndex!.stationAt(lat, lon, layer.utcefMaxKm, layer.files);
@@ -389,7 +486,7 @@ function claimLoop(ctx: ResolveCtx, lat: number, lon: number, timeMs: number): C
 /** Which source answers at (lat, lon, t), without sampling it. */
 export function claimAt(ctx: ResolveCtx, lat: number, lon: number, timeMs: number): Claim | null {
   ctx.counters.claims++;
-  return claimLoop(ctx, lat, lon, timeMs);
+  return claimLoop(ctx, ctx.layers, lat, lon, timeMs);
 }
 
 /**
@@ -433,7 +530,86 @@ export function resolveAt(
   accept?: (claim: Claim) => boolean,
 ): ResolvedVector | null {
   ctx.counters.resolves++;
-  const claim = claimLoop(ctx, lat, lon, timeMs);
+  const claim = claimLoop(ctx, ctx.layers, lat, lon, timeMs);
   if (!claim || (accept && !accept(claim))) return null;
   return sampleClaimAt(ctx, claim, lat, lon, timeMs);
+}
+
+// ── Station winners (static, one byte per station) ──
+
+/** `ownWin` values: the station loses / wins its own position, or the answer depends on the time (re-decide with claimAt). */
+export const OWN_LOSES = 0;
+export const OWN_WINS = 1;
+export const OWN_TIME_DEPENDENT = 2;
+
+/** Max `ownWin` arrays kept per (data, snapshot): a handful of forecast-horizon states, least recently used out first. */
+export const OWN_WIN_CACHE_CAP = 4;
+
+/**
+ * Compact key of which GRIB series of the (unpruned) GRIB layers are in their
+ * time range at `timeMs`, one bit per layer series, hex-packed. Crossing a
+ * forecast-horizon edge changes it.
+ */
+function rangeKey(ctx: ResolveCtx, timeMs: number): string {
+  let key = '';
+  let bits = 0;
+  let n = 0;
+  for (const l of ctx.fullLayers) {
+    if (l.type !== 'grib2') continue;
+    for (const s of l.series!) {
+      bits = (bits << 1) | (gribSeriesInRange(s, timeMs) ? 1 : 0);
+      if (++n === 4) { key += bits.toString(16); bits = 0; n = 0; }
+    }
+  }
+  return n > 0 ? key + bits.toString(16) + n : key;
+}
+
+/**
+ * For every station of one source (UTCEF: `data.currentStations`, legacy: the
+ * legacy index's station list; indexed by array position) whether it wins its
+ * OWN position: OWN_WINS / OWN_LOSES, or OWN_TIME_DEPENDENT when the decision
+ * touched a partially-defined GRIB cell (coastline) and so can differ per time.
+ *
+ * Who wins a station's own position is almost static: it changes with the layer
+ * configuration (snapshot, maxStationKm, legacy on/off — all part of the key),
+ * with which GRIB series are in their time range (`rangeKey`; only at
+ * forecast-horizon edges) and, for the flagged stations, with the time. So the
+ * array is filled ONCE per key by the same claim loop every other probe uses
+ * (against the UNPRUNED layers: it covers stations outside the current view),
+ * and a /grid request only re-decides the flagged stations.
+ *
+ * Memory: one byte per station per kept key (a Uint8Array, not a per-station
+ * memo map), at most OWN_WIN_CACHE_CAP keys per (data, snapshot), least recently
+ * used first out; freed with the data object or the layer snapshot.
+ */
+export function ownWinFor(ctx: ResolveCtx, kind: 'utcef' | 'station', timeMs: number): Uint8Array {
+  const data = kind === 'utcef' ? ctx.utcef! : ctx.harmonics!;
+  const cache = cacheFor(data, ctx.snapshot);
+  const key = `${kind}|${ctx.legacy ? 1 : 0}|${ctx.maxStationKm}|${rangeKey(ctx, timeMs)}`;
+  const hit = cache.ownWin.get(key);
+  if (hit) {
+    cache.ownWin.delete(key); // refresh recency
+    cache.ownWin.set(key, hit);
+    return hit;
+  }
+  resolveBuildCounts.ownWin++;
+  const fill: ResolveCtx = { ...ctx, counters: { claims: 0, resolves: 0, layerProbes: 0, samples: 0 } };
+  const td: TimeDependence = { timeDependent: false };
+  const stations: ReadonlyArray<UtcefCurrentStation | IdxStation> = kind === 'utcef' ? ctx.utcef!.currentStations : ctx.legacyIndex!.index.items;
+  const out = new Uint8Array(stations.length);
+  for (let k = 0; k < stations.length; k++) {
+    const s = stations[k];
+    if (kind === 'station' && !isVectorCapable(s as IdxStation)) continue; // never claimed
+    td.timeDependent = false;
+    const claim = claimLoop(fill, ctx.fullLayers, s.latitude, s.longitude, timeMs, td);
+    out[k] = td.timeDependent ? OWN_TIME_DEPENDENT : claim && claim.source === kind && (claim as { station?: unknown }).station === s ? OWN_WINS : OWN_LOSES;
+  }
+  cache.ownWin.set(key, out);
+  if (cache.ownWin.size > OWN_WIN_CACHE_CAP) cache.ownWin.delete(cache.ownWin.keys().next().value!);
+  return out;
+}
+
+/** Number of kept station-winner arrays for `data` under `snapshot` (bounded by OWN_WIN_CACHE_CAP; for tests). */
+export function ownWinCacheSize(data: object, snapshot: readonly Layer[]): number {
+  return snapshotCaches.get(data)?.get(snapshot)?.ownWin.size ?? 0;
 }
