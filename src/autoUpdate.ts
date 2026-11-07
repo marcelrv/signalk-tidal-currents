@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * "Keep fresh when online" (PRD §5.5 Phase 2) — periodically re-downloads
- * any manifest install that has opted in via `autoUpdate: true` AND is
- * currently stale (per `computeInstallStatus`, the same check the /datasets
- * listing uses). Invoked on a recurring timer from `index.ts` (not just a
- * check-on-restart) since this plugin is expected to run for weeks
- * unattended on a boat.
+ * Auto-download sweep (issue #1, a scheduled "Update All") — re-downloads
+ * every manifest install that is not opted out (`autoUpdate !== false`) AND
+ * is currently stale (per `computeInstallStatus`, the same check the
+ * /datasets listing uses). Only called while auto-download is switched on;
+ * `autoDownload.ts` decides when (this plugin is expected to run for weeks
+ * unattended on a boat).
  *
  * Safety: never starts a download that would push disk usage past 90% full
  * (same threshold the webapp's own Update-All banner warns on), and never
@@ -54,7 +54,7 @@ export async function runAutoUpdateSweep(deps: AutoUpdateDeps): Promise<AutoUpda
   const result: AutoUpdateResult = { started: [], skippedInFlight: [], skippedDiskFull: [] };
 
   const candidates = manifest.installs.filter((install) => {
-    if (!install.autoUpdate) return false;
+    if (install.autoUpdate === false) return false; // opted out
     const source = catalogDoc?.sources.find((s) => s.id === install.catalogSourceId);
     const status = computeInstallStatus(install, source, filesExist(install, deps.dataDir));
     return status.status === 'update-available';

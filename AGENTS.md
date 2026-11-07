@@ -155,6 +155,19 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   `OWN_WIN_CACHE_CAP` (4) arrays per (snapshot, GRIB, UTCEF, harmonics) —
   chained WeakMaps, so replacing ANY loaded data object misses and frees it
   (the claim loop reads all three). It is NOT a per-station memo map.
+- `src/autoDownload.ts` + `src/autoUpdate.ts` — auto-download, a scheduled
+  "Update All" (issue #1). ONE user setting, the interval (`0` = Off, else
+  1/6/12/24 h), persisted with the last sweep in `<dataDir>/auto-download.json`
+  (webapp-owned, not plugin config; `GET`/`PUT /settings/auto-download`). A
+  fixed 5-min tick asks "is a sweep due?" (last sweep + interval, persisted so
+  a restart doesn't re-sweep), so changing the interval needs no timer re-arm;
+  `PUT` kicks a tick at once. A due sweep first refreshes the catalog when it
+  is older than the interval (sha256 updates are invisible otherwise), then
+  `runAutoUpdateSweep` starts every stale install with `autoUpdate !== false`.
+  **`ManifestInstall.autoUpdate` is an opt-OUT** (`false` = excluded, absent =
+  included); the download engine carries it over on re-download. A missing
+  settings file migrates the old opt-in model once: any `autoUpdate: true` →
+  interval 1 h, every other install marked `false`.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).

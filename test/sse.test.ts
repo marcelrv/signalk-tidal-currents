@@ -119,6 +119,12 @@ function baseMgr(overrides: Partial<ManagerState>): ManagerState {
     setDatasetStack: () => {},
     apiState: { data: null, error: null },
     getVesselPosition: () => null,
+    autoDownload: {
+      status: () => ({ intervalHours: 0, lastSweep: null, choices: [0, 1, 6, 12, 24], nextCheckAt: null, running: false }),
+      setInterval: () => { throw new Error('not used'); },
+      tick: async () => {},
+      stop: () => {},
+    },
     ...overrides,
   };
 }

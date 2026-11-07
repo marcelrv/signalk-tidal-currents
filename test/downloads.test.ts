@@ -16,7 +16,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { createDownloadEngine, DownloadJob } from '../dist/downloads.js';
-import { readManifest } from '../dist/manifest.js';
+import { readManifest, writeManifestAtomic } from '../dist/manifest.js';
 import { CatalogDocument, CatalogSource } from '../dist/catalogTypes.js';
 import { CatalogClient, CatalogState } from '../dist/catalog.js';
 
@@ -88,6 +88,34 @@ test('static file with correct sha256 downloads, verifies, updates manifest', as
       const manifest = readManifest(manifestPath);
       assert.equal(manifest.installs.length, 1);
       assert.equal(manifest.installs[0].sha256, sha256);
+    },
+  );
+});
+
+test('a re-download keeps the per-dataset auto-download opt-out of the install it replaces', async () => {
+  const content = Buffer.from('fresh data');
+  const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+  await withServer(
+    (req, res) => { res.writeHead(200, { 'Content-Length': String(content.length) }); res.end(content); },
+    async (baseUrl) => {
+      const { root, manifestPath } = tmpDirs();
+      writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [{
+        id: 'optout', catalogSourceId: 'optout', type: 'utcef', files: ['utcef/x.utcef'], sha256: 'old',
+        size_bytes: 1, downloaded_at: new Date().toISOString(), autoUpdate: false,
+      }] });
+      const source: CatalogSource = {
+        id: 'optout', source: 'test', type: 'utcef', name: 'Test', description: '',
+        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        update_check: { method: 'sha256', last_checked: new Date().toISOString() },
+        files: [{ filename: 'x.utcef', url: `${baseUrl}/x.utcef`, sha256, size_bytes: content.length }],
+      };
+      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/c.json` });
+      const job = engine.start('optout');
+      await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
+      assert.equal(engine.get(job.id)!.state, 'done', engine.get(job.id)!.error);
+      const [install] = readManifest(manifestPath).installs;
+      assert.equal(install.sha256, sha256);
+      assert.equal(install.autoUpdate, false);
     },
   );
 });

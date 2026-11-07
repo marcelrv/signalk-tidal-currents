@@ -1,4 +1,6 @@
 import {
+  AutoDownloadInterval,
+  AutoDownloadSettings,
   CatalogState,
   CleanupCandidatesResponse,
   DatasetEntry,
@@ -61,6 +63,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+
+  getAutoDownload: () => request<AutoDownloadSettings>('/settings/auto-download'),
+  setAutoDownload: (intervalHours: AutoDownloadInterval) =>
+    request<AutoDownloadSettings>('/settings/auto-download', { method: 'PUT', body: JSON.stringify({ intervalHours }) }),
 
   getStorage: () => request<StorageStats>('/storage'),
   getCleanupCandidates: (maxDistanceNm?: number) =>

@@ -29,6 +29,17 @@ import {
 } from './catalogTypes.js';
 import { ManifestInstall, readManifest, upsertInstall, writeManifestAtomic } from './manifest.js';
 
+/**
+ * A re-download (manual or auto-download) replaces the install entry with the
+ * same id. The user's per-dataset auto-download choice is not a property of
+ * the downloaded file, so carry it over — otherwise updating an opted-out
+ * dataset would silently opt it back in.
+ */
+function keepAutoUpdateChoice(installs: ManifestInstall[], install: ManifestInstall): ManifestInstall {
+  const previous = installs.find((i) => i.id === install.id);
+  return previous?.autoUpdate === undefined ? install : { ...install, autoUpdate: previous.autoUpdate };
+}
+
 export type DownloadJobState = 'queued' | 'active' | 'done' | 'error';
 
 export interface DownloadJob {
@@ -471,7 +482,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         downloaded_at: new Date().toISOString(),
       };
       const manifest = readManifest(opts.manifestPath);
-      writeManifestAtomic(opts.manifestPath, upsertInstall(manifest, install));
+      writeManifestAtomic(opts.manifestPath, upsertInstall(manifest, keepAutoUpdateChoice(manifest.installs, install)));
       job.resultInstallId = install.id;
       return;
     }
@@ -607,7 +618,7 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     // as an orphan (`orphan:grib:...`) the user had to notice and delete by
     // hand.
     const previousInstall = manifest.installs.find((i) => i.id === install.id);
-    writeManifestAtomic(opts.manifestPath, upsertInstall(manifest, install));
+    writeManifestAtomic(opts.manifestPath, upsertInstall(manifest, keepAutoUpdateChoice(manifest.installs, install)));
     job.resultInstallId = install.id;
 
     if (previousInstall) {

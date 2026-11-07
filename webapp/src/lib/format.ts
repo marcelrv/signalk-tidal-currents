@@ -23,3 +23,16 @@ export function timeAgo(iso: string | null | undefined): string {
   const days = Math.floor(hours / 24);
   return `${days} d ago`;
 }
+
+/** "in 4 h" / "in 20 min" / "soon" — the forward counterpart of timeAgo. */
+export function timeUntil(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const ms = Date.parse(iso) - Date.now();
+  if (!Number.isFinite(ms)) return '—';
+  const mins = Math.round(ms / 60_000);
+  if (mins < 1) return 'soon';
+  if (mins < 60) return `in ${mins} min`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `in ${hours} h`;
+  return `in ${Math.round(hours / 24)} d`;
+}

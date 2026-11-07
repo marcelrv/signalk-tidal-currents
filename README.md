@@ -40,6 +40,14 @@ status at a glance, disk-usage checks, per-dataset priority, and an offline
 vector coastline map — all touch-friendly for use at the helm, with Day,
 Dark and Red night themes.
 
+**Auto-download** (Storage & data sheet) keeps installed data fresh while
+the boat runs unattended: pick *Off* or how often — every hour, 6 h, 12 h or
+daily. Each run does what **Update All** does: it re-downloads every
+installed dataset that has new data. It never pushes disk usage past 90%
+full. While it is on, each dataset row has an *Auto-download* checkbox so
+you can leave out the ones you don't want re-fetched (e.g. over a metered
+link).
+
 ## Features
 
 - Parses OpenCPN/XTide **ASCII harmonic files** (`HARMONIC` +
@@ -180,7 +188,7 @@ administrators. On signalk-server ≥ 2.35 the plugin marks the manager's
 **read** routes readable by read-only users (incl. anonymous visitors with
 `allow_readonly`, e.g. a public demo), who get a read-only manager view; the
 mutating ones (catalog refresh, downloads, dataset delete / auto-update,
-priority changes) stay admin-only. Read-only viewers never see the data
+priority and auto-download changes) stay admin-only. Read-only viewers never see the data
 directory path, the configured catalog URL or raw error texts (they get a
 generic "download failed" / "catalog sync failed").
 
@@ -336,7 +344,6 @@ data and priorities. The form exists for advanced/headless setups.
 | Max Station Distance | `15 km` | Don't publish from a station when none is nearby (GRIB coverage is not distance-limited) |
 | Tide/Current Catalog URL | signalk-router-data index | Catalog the webapp downloads datasets from; cached locally for offline use |
 | Catalog Refresh Interval | `24 h` | How often to re-fetch the catalog (a failed refresh keeps the cached copy) |
-| Auto-Update Check Interval | `30 min` | How often to re-download datasets you've marked "keep fresh when online" |
 
 `<plugin data dir>` is Signal K's standard per-plugin storage location:
 `<server config dir>/plugin-config-data/signalk-tidal-currents`.

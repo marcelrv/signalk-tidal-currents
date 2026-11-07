@@ -108,7 +108,7 @@ export interface DatasetEntry {
   expiresAt?: string;
   remainingHours?: number;
   maxAgeHours?: number;
-  /** "Keep fresh when online" opt-in (PRD §5.5 Phase 2) — always false for orphans (no catalogSourceId to re-download against). */
+  /** Included in auto-download (false = opted out) — always false for orphans (no catalogSourceId to re-download against). */
   autoUpdate: boolean;
   contributor?: string;
   sourceUrl?: string;
@@ -155,6 +155,26 @@ export interface DownloadJob {
 }
 
 export type SourceType = 'grib2' | 'utcef' | 'harmonic';
+
+/** Auto-download interval in hours; 0 = Off. */
+export type AutoDownloadInterval = 0 | 1 | 6 | 12 | 24;
+
+export interface AutoDownloadSweep {
+  at: string;
+  started: string[];
+  skippedInFlight: string[];
+  skippedDiskFull: string[];
+  error?: string;
+}
+
+/** GET/PUT /settings/auto-download — the scheduled "Update All". */
+export interface AutoDownloadSettings {
+  intervalHours: AutoDownloadInterval;
+  choices: AutoDownloadInterval[];
+  lastSweep: AutoDownloadSweep | null;
+  nextCheckAt: string | null;
+  running: boolean;
+}
 
 export interface PriorityResponse {
   order: SourceType[];

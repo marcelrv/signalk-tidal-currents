@@ -102,6 +102,17 @@ test('starts an enabled + stale (sha256 mismatch) install, ignores a disabled on
   assert.deepEqual(downloads.started, ['stale']);
 });
 
+test('an install that never touched the toggle (autoUpdate absent) is included', async () => {
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
+  const plain = mkInstall({ id: 'plain', catalogSourceId: 'plain', sha256: 'old-hash' });
+  delete plain.autoUpdate;
+  writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [plain] });
+  const downloads = new FakeDownloadEngine();
+  const result = await runAutoUpdateSweep(baseDeps(root, manifestPath, fakeCatalogClient([mkSource('plain', 'new-hash')]), downloads));
+  assert.deepEqual(result.started, ['plain']);
+});
+
 test('skips a candidate whose source already has a job queued/active', async () => {
   const { root, manifestPath } = tmpDirs();
   fs.writeFileSync(path.join(root, 'f.dat'), 'x');

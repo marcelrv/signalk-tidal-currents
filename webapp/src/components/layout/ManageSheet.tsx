@@ -9,13 +9,14 @@ import { StorageGauge } from '../storage/StorageGauge';
 import { SmartCleanupPanel } from '../storage/SmartCleanupPanel';
 import { PriorityStack } from '../priority/PriorityStack';
 import { PriorityList } from '../priority/PriorityList';
+import { AutoDownloadSection } from './AutoDownloadSection';
 
 /**
  * "Storage & data" sheet — all the management chrome that used to crowd the
  * main screen (disk gauge, cleanup, catalog sync, priorities) lives here
  * behind one footer button, leaving the browsing surface to the actual
  * catalog. Sections top-to-bottom mirror how often they're needed:
- * storage/cleanup, per-dataset priority (Phase 3), fallback type order,
+ * storage/cleanup, auto-download, catalog sync, per-dataset priority (Phase 3), fallback type order,
  * unmanaged files.
  */
 export function ManageSheet({ onClose }: { onClose: () => void }) {
@@ -50,6 +51,8 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
           </button>
           )}
         </section>
+
+        <AutoDownloadSection />
 
         <section aria-label="Catalog" className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2">
           <div className="min-w-0 text-sm">

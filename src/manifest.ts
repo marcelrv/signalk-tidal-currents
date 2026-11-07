@@ -44,7 +44,7 @@ export interface ManifestInstall {
   fileType?: 'forecast' | 'nowcast';
   /** Present for template installs where region_id + fileType still doesn't uniquely identify the file (e.g. BSH's separate +24h/+48h/+72h forecast-day files, all "forecast" under the same region_id). */
   variant?: string;
-  /** Opt-in "keep fresh when online" (PRD §5.5 Phase 2) — absent/false by default. Only meaningful for manifest-tracked installs (not orphans), since it drives `runAutoUpdateSweep`'s re-download decision. */
+  /** Auto-download opt-out: `false` = never re-downloaded automatically; absent or `true` = included while auto-download is on (see `autoDownload.ts`). Only meaningful for manifest-tracked installs (not orphans), since it drives `runAutoUpdateSweep`'s re-download decision. */
   autoUpdate?: boolean;
 }
 
