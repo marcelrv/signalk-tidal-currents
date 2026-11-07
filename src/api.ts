@@ -23,7 +23,7 @@
  *   GET /grid?bbox=w,s,e,n[&time=&maxPoints=]      — vector field over a viewport: GRIB lattice + UTCEF stations, per-point source priority
  */
 
-import { GribSource, GridSeries, gribLatticeWindow, gribSummary } from './gribcurrents.js';
+import { GribSource, GridSeries, gribLatticeWindow, gribSeriesSample, gribSummary } from './gribcurrents.js';
 import { HarmonicsData, IdxStation } from './harmonics.js';
 import { DatasetRankEntry, SourceType } from './priority.js';
 import { CurrentSample, isVectorCapable, nearestCurrentStations, stationsInBbox, timeline } from './predict.js';
@@ -594,6 +594,12 @@ function gridPointOf(r: ResolvedVector, lat: number, lon: number): GridPoint | n
   return { ...base, speedKn: Math.abs(s.speedKn), source: 'station', stationId: r.station!.id };
 }
 
+/** Does the GRIB series on `grid` have a value at the position (its own data, ignoring source priority)? */
+function gridHasValue(ctx: ResolveCtx, grid: GridSeries['grid'], lat: number, lon: number, time: number): boolean {
+  const series = ctx.grib?.series.find((x) => x.grid === grid);
+  return !!series && gribSeriesSample(series, lat, lon, time) !== null;
+}
+
 /** One grid geometry's lattice for a request: its index window and its geometry-only base stride. */
 interface LatticePlan {
   grid: GridSeries['grid'];
@@ -740,6 +746,12 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
   for (const c of cands) {
     const r = resolveAt(ctx, c.lat, c.lon, time, (claim) => claim.source !== 'grib' || claim.series.grid === c.grid);
     if (!r) continue;
+    // A station answer at a lattice node is only legitimate where this grid has
+    // data and the station merely outranks it (source priority). Where the grid
+    // has none (land, outside its mask) the resolver falls through to the
+    // nearest station, and drawing that vector at the node would paint arrows
+    // over land; the station is shown at its own position instead (step 4).
+    if (r.source !== 'grib' && !gridHasValue(ctx, c.grid, c.lat, c.lon, time)) continue;
     const key = posKey(c.lat, c.lon);
     if (taken.has(key)) continue; // a station answer already shown here by an overlapping lattice
     const pt = gridPointOf(r, c.lat, c.lon);

@@ -182,7 +182,11 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
      `/grid` while `/vector` keeps its sign.
   2. *Series model.* A lattice belongs to a grid geometry; a GRIB answer from
      another grid is dropped (that grid's own lattice shows it), a station
-     answer is emitted as that station's vector (`stationId`).
+     answer is emitted as that station's vector (`stationId`) — but only
+     where that grid has a value at the node (the station merely outranks it).
+     Where the grid has none (land) the node is dropped: the resolver falls
+     through to the nearest station there, and painting that vector on the
+     lattice puts arrows over land (the station shows at its own position).
   3. *Geometry-only stride.* Per grid, a power-of-two base stride from the
      bbox size and the grid's cell size alone (`baseStride`), nodes = the
      grid's own (i, j) multiples of the stride from index 0 (lattices nest).

@@ -657,3 +657,24 @@ test('registerRoutes still exposes /grid, /vector and /timeline on a stub router
   registerRoutes({ get: (p) => routes.push(p) }, { data: null, error: null });
   for (const r of ['/grid', '/vector', '/timeline']) assert.ok(routes.includes(r), r);
 });
+
+test('a land lattice node never borrows a nearby station vector', () => {
+  // Grid columns >= 8 are land (NaN). A UTCEF station sits at sea within reach of the land nodes:
+  // the resolver falls through to it there, but /grid must not draw it on the lattice over land.
+  const n = 20;
+  const d = 0.1;
+  const land = (k: number) => k % n >= 8;
+  const u = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1));
+  const v = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 0.5));
+  const gdir = gribDirOf({ 'a.grb2': uvFields(52, 3, d, n, { u, v }) });
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 52.5, 3.6]] });
+  const landLon = 3 + 8 * d;
+  for (const preferGrib of [true, false]) {
+    const state: ApiState = { data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib };
+    const pts = makeApi(state)('/grid', { bbox: '3,52,5,54', time: gridTime, maxPoints: '5000' }).points as P[];
+    assert.ok(pts.length > 0);
+    const onLand = pts.filter((p) => p.longitude >= landLon - 1e-9);
+    assert.deepEqual(onLand, [], `preferGrib=${preferGrib}: arrows over land`);
+    assertParity(state, pts, T0, `preferGrib=${preferGrib}`);
+  }
+});
