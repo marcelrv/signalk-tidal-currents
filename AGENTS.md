@@ -59,8 +59,10 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   grid**: shallowest depth, then newest `refTime`, then later file name; series
   are ordered finest-resolution first, then by file name. `gribVectorAt` =
   the first series with a value: bilinear in space (NaN corners dropped +
-  weights renormalized for coastlines) and linear in time (±3 h clamp slack at
-  the range edges). Stack layers use `gribSubsetSeries(data, files)` (uncached
+  weights renormalized for coastlines) and linear in time (±30 min clamp slack
+  at the range edges, `GRIB_TIME_SLACK_MS` — keep it short: a held field goes
+  stale against a ~6 h tidal reversal and, GRIB ranking first, hides the
+  UTCEF/station answer; past the slack the resolver falls through). Stack layers use `gribSubsetSeries(data, files)` (uncached
   here; `resolve.ts` keeps the result per layer): per geometry, a file subset
   that equals the canonical series' whole file set **reuses the canonical
   `GridSeries` object** (no second dedup pass or cell mask); only a strict

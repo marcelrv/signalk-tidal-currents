@@ -28,8 +28,15 @@ import { listDataFilesRecursive } from './utcef.js';
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 
-/** How far outside the covered time range a lookup may clamp to the edge field. */
-export const GRIB_TIME_SLACK_MS = 3 * 3_600_000;
+/**
+ * How far outside the covered time range a lookup may clamp to the edge field.
+ * Kept short on purpose: a tidal current turns in ~6 h, so holding the last
+ * field for hours shows a stale vector that can point the opposite way — and,
+ * GRIB usually ranking first, it hides the UTCEF/harmonic answer meanwhile.
+ * Past the slack the series is out of range and the resolver falls through to
+ * the next source. Times between slots are interpolated and never affected.
+ */
+export const GRIB_TIME_SLACK_MS = 30 * 60_000;
 
 /** One forecast time with matched u and v grids. */
 export interface TimeSlot {
