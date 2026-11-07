@@ -594,10 +594,18 @@ function gridPointOf(r: ResolvedVector, lat: number, lon: number): GridPoint | n
   return { ...base, speedKn: Math.abs(s.speedKn), source: 'station', stationId: r.station!.id };
 }
 
-/** Does the GRIB series on `grid` have a value at the position (its own data, ignoring source priority)? */
+/**
+ * Does any GRIB layer of this request have a value on `grid` at the position
+ * (ignoring source priority)? Checks every layer's series on that grid — a
+ * dataset-stack file subset is its own series and can have a value where the
+ * all-files series has none (another file wins that valid time there).
+ */
 function gridHasValue(ctx: ResolveCtx, grid: GridSeries['grid'], lat: number, lon: number, time: number): boolean {
-  const series = ctx.grib?.series.find((x) => x.grid === grid);
-  return !!series && gribSeriesSample(series, lat, lon, time) !== null;
+  for (const l of ctx.layers) {
+    if (!l.series) continue;
+    for (const s of l.series) if (s.grid === grid && gribSeriesSample(s, lat, lon, time) !== null) return true;
+  }
+  return false;
 }
 
 /** One grid geometry's lattice for a request: its index window and its geometry-only base stride. */

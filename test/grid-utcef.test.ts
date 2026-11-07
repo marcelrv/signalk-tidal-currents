@@ -667,16 +667,50 @@ test('a land lattice node never borrows a nearby station vector', () => {
   const u = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1));
   const v = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 0.5));
   const gdir = gribDirOf({ 'a.grb2': uvFields(52, 3, d, n, { u, v }) });
-  const udir = writeUtcefDir({ 'u.utcef': [['S1', 52.5, 3.6]] });
+  // S2 sits on a land cell: it must still show at its own position, whatever the priority.
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 52.5, 3.6], ['S2', 53.5, 4.5]] });
   const landLon = 3 + 8 * d;
+  const atOwn = (p: P, id: string, lat: number, lon: number) => p.stationId === id && p.latitude === lat && p.longitude === lon;
   for (const preferGrib of [true, false]) {
     const state: ApiState = { data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib };
     const pts = makeApi(state)('/grid', { bbox: '3,52,5,54', time: gridTime, maxPoints: '5000' }).points as P[];
     assert.ok(pts.length > 0);
-    const onLand = pts.filter((p) => p.longitude >= landLon - 1e-9);
+    const onLand = pts.filter((p) => p.longitude >= landLon - 1e-9 && !atOwn(p, 'S2', 53.5, 4.5));
     assert.deepEqual(onLand, [], `preferGrib=${preferGrib}: arrows over land`);
+    assert.ok(pts.some((p) => atOwn(p, 'S2', 53.5, 4.5)), `preferGrib=${preferGrib}: land station at its own position`);
     assertParity(state, pts, T0, `preferGrib=${preferGrib}`);
   }
+});
+
+test('a station outranking a stack GRIB subset keeps its vector where only the subset has data', () => {
+  // Same grid, same valid time: the newer cycle (new.grb2) is land-masked at columns >= 8 and wins
+  // the all-files series there; the older cycle (old.grb2) has data everywhere. Stack: the UTCEF
+  // station above the old-cycle subset → the station outranks GRIB data that does exist at those
+  // nodes, so its vector must be drawn there (only the all-files series has no value).
+  const n = 20;
+  const d = 0.1;
+  const land = (k: number) => k % n >= 8;
+  const gdir = gribDirOf({
+    'old.grb2': uvFields(52, 3, d, n, { refTime: T0 - 6 * HOUR, forecastHours: 6 }),
+    'new.grb2': uvFields(52, 3, d, n, {
+      u: Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1)),
+      v: Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 0)),
+    }),
+  });
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 52.5, 3.9]] });
+  const state: ApiState = {
+    data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib: true,
+    datasetRank: () => [
+      { id: 'st', type: 'utcef', files: ['u.utcef'] },
+      { id: 'old', type: 'grib2', files: ['old.grb2'] },
+    ],
+  };
+  const pts = makeApi(state)('/grid', { bbox: '3,52,5,54', time: gridTime, maxPoints: '5000' }).points as P[];
+  // Masked nodes within the station's reach (the stack clamps it to 50 km; 0.25° keeps well inside).
+  const near = pts.filter((p) => p.longitude >= 3 + 8 * d - 1e-9 && Math.abs(p.latitude - 52.5) <= 0.25 && Math.abs(p.longitude - 3.9) <= 0.25);
+  assert.ok(near.length > 1, 'station vector drawn on subset-covered nodes');
+  assert.deepEqual(near.filter((p) => p.stationId !== 'S1'), [], 'the outranking station answers there');
+  assertParity(state, pts, T0, 'stack subset');
 });
 
 test('past the GRIB time slack the resolver falls through to UTCEF instead of holding a stale field', () => {
@@ -691,6 +725,8 @@ test('past the GRIB time slack the resolver falls through to UTCEF instead of ho
   const at = (t: number) => resolveVector(state, 52.5, 3.5, t, REST_FALLBACK_MAX_KM)?.source;
   assert.equal(at(T0 + HOUR), 'grib');
   assert.equal(at(T0 + 2 * HOUR + 15 * 60_000), 'grib', 'inside the short clamp slack');
+  assert.equal(at(T0 + 2 * HOUR + 35 * 60_000), 'utcef', 'just past the 30 min slack');
+  assert.equal(at(T0 - 35 * 60_000), 'utcef', 'just before the 30 min slack');
   assert.equal(at(T0 + 3 * HOUR), 'utcef', 'an hour past the last slot');
   assert.equal(at(T0 - HOUR), 'utcef', 'an hour before the first slot');
 });
