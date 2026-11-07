@@ -165,6 +165,7 @@ export interface AutoDownloadSweep {
   skippedInFlight: string[];
   skippedDiskFull: string[];
   error?: string;
+  catalogError?: string;
 }
 
 /** GET/PUT /settings/auto-download — the scheduled "Update All". */

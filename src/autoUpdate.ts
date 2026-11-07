@@ -48,7 +48,13 @@ function filesExist(install: ManifestInstall, dataDir: string): boolean {
   return install.files.every((f) => fs.existsSync(path.join(dataDir, f)));
 }
 
-export async function runAutoUpdateSweep(deps: AutoUpdateDeps): Promise<AutoUpdateResult> {
+/**
+ * `isCancelled` is checked after the async storage scan and before every
+ * start, so a sweep whose scheduler was stopped (plugin restart, which swaps
+ * the engine/data dir on the shared deps object) never enqueues stale
+ * candidates into the replacement engine.
+ */
+export async function runAutoUpdateSweep(deps: AutoUpdateDeps, isCancelled: () => boolean = () => false): Promise<AutoUpdateResult> {
   const manifest = readManifest(deps.manifestPath);
   const catalogDoc = deps.catalog.get().document;
   const result: AutoUpdateResult = { started: [], skippedInFlight: [], skippedDiskFull: [] };
@@ -65,6 +71,7 @@ export async function runAutoUpdateSweep(deps: AutoUpdateDeps): Promise<AutoUpda
   let projectedUsedBytes = storage.totalBytes !== null && storage.freeBytes !== null ? storage.totalBytes - storage.freeBytes : null;
 
   for (const install of candidates) {
+    if (isCancelled()) break;
     // Variant-aware: a nowcast job in flight for `bsh_currents` must not
     // block its sibling forecast+24h/+48h variants of the SAME source, which
     // are separate files with their own stale status.

@@ -229,3 +229,16 @@ test('a BSH-style nowcast job already in flight does not block its sibling forec
   assert.deepEqual(result.skippedInFlight, ['bsh_currents:north_sea:nowcast']);
   assert.deepEqual(result.started, ['bsh_currents:north_sea:forecast:+24h']);
 });
+
+test('a cancelled sweep (scheduler stopped during the storage scan) starts nothing', async () => {
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
+  writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [mkInstall({ id: 'a', catalogSourceId: 'a' })] });
+  const downloads = new FakeDownloadEngine();
+  let cancelled = false;
+  const sweep = runAutoUpdateSweep(baseDeps(root, manifestPath, fakeCatalogClient([mkSource('a', 'new-hash')]), downloads), () => cancelled);
+  cancelled = true; // flips while the sweep awaits statStorage
+  const result = await sweep;
+  assert.deepEqual(result.started, []);
+  assert.deepEqual(downloads.started, []);
+});

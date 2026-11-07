@@ -164,6 +164,10 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   `PUT` kicks a tick at once. A due sweep first refreshes the catalog when it
   is older than the interval (sha256 updates are invisible otherwise), then
   `runAutoUpdateSweep` starts every stale install with `autoUpdate !== false`.
+  A sweep whose catalog refresh (or run) failed is still recorded, with
+  `catalogError`/`error`, and retried after `AUTO_DOWNLOAD_RETRY_MS` (30 min)
+  instead of the full interval. `stop()` cancels an in-flight sweep (the
+  shared `mgr` gets a new engine on restart, so it must not enqueue there).
   **`ManifestInstall.autoUpdate` is an opt-OUT** (`false` = excluded, absent =
   included); the download engine carries it over on re-download. A missing
   settings file migrates the old opt-in model once: any `autoUpdate: true` →

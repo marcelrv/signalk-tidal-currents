@@ -9,6 +9,7 @@ import * as path from 'node:path';
 
 import {
   AUTO_DOWNLOAD_FILE,
+  AUTO_DOWNLOAD_RETRY_MS,
   MIGRATED_INTERVAL,
   createAutoDownloadScheduler,
   isValidInterval,
@@ -184,4 +185,90 @@ test('scheduler: a persisted recent sweep is not repeated after a restart', asyn
   );
   await sched.tick();
   assert.deepEqual(downloads.started, []);
+});
+
+test('nextDueAt: a failed sweep (catalog or run) retries after AUTO_DOWNLOAD_RETRY_MS, capped by the interval', () => {
+  const at = '2026-01-01T00:00:00.000Z';
+  const base = { at, started: [], skippedInFlight: [], skippedDiskFull: [] };
+  assert.equal(nextDueAt({ intervalHours: 24, lastSweep: { ...base, catalogError: 'offline' } }), Date.parse(at) + AUTO_DOWNLOAD_RETRY_MS);
+  assert.equal(nextDueAt({ intervalHours: 24, lastSweep: { ...base, error: 'boom' } }), Date.parse(at) + AUTO_DOWNLOAD_RETRY_MS);
+  assert.equal(nextDueAt({ intervalHours: 1, lastSweep: { ...base, catalogError: 'offline' } }), Date.parse(at) + Math.min(HOUR, AUTO_DOWNLOAD_RETRY_MS));
+});
+
+test('nextDueAt: a last sweep in the future (clock corrected backwards) is due now', () => {
+  const now = Date.parse('2026-06-01T00:00:00Z');
+  const lastSweep = { at: '2027-06-01T00:00:00.000Z', started: [], skippedInFlight: [], skippedDiskFull: [] };
+  assert.equal(nextDueAt({ intervalHours: 6, lastSweep }, now), 0);
+});
+
+test('scheduler: a failed catalog refresh still records the sweep and retries after the short delay, not every tick', async () => {
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
+  writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [install('a')] });
+  saveAutoDownloadSettingsAtomic(root, { intervalHours: 24, lastSweep: null });
+  let t = Date.parse('2026-06-01T00:00:00Z');
+  const now = () => t;
+  const catalog = fakeCatalog([source('a', 'new')], new Date(t - 48 * HOUR).toISOString(), now);
+  catalog.refresh = async () => {
+    catalog.refreshes++;
+    return { ...catalog.get(), error: 'fetch failed' };
+  };
+  const downloads = fakeDownloads();
+  const sched = createAutoDownloadScheduler({ catalog, downloads, manifestPath, dataDir: root }, { now, timers: false });
+
+  await sched.tick();
+  assert.deepEqual(downloads.started, ['a'], 'sweep runs on the cached catalog');
+  const saved = JSON.parse(fs.readFileSync(path.join(root, AUTO_DOWNLOAD_FILE), 'utf8'));
+  assert.equal(saved.lastSweep.catalogError, 'fetch failed');
+  assert.deepEqual(saved.lastSweep.started, ['a']);
+
+  t += 5 * 60_000;
+  await sched.tick();
+  assert.deepEqual(downloads.started, ['a'], 'not re-run on the next 5-min tick');
+  t += AUTO_DOWNLOAD_RETRY_MS;
+  await sched.tick();
+  assert.equal(catalog.refreshes, 2, 'retried after the short delay');
+});
+
+test('scheduler: stop() during a sweep keeps it from saving over the successor\'s settings', async () => {
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
+  writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [install('a')] });
+  saveAutoDownloadSettingsAtomic(root, { intervalHours: 1, lastSweep: null });
+  const t = Date.parse('2026-06-01T00:00:00Z');
+  const catalog = fakeCatalog([source('a', 'new')], null, () => t);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const realRefresh = catalog.refresh;
+  catalog.refresh = async () => { await gate; return realRefresh(); };
+  const downloads = fakeDownloads();
+  const old = createAutoDownloadScheduler({ catalog, downloads, manifestPath, dataDir: root }, { now: () => t, timers: false });
+  const pending = old.tick();
+  old.stop();
+  const successor = createAutoDownloadScheduler({ catalog, downloads, manifestPath, dataDir: root }, { now: () => t, timers: false });
+  successor.setInterval(0);
+  release();
+  await pending;
+  assert.deepEqual(downloads.started, [], 'stopped sweep starts nothing');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, AUTO_DOWNLOAD_FILE), 'utf8')).intervalHours, 0);
+});
+
+test('setInterval throws when the settings cannot be saved (and keeps the old value)', () => {
+  const { root, manifestPath } = tmpDirs();
+  const notADir = path.join(root, 'file-not-dir');
+  fs.writeFileSync(notADir, 'x');
+  const sched = createAutoDownloadScheduler(
+    { catalog: fakeCatalog([], null, Date.now), downloads: fakeDownloads(), manifestPath, dataDir: notADir },
+    { timers: false },
+  );
+  assert.throws(() => sched.setInterval(6));
+  assert.equal(sched.status().intervalHours, 0);
+});
+
+test('migration stays Off when its settings file cannot be saved', () => {
+  const { root, manifestPath } = tmpDirs();
+  writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [install('on', true), install('never')] });
+  const notADir = path.join(root, 'file-not-dir');
+  fs.writeFileSync(notADir, 'x');
+  assert.equal(loadAutoDownloadSettings(notADir, manifestPath).intervalHours, 0);
 });

@@ -34,12 +34,16 @@ export const AUTO_DOWNLOAD_TICK_MS = 5 * 60_000;
 export const AUTO_DOWNLOAD_BOOT_DELAY_MS = 10_000;
 /** Interval the migration picks for installs that opted in under the old per-dataset model (whose default cadence was 30 min). */
 export const MIGRATED_INTERVAL: AutoDownloadInterval = 1;
+/** Retry delay after a sweep whose catalog refresh (or the sweep itself) failed — e.g. offline — instead of the full interval. */
+export const AUTO_DOWNLOAD_RETRY_MS = 30 * 60_000;
 
 export interface AutoDownloadSweepRecord extends AutoUpdateResult {
   /** ISO 8601 time the sweep ran. */
   at: string;
   /** Set when the sweep itself failed (e.g. unreadable manifest). */
   error?: string;
+  /** Set when the catalog refresh before the sweep failed (e.g. offline); the sweep ran on the cached catalog. */
+  catalogError?: string;
 }
 
 export interface AutoDownloadSettings {
@@ -71,6 +75,7 @@ function parseSweepRecord(raw: unknown): AutoDownloadSweepRecord | null {
     skippedInFlight: isStringArray(r.skippedInFlight) ? r.skippedInFlight : [],
     skippedDiskFull: isStringArray(r.skippedDiskFull) ? r.skippedDiskFull : [],
     ...(typeof r.error === 'string' ? { error: r.error } : {}),
+    ...(typeof r.catalogError === 'string' ? { catalogError: r.catalogError } : {}),
   };
 }
 
@@ -122,12 +127,21 @@ export function loadAutoDownloadSettings(dataDir: string, manifestPath: string):
       // Unwritable data dir: skip the migration (Off, nothing saved) so it re-runs next start.
       return settings;
     }
-    settings.intervalHours = MIGRATED_INTERVAL;
+    const migrated: AutoDownloadSettings = { ...settings, intervalHours: MIGRATED_INTERVAL };
+    try {
+      saveAutoDownloadSettingsAtomic(dataDir, migrated);
+      return migrated;
+    } catch {
+      // Only switch on once that is persisted: an unsaved "on" would come back
+      // after the user turned it Off. The manifest marking is idempotent, so
+      // the migration simply re-runs next start.
+      return settings;
+    }
   }
   try {
     saveAutoDownloadSettingsAtomic(dataDir, settings);
   } catch {
-    // Read-only data dir: still usable, the migration simply re-runs next start.
+    // Read-only data dir: still usable (Off), re-checked next start.
   }
   return settings;
 }
@@ -135,13 +149,17 @@ export function loadAutoDownloadSettings(dataDir: string, manifestPath: string):
 /**
  * Epoch ms when the next sweep is due: null while Off, 0 when it has never run
  * or the last sweep lies in the future (clock corrected backwards) — due now.
+ * A sweep whose catalog refresh or run failed is retried after
+ * `AUTO_DOWNLOAD_RETRY_MS` (when shorter than the interval).
  */
 export function nextDueAt(settings: AutoDownloadSettings, nowMs: number = Date.now()): number | null {
   if (settings.intervalHours === 0) return null;
   if (!settings.lastSweep) return 0;
   const at = Date.parse(settings.lastSweep.at);
   if (at > nowMs) return 0;
-  return at + settings.intervalHours * 3600_000;
+  const intervalMs = settings.intervalHours * 3600_000;
+  const failed = settings.lastSweep.error !== undefined || settings.lastSweep.catalogError !== undefined;
+  return at + (failed ? Math.min(intervalMs, AUTO_DOWNLOAD_RETRY_MS) : intervalMs);
 }
 
 export interface AutoDownloadController {
@@ -167,6 +185,7 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
   let running = false;
   let stopped = false;
 
+  const isStopped = () => stopped;
   const persist = () => {
     try {
       saveAutoDownloadSettingsAtomic(deps.dataDir, settings);
@@ -181,9 +200,9 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
     running = true;
     const intervalMs = settings.intervalHours * 3600_000;
     // Set when the catalog could not be refreshed (offline): the sweep still
-    // runs on the cached catalog, but is not recorded, so the next tick
-    // retries instead of waiting a whole interval.
-    let refreshFailed = false;
+    // runs on the cached catalog and is recorded, but `nextDueAt` retries it
+    // after AUTO_DOWNLOAD_RETRY_MS instead of a whole interval.
+    let catalogError: string | undefined;
     try {
       // sha256-checked sources only show as stale once the catalog has the
       // new hash; the catalog's own refresh runs daily by default, which
@@ -194,18 +213,21 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
         try {
           const refreshed = await deps.catalog.refresh();
           if (refreshed.error) {
-            refreshFailed = true;
+            catalogError = refreshed.error;
             log(`catalog refresh before auto-download failed: ${refreshed.error}`);
           }
         } catch (e) {
-          refreshFailed = true;
+          catalogError = String(e);
           log(`catalog refresh before auto-download failed: ${e}`);
         }
         if (stopped) return;
       }
-      const result = await runAutoUpdateSweep(deps);
-      if (stopped || refreshFailed) return;
-      settings = { ...settings, lastSweep: { at: new Date(now()).toISOString(), ...result } };
+      const result = await runAutoUpdateSweep(deps, isStopped);
+      if (stopped) return;
+      settings = {
+        ...settings,
+        lastSweep: { at: new Date(now()).toISOString(), ...result, ...(catalogError !== undefined ? { catalogError } : {}) },
+      };
       if (result.started.length > 0 || result.skippedDiskFull.length > 0) {
         log(`auto-download: started ${result.started.length}, skipped (disk almost full) ${result.skippedDiskFull.length}`);
       }
@@ -243,8 +265,11 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
   return {
     status,
     setInterval(hours) {
-      settings = { ...settings, intervalHours: hours };
-      persist();
+      const next = { ...settings, intervalHours: hours };
+      // Throws on failure so the caller reports it: an unsaved change would
+      // silently revert on the next restart.
+      saveAutoDownloadSettingsAtomic(deps.dataDir, next);
+      settings = next;
       void tick();
       return status();
     },
