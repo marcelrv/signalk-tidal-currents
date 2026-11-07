@@ -682,6 +682,28 @@ test('a land lattice node never borrows a nearby station vector', () => {
   }
 });
 
+test('past the GRIB time range, sea lattice nodes keep the station fill; land nodes stay empty', () => {
+  // The land test is time-independent: once the (single-slot) GRIB series is out of range, the
+  // resolver falls through to the station at every node, and /grid still draws it at sea — only
+  // nodes the grid never defines (land) are dropped.
+  const n = 20;
+  const d = 0.1;
+  const land = (k: number) => k % n >= 8;
+  const u = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1));
+  const v = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 0.5));
+  const gdir = gribDirOf({ 'a.grb2': uvFields(52, 3, d, n, { u, v }) });
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 52.5, 3.4]] });
+  const landLon = 3 + 8 * d;
+  const t = T0 + 3 * HOUR; // past the single-slot slack
+  const state: ApiState = { data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib: true };
+  assert.equal(resolveVector(state, 52.5, 3.4, t, REST_FALLBACK_MAX_KM)?.source, 'utcef');
+  const pts = makeApi(state)('/grid', { bbox: '3,52,5,54', time: new Date(t).toISOString(), maxPoints: '5000' }).points as P[];
+  const sea = pts.filter((p) => p.longitude < landLon - 1e-9 && p.stationId === 'S1');
+  assert.ok(sea.length > 10, `sea nodes show the station fill (${sea.length})`);
+  assert.deepEqual(pts.filter((p) => p.longitude >= landLon - 1e-9), [], 'no arrows over land');
+  assertParity(state, pts, t, 'past range');
+});
+
 test('a station outranking a stack GRIB subset keeps its vector where only the subset has data', () => {
   // Same grid, same valid time: the newer cycle (new.grb2) is land-masked at columns >= 8 and wins
   // the all-files series there; the older cycle (old.grb2) has data everywhere. Stack: the UTCEF

@@ -35,8 +35,17 @@ const RAD2DEG = 180 / Math.PI;
  * GRIB usually ranking first, it hides the UTCEF/harmonic answer meanwhile.
  * Past the slack the series is out of range and the resolver falls through to
  * the next source. Times between slots are interpolated and never affected.
+ * A series with a single valid time (an analysis/nowcast file) has no range to
+ * interpolate in, so it gets GRIB_SINGLE_SLOT_SLACK_MS instead.
  */
 export const GRIB_TIME_SLACK_MS = 30 * 60_000;
+
+/** Clamp slack of a series with ONE valid time: still well short of a tidal half-cycle. */
+export const GRIB_SINGLE_SLOT_SLACK_MS = 2 * 3_600_000;
+
+/** The clamp slack that applies to a series' slot list. */
+export const gribTimeSlackMs = (slots: readonly TimeSlot[]): number =>
+  slots.length === 1 ? GRIB_SINGLE_SLOT_SLACK_MS : GRIB_TIME_SLACK_MS;
 
 /** One forecast time with matched u and v grids. */
 export interface TimeSlot {
@@ -377,8 +386,9 @@ function sampleSlot(slot: TimeSlot, lat: number, lon: number): { u: number; v: n
 /** Index of the slot at/just before `timeMs` in a sorted list, or -1 when out of range (beyond the clamp slack). */
 function bracketIndex(slots: TimeSlot[], timeMs: number): number {
   if (slots.length === 0) return -1;
-  if (timeMs < slots[0].time - GRIB_TIME_SLACK_MS) return -1;
-  if (timeMs > slots[slots.length - 1].time + GRIB_TIME_SLACK_MS) return -1;
+  const slack = gribTimeSlackMs(slots);
+  if (timeMs < slots[0].time - slack) return -1;
+  if (timeMs > slots[slots.length - 1].time + slack) return -1;
   // Bracketing slots (binary search).
   let lo = 0;
   let hi = slots.length - 1;
@@ -395,6 +405,23 @@ const scratchCell: GridCell = { i0: 0, i1: 0, j0: 0, j1: 0, wx: 0, wy: 0 };
 /** Is `timeMs` inside the series' slots (± the clamp slack)? The only time dependence of a coverage probe besides partially-defined cells. */
 export function gribSeriesInRange(series: GridSeries, timeMs: number): boolean {
   return bracketIndex(series.slots, timeMs) >= 0;
+}
+
+/**
+ * Is the series defined at (lat, lon) in ANY of its slots — i.e. is this sea
+ * rather than land for this grid? Time-independent (no range check): the same
+ * non-null condition as gribSeriesSample at some slot. The cell mask settles
+ * fully-defined and fully-undefined cells with one lookup; only a partially
+ * defined (coastline) cell samples its slots until one answers.
+ */
+export function gribSeriesDefinedAt(series: GridSeries, lat: number, lon: number): boolean {
+  const cell = locateGridCell(series.grid, lat, lon, scratchCell);
+  if (!cell) return false;
+  const m = series.cellMask[cell.j0 * series.grid.ni + cell.i0];
+  if (m & 2) return series.slots.length > 0;
+  if (!(m & 1)) return false;
+  for (const slot of series.slots) if (sampleSlot(slot, lat, lon) !== null) return true;
+  return false;
 }
 
 /** Out-flag of a coverage probe: set when the answer depended on the time beyond the series' range check. */
