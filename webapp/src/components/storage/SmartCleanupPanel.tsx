@@ -33,6 +33,9 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
     setSelected(next);
   };
 
+  const allSelected = candidates.length > 0 && candidates.every((c) => selected.has(c.id));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(candidates.map((c) => c.id)));
+
   const freeableBytes = candidates.filter((c) => selected.has(c.id)).reduce((sum, c) => sum + c.sizeBytes, 0);
 
   const confirmDelete = async () => {
@@ -57,6 +60,19 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
           <p className="text-sm text-muted">
             Datasets farther than {maxDistanceNm} nm from the vessel — safe to remove for now:
           </p>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-muted">
+              {selected.size} of {candidates.length} selected
+            </span>
+            <button
+              type="button"
+              onClick={toggleAll}
+              disabled={deleting}
+              className="min-h-11 rounded-full px-3 text-sm font-medium text-accent disabled:opacity-50"
+            >
+              {allSelected ? 'Select none' : 'Select all'}
+            </button>
+          </div>
           <ul className="flex flex-col gap-2">
             {candidates.map((c) => (
               <li key={c.id}>
