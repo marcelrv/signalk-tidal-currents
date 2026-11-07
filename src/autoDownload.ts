@@ -113,11 +113,16 @@ export function loadAutoDownloadSettings(dataDir: string, manifestPath: string):
   const manifest = readManifest(manifestPath);
   const settings: AutoDownloadSettings = { intervalHours: 0, lastSweep: null };
   if (manifest.installs.some((i) => i.autoUpdate === true)) {
+    try {
+      writeManifestAtomic(manifestPath, {
+        ...manifest,
+        installs: manifest.installs.map((i) => (i.autoUpdate === true ? i : { ...i, autoUpdate: false })),
+      });
+    } catch {
+      // Unwritable data dir: skip the migration (Off, nothing saved) so it re-runs next start.
+      return settings;
+    }
     settings.intervalHours = MIGRATED_INTERVAL;
-    writeManifestAtomic(manifestPath, {
-      ...manifest,
-      installs: manifest.installs.map((i) => (i.autoUpdate === true ? i : { ...i, autoUpdate: false })),
-    });
   }
   try {
     saveAutoDownloadSettingsAtomic(dataDir, settings);
@@ -127,11 +132,16 @@ export function loadAutoDownloadSettings(dataDir: string, manifestPath: string):
   return settings;
 }
 
-/** Epoch ms when the next sweep is due: null while Off, 0 when it has never run (due now). */
-export function nextDueAt(settings: AutoDownloadSettings): number | null {
+/**
+ * Epoch ms when the next sweep is due: null while Off, 0 when it has never run
+ * or the last sweep lies in the future (clock corrected backwards) — due now.
+ */
+export function nextDueAt(settings: AutoDownloadSettings, nowMs: number = Date.now()): number | null {
   if (settings.intervalHours === 0) return null;
   if (!settings.lastSweep) return 0;
-  return Date.parse(settings.lastSweep.at) + settings.intervalHours * 3600_000;
+  const at = Date.parse(settings.lastSweep.at);
+  if (at > nowMs) return 0;
+  return at + settings.intervalHours * 3600_000;
 }
 
 export interface AutoDownloadController {
@@ -155,6 +165,7 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
   const log = opts.log ?? (() => {});
   let settings = loadAutoDownloadSettings(deps.dataDir, deps.manifestPath);
   let running = false;
+  let stopped = false;
 
   const persist = () => {
     try {
@@ -165,10 +176,14 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
   };
 
   const tick = async () => {
-    const due = nextDueAt(settings);
-    if (running || due === null || now() < due) return;
+    const due = nextDueAt(settings, now());
+    if (stopped || running || due === null || now() < due) return;
     running = true;
     const intervalMs = settings.intervalHours * 3600_000;
+    // Set when the catalog could not be refreshed (offline): the sweep still
+    // runs on the cached catalog, but is not recorded, so the next tick
+    // retries instead of waiting a whole interval.
+    let refreshFailed = false;
     try {
       // sha256-checked sources only show as stale once the catalog has the
       // new hash; the catalog's own refresh runs daily by default, which
@@ -177,17 +192,25 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
       const fetchedAt = deps.catalog.get().fetchedAt;
       if (!fetchedAt || now() - Date.parse(fetchedAt) > intervalMs) {
         try {
-          await deps.catalog.refresh();
+          const refreshed = await deps.catalog.refresh();
+          if (refreshed.error) {
+            refreshFailed = true;
+            log(`catalog refresh before auto-download failed: ${refreshed.error}`);
+          }
         } catch (e) {
+          refreshFailed = true;
           log(`catalog refresh before auto-download failed: ${e}`);
         }
+        if (stopped) return;
       }
       const result = await runAutoUpdateSweep(deps);
+      if (stopped || refreshFailed) return;
       settings = { ...settings, lastSweep: { at: new Date(now()).toISOString(), ...result } };
       if (result.started.length > 0 || result.skippedDiskFull.length > 0) {
         log(`auto-download: started ${result.started.length}, skipped (disk almost full) ${result.skippedDiskFull.length}`);
       }
     } catch (e) {
+      if (stopped) return;
       settings = {
         ...settings,
         lastSweep: { at: new Date(now()).toISOString(), started: [], skippedInFlight: [], skippedDiskFull: [], error: String(e) },
@@ -195,12 +218,13 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
       log(`auto-download sweep failed: ${e}`);
     } finally {
       running = false;
-      persist();
+      // A stopped scheduler must not overwrite the file its successor owns.
+      if (!stopped) persist();
     }
   };
 
   const status = (): AutoDownloadStatus => {
-    const due = nextDueAt(settings);
+    const due = nextDueAt(settings, now());
     return {
       ...settings,
       choices: AUTO_DOWNLOAD_CHOICES,
@@ -226,6 +250,7 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
     },
     tick,
     stop() {
+      stopped = true;
       if (bootTimer) clearTimeout(bootTimer);
       if (tickTimer) clearInterval(tickTimer);
       bootTimer = tickTimer = null;
