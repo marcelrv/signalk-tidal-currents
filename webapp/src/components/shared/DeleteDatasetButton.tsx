@@ -66,7 +66,7 @@ export function DeleteDatasetButton({ id, name, sizeBytes }: { id: string; name:
             <button
               type="button"
               disabled={deleting}
-              onClick={remove}
+              onClick={() => void remove()}
               className="min-h-11 rounded-full bg-danger px-4 text-sm font-medium text-bg disabled:opacity-50"
             >
               {deleting ? 'Deleting…' : 'Delete'}

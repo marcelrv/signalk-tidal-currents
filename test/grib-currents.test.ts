@@ -137,11 +137,10 @@ test('invalidate() forces an immediate reload, bypassing checkIntervalMs', () =>
 
 interface Captured {
   code: number;
-  body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  body: any;
 }
 
 function makeApi(state: ApiState) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const routes = new Map<string, (req: any, res: any) => void>();
   registerRoutes({ get: (p, h) => routes.set(p, h) }, state);
   return (routePath: string, query: Record<string, unknown> = {}, params: Record<string, string> = {}): Captured => {

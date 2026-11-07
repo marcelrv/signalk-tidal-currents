@@ -40,7 +40,7 @@ export function DownloadButton({
   const fellBackToPolling = useDownloadProgress(active ? jobId : null);
   usePolling(
     () => {
-      if (jobId) pollDownload(jobId);
+      if (jobId) pollDownload(jobId).catch(() => undefined); // next tick retries
     },
     active && fellBackToPolling ? 800 : null,
   );
@@ -62,7 +62,7 @@ export function DownloadButton({
       setConfirmingOverfull(true);
       return;
     }
-    begin();
+    void begin(); // reports its own errors via setError
   };
 
   if (active) {
@@ -144,7 +144,7 @@ export function DownloadButton({
               type="button"
               onClick={() => {
                 setConfirmingOverfull(false);
-                begin();
+                void begin();
               }}
               disabled={readOnly}
               title={readOnly ? READ_ONLY_HINT : undefined}

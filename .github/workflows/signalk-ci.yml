@@ -35,6 +35,22 @@ on:
         type: string
 
 jobs:
+  # ── Lint (not covered by the reusable plugin workflow) ────
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            webapp/package-lock.json
+      - run: npm ci
+      - run: npm --prefix webapp ci
+      - run: npm run lint
+
   # ── Automatic runs (push / pull request) ──────────────────
   test-plugin-auto:
     if: ${{ github.event_name != 'workflow_dispatch' }}

@@ -28,9 +28,8 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
   const [cleanupOpen, setCleanupOpen] = useState(false);
 
   useEffect(() => {
-    fetchPriority();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void fetchPriority(); // never rejects (catches internally)
+  }, [fetchPriority]); // zustand actions are stable, so this still runs once
 
   const orphans = useMemo(() => datasets.filter((d) => d.id.startsWith('orphan:')), [datasets]);
 
@@ -63,7 +62,7 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
             type="button"
             disabled={catalogLoading || readOnly}
             title={readOnly ? READ_ONLY_HINT : undefined}
-            onClick={() => refreshCatalog()}
+            onClick={() => { refreshCatalog().catch(() => undefined); }}
             className="flex min-h-11 shrink-0 items-center gap-2 rounded-full bg-surface-2 px-4 text-sm font-medium text-accent disabled:opacity-50"
           >
             <Icon name="refresh" className={`h-4 w-4 ${catalogLoading ? 'motion-safe:animate-spin' : ''}`} />

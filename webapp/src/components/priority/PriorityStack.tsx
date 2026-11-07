@@ -50,7 +50,10 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
     return <p className="py-2 text-sm text-muted">Nothing downloaded yet — priorities appear once datasets are installed.</p>;
   }
 
-  const apply = (ordered: DatasetEntry[]) => setDatasetPriority(ordered.map((d) => d.id));
+  // On failure the store keeps the server's order, so the stack just doesn't move.
+  const apply = (ordered: DatasetEntry[]) => {
+    setDatasetPriority(ordered.map((d) => d.id)).catch(() => undefined);
+  };
 
   const move = (index: number, dir: -1 | 1) => {
     const j = index + dir;

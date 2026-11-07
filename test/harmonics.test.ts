@@ -21,7 +21,6 @@ const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtur
 const data = loadHarmonicsDir(FIXTURES);
 
 const M2_SPEED = 28.9841042; // deg/hr
-const DEG2RAD = Math.PI / 180;
 
 test('parses constituents and year tables', () => {
   assert.equal(data.constituents.names.length, 2);
