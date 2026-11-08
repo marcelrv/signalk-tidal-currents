@@ -16,6 +16,7 @@ import {
   gribSummary,
   loadGribDir,
   GRIB_TIME_SLACK_MS,
+  GRIB_SINGLE_SLOT_SLACK_MS,
 } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { lonInSpan } from '../dist/predict.js';
@@ -87,6 +88,22 @@ test('gribVectorAt: spatial sample and linear time interpolation', () => {
   // …but not beyond it.
   assert.equal(vec(data, 53.2, 5.2, T0 + 2 * HOUR + GRIB_TIME_SLACK_MS + 1), null);
   assert.equal(vec(data, 53.2, 5.2, T0 - GRIB_TIME_SLACK_MS - 1), null);
+});
+
+test('gribVectorAt: a single-slot series gets the longer single-slot clamp slack', () => {
+  // One valid time (analysis/nowcast file): no range to interpolate in, so it holds for
+  // GRIB_SINGLE_SLOT_SLACK_MS (2 h) — longer than a multi-slot series' edge, shorter than a tidal half-cycle.
+  assert.ok(GRIB_SINGLE_SLOT_SLACK_MS > GRIB_TIME_SLACK_MS && GRIB_SINGLE_SLOT_SLACK_MS < 3 * HOUR);
+  const data = loadGribDir(writeGribDir('single', [gridField(2, 0, 1.0), gridField(3, 0, 0.0)]))!;
+  assert.equal(data.series[0].slots.length, 1);
+  for (const dt of [GRIB_TIME_SLACK_MS + 1, HOUR, GRIB_SINGLE_SLOT_SLACK_MS - 1]) {
+    assert.ok(Math.abs(vec(data, 53.2, 5.2, T0 + dt)!.u! - 1.0) < 1e-6, `+${dt} ms`);
+    assert.ok(vec(data, 53.2, 5.2, T0 - dt), `-${dt} ms`);
+  }
+  assert.equal(vec(data, 53.2, 5.2, T0 + GRIB_SINGLE_SLOT_SLACK_MS + 1), null);
+  assert.equal(vec(data, 53.2, 5.2, T0 - GRIB_SINGLE_SLOT_SLACK_MS - 1), null);
+  // The two-slot series keeps the short edge slack (asserted above): an hour past its last slot is out.
+  assert.equal(vec(loadGribDir(uvDir)!, 53.2, 5.2, T0 + 3 * HOUR), null);
 });
 
 test('gribVectorAt: outside the grid → null', () => {

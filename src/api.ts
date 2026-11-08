@@ -23,7 +23,7 @@
  *   GET /grid?bbox=w,s,e,n[&time=&maxPoints=]      — vector field over a viewport: GRIB lattice + UTCEF stations, per-point source priority
  */
 
-import { GribSource, GridSeries, gribLatticeWindow, gribSummary } from './gribcurrents.js';
+import { GribSource, GridSeries, gribLatticeWindow, gribSeriesDefinedAt, gribSummary } from './gribcurrents.js';
 import { HarmonicsData, IdxStation } from './harmonics.js';
 import { DatasetRankEntry, SourceType } from './priority.js';
 import { CurrentSample, isVectorCapable, nearestCurrentStations, stationsInBbox, timeline } from './predict.js';
@@ -594,6 +594,26 @@ function gridPointOf(r: ResolvedVector, lat: number, lon: number): GridPoint | n
   return { ...base, speedKn: Math.abs(s.speedKn), source: 'station', stationId: r.station!.id };
 }
 
+/**
+ * Is the position sea for `grid` — does any GRIB layer of this request have a
+ * value on that grid there in ANY of its slots (ignoring source priority)?
+ * Checks every layer's series on that grid — a dataset-stack file subset is its
+ * own series and can have a value where the all-files series has none (another
+ * file wins that valid time there). Deliberately time-independent: past the
+ * GRIB time range a sea node keeps the station answer the resolver falls
+ * through to; only land nodes are dropped.
+ */
+function gridIsSea(ctx: ResolveCtx, grid: GridSeries['grid'], lat: number, lon: number): boolean {
+  // Lattice positions are a pure function of the grid node, so posKey is a
+  // bounded memo key for the coastline scan (no rescans across requests).
+  const key = posKey(lat, lon);
+  for (const l of ctx.layers) {
+    if (!l.series) continue;
+    for (const s of l.series) if (s.grid === grid && gribSeriesDefinedAt(s, lat, lon, key)) return true;
+  }
+  return false;
+}
+
 /** One grid geometry's lattice for a request: its index window and its geometry-only base stride. */
 interface LatticePlan {
   grid: GridSeries['grid'];
@@ -740,6 +760,13 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
   for (const c of cands) {
     const r = resolveAt(ctx, c.lat, c.lon, time, (claim) => claim.source !== 'grib' || claim.series.grid === c.grid);
     if (!r) continue;
+    // A station answer at a lattice node is only legitimate at sea: where this
+    // grid has data at some time and the station outranks it (source priority)
+    // or the time is past the GRIB range. On land (never defined on this grid)
+    // the resolver falls through to the nearest station, and drawing that
+    // vector at the node would paint arrows over land; the station is shown at
+    // its own position instead (step 4).
+    if (r.source !== 'grib' && !gridIsSea(ctx, c.grid, c.lat, c.lon)) continue;
     const key = posKey(c.lat, c.lon);
     if (taken.has(key)) continue; // a station answer already shown here by an overlapping lattice
     const pt = gridPointOf(r, c.lat, c.lon);

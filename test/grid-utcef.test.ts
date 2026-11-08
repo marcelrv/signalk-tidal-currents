@@ -19,7 +19,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerRoutes, resolveVector, gridPoints, REST_FALLBACK_MAX_KM, ApiState } from '../dist/api.js';
-import { createGribSource, gribBuildCounts } from '../dist/gribcurrents.js';
+import { createGribSource, gribBuildCounts, gribProbeCounts, gribSeriesDefinedAt, loadGribDir } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { claimAt, createResolveCtx, orderedLayers, ownWinCacheSize, ownWinFor, resolveAt, resolveBuildCounts, OWN_TIME_DEPENDENT, OWN_WIN_CACHE_CAP } from '../dist/resolve.js';
 import { createUtcefSource, utcefStationsInBbox } from '../dist/utcef.js';
@@ -576,7 +576,7 @@ test('station winners: coastline (partial-cell) stations are re-decided per time
       for (const id of got) seen.set(id, [...(seen.get(id) ?? []), h]);
       // claimAt ran for the time-dependent stations and the survivors only (nothing is thinned at 5000).
       assert.equal(ctx.counters.claims, timeDependentInView(ctx, view, t) + got.length, `h=${h}: claims`);
-      assert.equal(timeDependentInView(ctx, view, t), h >= -3 && h <= 9 ? 1 : 0, `h=${h}: only the coastline station is time-dependent, and only while the series is in range`);
+      assert.equal(timeDependentInView(ctx, view, t), h >= 0 && h <= 6 ? 1 : 0, `h=${h}: only the coastline station is time-dependent, and only while the series is in range (slots 0/+6h, ±30 min slack)`);
     }
     return seen;
   };
@@ -585,8 +585,8 @@ test('station winners: coastline (partial-cell) stations are re-decided per time
   const hours = (id: string) => seen.get(id) ?? [];
   assert.deepEqual(hours('B-land'), Array.from({ length: 19 }, (_, i) => i - 6));
   assert.deepEqual(hours('D-outside'), Array.from({ length: 19 }, (_, i) => i - 6));
-  assert.deepEqual(hours('C-sea'), [-6, -5, -4, 10, 11, 12], 'GRIB covers C while the series is in range');
-  assert.deepEqual(hours('A-partial'), [-6, -5, -4, 6, 7, 8, 9, 10, 11, 12], 'A is covered by GRIB only while the +0h slot brackets it');
+  assert.deepEqual(hours('C-sea'), [-6, -5, -4, -3, -2, -1, 7, 8, 9, 10, 11, 12], 'GRIB covers C while the series is in range');
+  assert.deepEqual(hours('A-partial'), [-6, -5, -4, -3, -2, -1, 6, 7, 8, 9, 10, 11, 12], 'A is covered by GRIB only while the +0h slot brackets it');
   // 19 time steps, two range states (in / out of range) → the array was filled twice, then served from the LRU.
   assert.equal(resolveBuildCounts.ownWin - b0.ownWin, 2);
   sweep();
@@ -605,7 +605,7 @@ test('station winners: one build per key — a request at another time in the sa
   const b0 = resolveBuildCounts.ownWin;
   grid(0);
   assert.equal(resolveBuildCounts.ownWin - b0, 1);
-  for (const h of [1, 2.5, 5, 9, 12, 14]) grid(h);
+  for (const h of [1, 2.5, 5, 9, 12, 12.25]) grid(h);
   assert.equal(resolveBuildCounts.ownWin - b0, 1, 'times inside the range (± slack) reuse the array');
   grid(0, '4.9,52.9,5.2,53.2'); // another viewport: same array
   assert.equal(resolveBuildCounts.ownWin - b0, 1);
@@ -656,4 +656,143 @@ test('registerRoutes still exposes /grid, /vector and /timeline on a stub router
   const routes: string[] = [];
   registerRoutes({ get: (p) => routes.push(p) }, { data: null, error: null });
   for (const r of ['/grid', '/vector', '/timeline']) assert.ok(routes.includes(r), r);
+});
+
+test('a land lattice node never borrows a nearby station vector', () => {
+  // Grid columns >= 8 are land (NaN). A UTCEF station sits at sea within reach of the land nodes:
+  // the resolver falls through to it there, but /grid must not draw it on the lattice over land.
+  const n = 20;
+  const d = 0.1;
+  const land = (k: number) => k % n >= 8;
+  const u = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1));
+  const v = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 0.5));
+  const gdir = gribDirOf({ 'a.grb2': uvFields(52, 3, d, n, { u, v }) });
+  // S2 sits on a land cell: it must still show at its own position, whatever the priority.
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 52.5, 3.6], ['S2', 53.5, 4.5]] });
+  const landLon = 3 + 8 * d;
+  const atOwn = (p: P, id: string, lat: number, lon: number) => p.stationId === id && p.latitude === lat && p.longitude === lon;
+  for (const preferGrib of [true, false]) {
+    const state: ApiState = { data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib };
+    const pts = makeApi(state)('/grid', { bbox: '3,52,5,54', time: gridTime, maxPoints: '5000' }).points as P[];
+    assert.ok(pts.length > 0);
+    const onLand = pts.filter((p) => p.longitude >= landLon - 1e-9 && !atOwn(p, 'S2', 53.5, 4.5));
+    assert.deepEqual(onLand, [], `preferGrib=${preferGrib}: arrows over land`);
+    assert.ok(pts.some((p) => atOwn(p, 'S2', 53.5, 4.5)), `preferGrib=${preferGrib}: land station at its own position`);
+    assertParity(state, pts, T0, `preferGrib=${preferGrib}`);
+  }
+});
+
+test('past the GRIB time range, sea lattice nodes keep the station fill; land nodes stay empty', () => {
+  // The land test is time-independent: once the (single-slot) GRIB series is out of range, the
+  // resolver falls through to the station at every node, and /grid still draws it at sea — only
+  // nodes the grid never defines (land) are dropped.
+  const n = 20;
+  const d = 0.1;
+  const land = (k: number) => k % n >= 8;
+  const u = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1));
+  const v = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 0.5));
+  const gdir = gribDirOf({ 'a.grb2': uvFields(52, 3, d, n, { u, v }) });
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 52.5, 3.4]] });
+  const landLon = 3 + 8 * d;
+  const t = T0 + 3 * HOUR; // past the single-slot slack
+  const state: ApiState = { data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib: true };
+  assert.equal(resolveVector(state, 52.5, 3.4, t, REST_FALLBACK_MAX_KM)?.source, 'utcef');
+  const pts = makeApi(state)('/grid', { bbox: '3,52,5,54', time: new Date(t).toISOString(), maxPoints: '5000' }).points as P[];
+  const sea = pts.filter((p) => p.longitude < landLon - 1e-9 && p.stationId === 'S1');
+  assert.ok(sea.length > 10, `sea nodes show the station fill (${sea.length})`);
+  assert.deepEqual(pts.filter((p) => p.longitude >= landLon - 1e-9), [], 'no arrows over land');
+  assertParity(state, pts, t, 'past range');
+});
+
+test('the coastline land test is scanned once per node, not on every /grid request', () => {
+  // Land at columns < 8: the land node in column 7 sits in a partially defined cell (sea corner to
+  // the east), so deciding it means sampling every slot — which must happen only on the first
+  // request. 0.125° is exact in binary, so node 7 lands in cell 7 itself (wx = 0).
+  const n = 20;
+  const d = 0.125;
+  const land = (k: number) => k % n < 8;
+  const u = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1));
+  const v = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 0));
+  const gdir = gribDirOf({
+    'a.grb2': uvFields(52, 3, d, n, { u, v }),
+    'b.grb2': uvFields(52, 3, d, n, { u, v, forecastHours: 1 }),
+    'c.grb2': uvFields(52, 3, d, n, { u, v, forecastHours: 2 }),
+  });
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 53, 4.1]] });
+  const state: ApiState = { data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib: true };
+  const t = new Date(T0 + 4 * HOUR).toISOString(); // past the range: every node is a station answer
+  const req = () => makeApi(state)('/grid', { bbox: '3,52,5.5,54.5', time: t, maxPoints: '5000' }).points as P[];
+  const s0 = gribProbeCounts.definedAtSlotSamples;
+  const first = req();
+  const s1 = gribProbeCounts.definedAtSlotSamples;
+  assert.ok(s1 - s0 >= 3, 'first request scans the coastline land nodes over all three slots');
+  assert.deepEqual(req(), first);
+  assert.equal(gribProbeCounts.definedAtSlotSamples, s1, 'second request: no rescans');
+  assert.deepEqual(first.filter((p) => p.longitude < 3 + 8 * d - 1e-9), [], 'no arrows over land');
+  assert.ok(first.some((p) => p.longitude >= 3 + 8 * d - 1e-9 && p.stationId === 'S1'), 'sea nodes keep the station fill');
+});
+
+test('gribSeriesDefinedAt: a memo hit is reused only for the exact same position', () => {
+  // Coastline cell 7 (land node 7, sea node 8): a colliding memo key must not hand the land
+  // result of node 7 to a sea position in the same cell (e.g. lon 180 vs -180 share a posKey).
+  const n = 20;
+  const d = 0.125;
+  const land = (k: number) => k % n < 8;
+  const u = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1));
+  const series = loadGribDir(gribDirOf({ 'a.grb2': uvFields(52, 3, d, n, { u, v: u }) }))!.series[0];
+  const KEY = 42;
+  assert.equal(gribSeriesDefinedAt(series, 53, 3 + 7 * d, KEY), false, 'land node');
+  assert.equal(gribSeriesDefinedAt(series, 53, 3 + 7.9 * d, KEY), true, 'sea side of the same cell, same key');
+  const s0 = gribProbeCounts.definedAtSlotSamples;
+  assert.equal(gribSeriesDefinedAt(series, 53, 3 + 7.9 * d, KEY), true);
+  assert.equal(gribProbeCounts.definedAtSlotSamples, s0, 'same position: served from the memo');
+});
+
+test('a station outranking a stack GRIB subset keeps its vector where only the subset has data', () => {
+  // Same grid, same valid time: the newer cycle (new.grb2) is land-masked at columns >= 8 and wins
+  // the all-files series there; the older cycle (old.grb2) has data everywhere. Stack: the UTCEF
+  // station above the old-cycle subset → the station outranks GRIB data that does exist at those
+  // nodes, so its vector must be drawn there (only the all-files series has no value).
+  const n = 20;
+  const d = 0.1;
+  const land = (k: number) => k % n >= 8;
+  const gdir = gribDirOf({
+    'old.grb2': uvFields(52, 3, d, n, { refTime: T0 - 6 * HOUR, forecastHours: 6 }),
+    'new.grb2': uvFields(52, 3, d, n, {
+      u: Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1)),
+      v: Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 0)),
+    }),
+  });
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 52.5, 3.9]] });
+  const state: ApiState = {
+    data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib: true,
+    datasetRank: () => [
+      { id: 'st', type: 'utcef', files: ['u.utcef'] },
+      { id: 'old', type: 'grib2', files: ['old.grb2'] },
+    ],
+  };
+  const pts = makeApi(state)('/grid', { bbox: '3,52,5,54', time: gridTime, maxPoints: '5000' }).points as P[];
+  // Masked nodes within the station's reach (the stack clamps it to 50 km; 0.25° keeps well inside).
+  const near = pts.filter((p) => p.longitude >= 3 + 8 * d - 1e-9 && Math.abs(p.latitude - 52.5) <= 0.25 && Math.abs(p.longitude - 3.9) <= 0.25);
+  assert.ok(near.length > 1, 'station vector drawn on subset-covered nodes');
+  assert.deepEqual(near.filter((p) => p.stationId !== 'S1'), [], 'the outranking station answers there');
+  assertParity(state, pts, T0, 'stack subset');
+});
+
+test('past the GRIB time slack the resolver falls through to UTCEF instead of holding a stale field', () => {
+  // GRIB covers T0..T0+2h; a UTCEF station sits inside the grid. One hour past the last slot
+  // the stale GRIB field must no longer answer (tides turn in ~6 h): UTCEF takes over.
+  const gdir = gribDirOf({
+    'a.grb2': uvFields(52, 3, 0.1, 20),
+    'b.grb2': uvFields(52, 3, 0.1, 20, { forecastHours: 2 }),
+  });
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 52.5, 3.5]] });
+  const state: ApiState = { data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib: true };
+  const at = (t: number) => resolveVector(state, 52.5, 3.5, t, REST_FALLBACK_MAX_KM)?.source;
+  assert.equal(at(T0 + HOUR), 'grib');
+  assert.equal(at(T0 + 2 * HOUR + 15 * 60_000), 'grib', 'inside the short clamp slack');
+  assert.equal(at(T0 + 2 * HOUR + 35 * 60_000), 'utcef', 'just past the 30 min slack');
+  assert.equal(at(T0 - 35 * 60_000), 'utcef', 'just before the 30 min slack');
+  assert.equal(at(T0 + 3 * HOUR), 'utcef', 'an hour past the last slot');
+  assert.equal(at(T0 - HOUR), 'utcef', 'an hour before the first slot');
 });

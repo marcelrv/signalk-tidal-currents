@@ -59,8 +59,11 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   grid**: shallowest depth, then newest `refTime`, then later file name; series
   are ordered finest-resolution first, then by file name. `gribVectorAt` =
   the first series with a value: bilinear in space (NaN corners dropped +
-  weights renormalized for coastlines) and linear in time (±3 h clamp slack at
-  the range edges). Stack layers use `gribSubsetSeries(data, files)` (uncached
+  weights renormalized for coastlines) and linear in time (±30 min clamp slack
+  at the range edges, `GRIB_TIME_SLACK_MS` — keep it short: a held field goes
+  stale against a ~6 h tidal reversal and, GRIB ranking first, hides the
+  UTCEF/station answer; past the slack the resolver falls through; a series
+  with ONE valid time gets `GRIB_SINGLE_SLOT_SLACK_MS` = 2 h instead). Stack layers use `gribSubsetSeries(data, files)` (uncached
   here; `resolve.ts` keeps the result per layer): per geometry, a file subset
   that equals the canonical series' whole file set **reuses the canonical
   `GridSeries` object** (no second dedup pass or cell mask); only a strict
@@ -199,7 +202,17 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
      `/grid` while `/vector` keeps its sign.
   2. *Series model.* A lattice belongs to a grid geometry; a GRIB answer from
      another grid is dropped (that grid's own lattice shows it), a station
-     answer is emitted as that station's vector (`stationId`).
+     answer is emitted as that station's vector (`stationId`) — but only at
+     sea: where that grid has a value at the node in ANY slot
+     (`gribSeriesDefinedAt`, cell mask + coastline sampling; any GRIB layer of
+     the request on that grid counts, so a stack file-subset series does too).
+     The coastline scan's result is memoized per series (WeakMap) keyed by the
+     node's `posKey` (a hit needs the exact same lat/lon) — bounded by the
+     grid's nodes, so no cap.
+     The test is **time-independent**: past the GRIB range sea nodes keep the
+     station fill. Land nodes are dropped: the resolver falls through to the
+     nearest station there, and painting that vector on the lattice puts
+     arrows over land (the station shows at its own position).
   3. *Geometry-only stride.* Per grid, a power-of-two base stride from the
      bbox size and the grid's cell size alone (`baseStride`), nodes = the
      grid's own (i, j) multiples of the stride from index 0 (lattices nest).
