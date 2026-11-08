@@ -33,12 +33,18 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
     setSelected(next);
   };
 
-  const freeableBytes = candidates.filter((c) => selected.has(c.id)).reduce((sum, c) => sum + c.sizeBytes, 0);
+  const allSelected = candidates.length > 0 && candidates.every((c) => selected.has(c.id));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(candidates.map((c) => c.id)));
+
+  // Only what is currently displayed counts: a candidate that vanished after a
+  // refresh must neither be deleted nor inflate the count/size.
+  const selectedCandidates = candidates.filter((c) => selected.has(c.id));
+  const freeableBytes = selectedCandidates.reduce((sum, c) => sum + c.sizeBytes, 0);
 
   const confirmDelete = async () => {
     setDeleting(true);
     try {
-      for (const id of selected) await deleteDataset(id);
+      for (const id of new Set(selectedCandidates.map((c) => c.id))) await deleteDataset(id);
       await Promise.all([fetchStorage(), fetchCleanupCandidates(maxDistanceNm)]);
       setSelected(new Set());
     } finally {
@@ -57,11 +63,24 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
           <p className="text-sm text-muted">
             Datasets farther than {maxDistanceNm} nm from the vessel — safe to remove for now:
           </p>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-muted">
+              {selectedCandidates.length} of {candidates.length} selected
+            </span>
+            <button
+              type="button"
+              onClick={toggleAll}
+              disabled={deleting}
+              className="min-h-11 rounded-full px-3 text-sm font-medium text-accent disabled:opacity-50"
+            >
+              {allSelected ? 'Select none' : 'Select all'}
+            </button>
+          </div>
           <ul className="flex flex-col gap-2">
             {candidates.map((c) => (
               <li key={c.id}>
                 <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-border p-3">
-                  <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} className="h-5 w-5" />
+                  <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} disabled={deleting} className="h-5 w-5" />
                   <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
                   <span className="text-sm text-muted">{c.distanceNm !== null ? `${Math.round(c.distanceNm)} nm` : 'unknown location'}</span>
                   <span className="text-sm text-muted">{formatBytes(c.sizeBytes)}</span>
@@ -71,7 +90,7 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
           </ul>
           <button
             type="button"
-            disabled={selected.size === 0 || deleting}
+            disabled={selectedCandidates.length === 0 || deleting}
             onClick={confirmDelete}
             className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
           >
