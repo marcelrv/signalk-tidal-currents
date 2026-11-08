@@ -185,7 +185,9 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
   let running = false;
   let stopped = false;
 
-  const isStopped = () => stopped;
+  // A pending sweep is abandoned when the scheduler stops or the user turns
+  // auto-download Off meanwhile (a later re-enable schedules a fresh one).
+  const cancelled = () => stopped || settings.intervalHours === 0;
   const persist = () => {
     try {
       saveAutoDownloadSettingsAtomic(deps.dataDir, settings);
@@ -220,10 +222,10 @@ export function createAutoDownloadScheduler(deps: AutoUpdateDeps, opts: AutoDown
           catalogError = String(e);
           log(`catalog refresh before auto-download failed: ${e}`);
         }
-        if (stopped) return;
+        if (cancelled()) return;
       }
-      const result = await runAutoUpdateSweep(deps, isStopped);
-      if (stopped) return;
+      const result = await runAutoUpdateSweep(deps, cancelled);
+      if (cancelled()) return;
       settings = {
         ...settings,
         lastSweep: { at: new Date(now()).toISOString(), ...result, ...(catalogError !== undefined ? { catalogError } : {}) },

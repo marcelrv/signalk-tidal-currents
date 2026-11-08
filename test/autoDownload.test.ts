@@ -272,3 +272,25 @@ test('migration stays Off when its settings file cannot be saved', () => {
   fs.writeFileSync(notADir, 'x');
   assert.equal(loadAutoDownloadSettings(notADir, manifestPath).intervalHours, 0);
 });
+
+test('scheduler: turning auto-download Off during a pending sweep abandons it', async () => {
+  const { root, manifestPath } = tmpDirs();
+  fs.writeFileSync(path.join(root, 'f.dat'), 'x');
+  writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [install('a')] });
+  saveAutoDownloadSettingsAtomic(root, { intervalHours: 1, lastSweep: null });
+  const t = Date.parse('2026-06-01T00:00:00Z');
+  const catalog = fakeCatalog([source('a', 'new')], null, () => t);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const realRefresh = catalog.refresh;
+  catalog.refresh = async () => { await gate; return realRefresh(); };
+  const downloads = fakeDownloads();
+  const sched = createAutoDownloadScheduler({ catalog, downloads, manifestPath, dataDir: root }, { now: () => t, timers: false });
+  const pending = sched.tick();
+  sched.setInterval(0);
+  release();
+  await pending;
+  assert.deepEqual(downloads.started, [], 'abandoned sweep starts nothing');
+  assert.equal(sched.status().lastSweep, null, 'and is not recorded');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, AUTO_DOWNLOAD_FILE), 'utf8')).intervalHours, 0);
+});

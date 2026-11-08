@@ -24,9 +24,9 @@ function feedback(s: AutoDownloadSettings): string {
     parts.push(`Last run ${timeAgo(last.at)}`);
     if (last.started.length > 0) parts.push(`started ${last.started.length}`);
     if (last.skippedInFlight.length > 0) parts.push(`${last.skippedInFlight.length} already downloading`);
-    if (last.started.length === 0 && last.skippedInFlight.length === 0 && last.skippedDiskFull.length === 0) parts.push('all up to date');
+    if (last.started.length === 0 && last.skippedInFlight.length === 0 && last.skippedDiskFull.length === 0) parts.push('nothing to download');
     if (last.skippedDiskFull.length > 0) parts.push(`${last.skippedDiskFull.length} skipped: disk almost full`);
-    if (last.catalogError) parts.push('catalog unreachable, retrying');
+    if (last.catalogError) parts.push('catalog refresh failed, retrying');
   }
   if (s.nextCheckAt) parts.push(`next ${timeUntil(s.nextCheckAt)}`);
   return parts.join(' · ');
