@@ -25,7 +25,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { registerRoutes, resolveVector, resolvedStationName, ApiState, RouterLike } from './api.js';
-import { runAutoUpdateSweep } from './autoUpdate.js';
+import { AUTO_DOWNLOAD_CHOICES, AutoDownloadController, createAutoDownloadScheduler } from './autoDownload.js';
 import { createCatalogClient } from './catalog.js';
 import { createDownloadEngine } from './downloads.js';
 import { GRIB_EXT_RE, createGribSource, gribSlotCount } from './gribcurrents.js';
@@ -58,7 +58,6 @@ interface Config {
   catalogUrl: string;
   catalogRefreshHours: number;
   sourcePriority: SourceType[];
-  autoUpdateCheckMinutes: number;
 }
 
 const DEFAULTS: Config = {
@@ -70,7 +69,6 @@ const DEFAULTS: Config = {
   catalogUrl: DEFAULT_CATALOG_URL,
   catalogRefreshHours: 24,
   sourcePriority: DEFAULT_PRIORITY,
-  autoUpdateCheckMinutes: 30,
 };
 
 // Deliberately loose server typing: the plugin only touches a small,
@@ -98,10 +96,18 @@ function readVesselPosition(app: any): { lat: number; lon: number } | null {
   }
 }
 
+/** Stand-in for `ManagerState.autoDownload` before start() / after stop(), so a request then can't kick off a sweep against a stopped engine. */
+const AUTO_DOWNLOAD_NOT_STARTED: AutoDownloadController = {
+  status: () => ({ intervalHours: 0, lastSweep: null, choices: AUTO_DOWNLOAD_CHOICES, nextCheckAt: null, running: false }),
+  setInterval: () => { throw new Error('plugin not started'); },
+  tick: async () => {},
+  stop: () => {},
+};
+
 function pluginConstructor(app: any) {
   let timer: ReturnType<typeof setInterval> | null = null;
   let catalogRefreshTimer: ReturnType<typeof setInterval> | null = null;
-  let autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
+  let autoDownload: AutoDownloadController | null = null;
   const state: ApiState = { data: null, error: 'not started' };
   let mountedV2 = false;
   let deltaPublished = false;
@@ -129,6 +135,7 @@ function pluginConstructor(app: any) {
     setDatasetStack: () => { /* not started yet */ },
     apiState: state,
     getVesselPosition: () => readVesselPosition(app),
+    autoDownload: AUTO_DOWNLOAD_NOT_STARTED,
   };
 
   const plugin: any = {
@@ -216,15 +223,6 @@ function pluginConstructor(app: any) {
             description: 'Re-fetch the catalog at most this often; a failed refresh keeps serving the last cached copy.',
             default: DEFAULTS.catalogRefreshHours,
             minimum: 1,
-          },
-          autoUpdateCheckMinutes: {
-            type: 'number',
-            title: 'Auto-Update Check Interval (minutes)',
-            description:
-              'How often to check datasets with "keep fresh when online" enabled (per-dataset toggle in the Tidal ' +
-              'Currents Manager webapp) and re-download any that have gone stale.',
-            default: DEFAULTS.autoUpdateCheckMinutes,
-            minimum: 5,
           },
         },
       };
@@ -385,19 +383,13 @@ function pluginConstructor(app: any) {
         });
       }, staleAfterMs);
 
-      // "Keep fresh when online" (PRD §5.5 Phase 2): periodically re-download
-      // any manifest install with autoUpdate enabled that's gone stale.
-      // Fires once shortly after start() too (not just on the first
-      // interval tick), so datasets already stale at boot aren't left
-      // waiting a full check interval before the first sweep.
-      const autoUpdateIntervalMs = Math.max(5, config.autoUpdateCheckMinutes) * 60_000;
-      const sweep = () => {
-        runAutoUpdateSweep(mgr).catch((e) => {
-          console.warn(`[${PLUGIN_ID}] auto-update sweep failed: ${e}`);
-        });
-      };
-      setTimeout(sweep, 10_000);
-      autoUpdateTimer = setInterval(sweep, autoUpdateIntervalMs);
+      // Auto-download (issue #1): a scheduled "Update All". Its interval is
+      // set from the webapp (auto-download.json), not this plugin config; the
+      // scheduler checks every few minutes whether a sweep is due, plus once
+      // shortly after start().
+      autoDownload?.stop();
+      autoDownload = createAutoDownloadScheduler(mgr, { log: (msg) => console.log(`[${PLUGIN_ID}] ${msg}`) });
+      mgr.autoDownload = autoDownload;
 
       const updateStatus = () => {
         const parts: string[] = [];
@@ -519,9 +511,10 @@ function pluginConstructor(app: any) {
         clearInterval(catalogRefreshTimer);
         catalogRefreshTimer = null;
       }
-      if (autoUpdateTimer) {
-        clearInterval(autoUpdateTimer);
-        autoUpdateTimer = null;
+      if (autoDownload) {
+        autoDownload.stop();
+        autoDownload = null;
+        mgr.autoDownload = AUTO_DOWNLOAD_NOT_STARTED;
       }
       if (deltaPublished) {
         app.handleMessage(PLUGIN_ID, {

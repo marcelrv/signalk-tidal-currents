@@ -35,10 +35,10 @@ test('registerWithRouter: only GET routes go through access("readonly"); every m
 
   assert.ok(levels.length > 0 && levels.every((l) => l === 'readonly'), `levels: ${levels}`);
   assert.deepEqual(pub.filter((r) => !r.startsWith('GET ')), [], 'no mutation may be readonly-accessible');
-  for (const r of ['GET /catalog', 'GET /datasets', 'GET /storage', 'GET /priority', 'GET /downloads', 'GET /downloads/events', 'GET /vector', 'GET /stations', 'GET /grid']) {
+  for (const r of ['GET /catalog', 'GET /datasets', 'GET /storage', 'GET /priority', 'GET /downloads', 'GET /downloads/events', 'GET /settings/auto-download', 'GET /vector', 'GET /stations', 'GET /grid']) {
     assert.ok(pub.includes(r), `${r} should be readonly-accessible`);
   }
-  for (const r of ['POST /catalog/refresh', 'POST /downloads', 'DELETE /datasets/:id', 'PUT /datasets/:id/auto-update', 'PUT /priority', 'GET /cleanup-candidates']) {
+  for (const r of ['POST /catalog/refresh', 'POST /downloads', 'DELETE /datasets/:id', 'PUT /datasets/:id/auto-update', 'PUT /priority', 'PUT /settings/auto-download', 'GET /cleanup-candidates']) {
     assert.ok(admin.includes(r), `${r} should stay admin-only`);
   }
 });

@@ -96,6 +96,12 @@ function baseMgr(overrides: Partial<ManagerState> = {}): { mgr: ManagerState; da
     setDatasetStack: (ids) => { datasetStack = ids; },
     apiState: { data: null, error: null },
     getVesselPosition: () => null,
+    autoDownload: {
+      status: () => ({ intervalHours: 0, lastSweep: null, choices: [0, 1, 6, 12, 24], nextCheckAt: null, running: false }),
+      setInterval: () => { throw new Error('not used'); },
+      tick: async () => {},
+      stop: () => {},
+    },
     ...overrides,
   };
   return { mgr, dataDir: root, manifestPath };
@@ -121,8 +127,8 @@ test('public read routes go on the `reads` router; mutations and admin-only read
   const admin: string[] = [];
   const pub: string[] = [];
   registerManagerRoutes(recordingRouter(admin), mgr, recordingRouter(pub));
-  assert.deepEqual(pub.sort(), ['GET /catalog', 'GET /datasets', 'GET /downloads', 'GET /downloads/:id', 'GET /downloads/:id/events', 'GET /downloads/events', 'GET /priority', 'GET /storage']);
-  assert.deepEqual(admin.sort(), ['DELETE /datasets/:id', 'GET /cleanup-candidates', 'POST /catalog/refresh', 'POST /downloads', 'PUT /datasets/:id/auto-update', 'PUT /priority']);
+  assert.deepEqual(pub.sort(), ['GET /catalog', 'GET /datasets', 'GET /downloads', 'GET /downloads/:id', 'GET /downloads/:id/events', 'GET /downloads/events', 'GET /priority', 'GET /settings/auto-download', 'GET /storage']);
+  assert.deepEqual(admin.sort(), ['DELETE /datasets/:id', 'GET /cleanup-candidates', 'POST /catalog/refresh', 'POST /downloads', 'PUT /datasets/:id/auto-update', 'PUT /priority', 'PUT /settings/auto-download']);
 });
 
 test('GET /storage: non-admins share one cached scan; admins scan fresh and refresh it', async () => {
@@ -305,6 +311,64 @@ test('DELETE /datasets/:id returns 404 for an unknown id', async () => {
   assert.equal(res.statusCode, 404);
 });
 
+test('GET /datasets reports a never-toggled install as included in auto-download', async () => {
+  const { mgr, manifestPath } = baseMgr();
+  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
+    id: 'plain', catalogSourceId: 'plain', type: 'grib2', files: [], size_bytes: 1, downloaded_at: new Date().toISOString(),
+  }));
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const entry = ((await call('GET', '/datasets', {})).body as any[]).find((d) => d.id === 'plain');
+  assert.equal(entry.autoUpdate, true);
+});
+
+test('PUT /datasets/:id/auto-update with enabled:false opts the install out', async () => {
+  const { mgr, manifestPath } = baseMgr();
+  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
+    id: 'grib-install', catalogSourceId: 'grib-install', type: 'grib2', files: [], size_bytes: 1, downloaded_at: new Date().toISOString(),
+  }));
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  assert.equal((await call('PUT', '/datasets/:id/auto-update', { params: { id: 'grib-install' }, body: { enabled: false } })).statusCode, 200);
+  const entry = ((await call('GET', '/datasets', {})).body as any[]).find((d) => d.id === 'grib-install');
+  assert.equal(entry.autoUpdate, false);
+});
+
+test('GET /settings/auto-download returns the controller status', async () => {
+  const { mgr } = baseMgr();
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const res = await call('GET', '/settings/auto-download', { skPrincipal: { permissions: 'readonly' } });
+  assert.equal(res.statusCode, 200);
+  assert.equal((res.body as any).intervalHours, 0);
+  assert.deepEqual((res.body as any).choices, [0, 1, 6, 12, 24]);
+});
+
+test('PUT /settings/auto-download validates the interval and forwards a valid one', async () => {
+  const set: number[] = [];
+  const { mgr } = baseMgr();
+  mgr.autoDownload = {
+    ...mgr.autoDownload,
+    setInterval: (h) => { set.push(h); return { intervalHours: h, lastSweep: null, choices: [0, 1, 6, 12, 24], nextCheckAt: null, running: true }; },
+  };
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  for (const bad of [3, '6', null, undefined]) {
+    assert.equal((await call('PUT', '/settings/auto-download', { body: { intervalHours: bad } })).statusCode, 400, `rejects ${bad}`);
+  }
+  const ok = await call('PUT', '/settings/auto-download', { body: { intervalHours: 6 } });
+  assert.equal(ok.statusCode, 200);
+  assert.equal((ok.body as any).intervalHours, 6);
+  assert.deepEqual(set, [6]);
+});
+
+test('PUT /settings/auto-download returns 503 before the plugin has started', async () => {
+  const { mgr } = baseMgr();
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  assert.equal((await call('PUT', '/settings/auto-download', { body: { intervalHours: 1 } })).statusCode, 503);
+});
+
 test('PUT /datasets/:id/auto-update enables the flag, persists across a re-read', async () => {
   const { mgr, manifestPath } = baseMgr();
   writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
@@ -484,9 +548,9 @@ test('non-admin shared reads (/datasets, /storage, /priority) are invalidated by
   const pri = async () => ((await call('GET', '/priority', anon)).body as any);
   assert.deepEqual((await pri()).datasets, ['inst-1']);
   const datasetsNow = (await call('GET', '/datasets', anon)).body as any[];
-  assert.equal(datasetsNow.find((d) => d.id === 'inst-1').autoUpdate, false);
-  assert.equal((await call('PUT', '/datasets/:id/auto-update', { params: { id: 'inst-1' }, body: { enabled: true } })).statusCode, 200);
-  assert.equal(((await call('GET', '/datasets', anon)).body as any[]).find((d) => d.id === 'inst-1').autoUpdate, true, 'auto-update invalidates');
+  assert.equal(datasetsNow.find((d) => d.id === 'inst-1').autoUpdate, true);
+  assert.equal((await call('PUT', '/datasets/:id/auto-update', { params: { id: 'inst-1' }, body: { enabled: false } })).statusCode, 200);
+  assert.equal(((await call('GET', '/datasets', anon)).body as any[]).find((d) => d.id === 'inst-1').autoUpdate, false, 'auto-update invalidates');
 
   assert.equal((await call('PUT', '/priority', { body: { order: ['harmonic', 'utcef', 'grib2'] } })).statusCode, 200);
   assert.deepEqual((await pri()).order, ['harmonic', 'utcef', 'grib2'], 'PUT /priority invalidates');

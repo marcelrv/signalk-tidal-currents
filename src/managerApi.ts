@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { ApiState } from './api.js';
+import { AutoDownloadController, isValidInterval } from './autoDownload.js';
 import { CatalogClient } from './catalog.js';
 import { CatalogSourceType } from './catalogTypes.js';
 import { computeInstallStatus } from './datasetStatus.js';
@@ -88,6 +89,8 @@ export interface ManagerState {
   apiState: ApiState;
   /** Server-side vessel position for Smart Cleanup's distance math (PRD §5.4 Phase 2) — null when no position fix is available. */
   getVesselPosition(): { lat: number; lon: number } | null;
+  /** Auto-download schedule (issue #1) — the single interval setting plus the last sweep's outcome. */
+  autoDownload: AutoDownloadController;
 }
 
 /** Defense against path traversal: the resolved path must land inside the managed Data Directory. */
@@ -118,7 +121,7 @@ interface DatasetEntry {
   expiresAt?: string;
   remainingHours?: number;
   maxAgeHours?: number;
-  /** Opt-in "keep fresh when online" (PRD §5.5 Phase 2) — always false for orphans, which aren't manifest-tracked so there's nothing to toggle. */
+  /** Included in auto-download (false = opted out) — always false for orphans, which aren't manifest-tracked so there's nothing to re-download against. */
   autoUpdate: boolean;
   contributor?: string;
   sourceUrl?: string;
@@ -154,7 +157,7 @@ function installedDatasets(mgr: ManagerState): DatasetEntry[] {
       variant: install.variant,
       status,
       ...expiry,
-      autoUpdate: install.autoUpdate ?? false,
+      autoUpdate: install.autoUpdate !== false,
       contributor: source?.contributor,
       sourceUrl: source?.url,
     };
@@ -405,9 +408,10 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     res.status(404).json({ error: `unknown dataset id: ${id}` });
   });
 
-  // Per-dataset "keep fresh when online" opt-in (PRD §5.5 Phase 2). Only
-  // meaningful for manifest-tracked installs — an orphan has no
-  // catalogSourceId for `runAutoUpdateSweep` to re-download against.
+  // Per-dataset auto-download opt-out (`enabled: false`) / re-include
+  // (`enabled: true`). Only meaningful for manifest-tracked installs — an
+  // orphan has no catalogSourceId for `runAutoUpdateSweep` to re-download
+  // against.
   router.put('/datasets/:id/auto-update', (req, res) => {
     const id = req.params.id;
     const body = (req.body ?? {}) as { enabled?: unknown };
@@ -425,6 +429,28 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     writeManifestAtomic(mgr.manifestPath, upsertInstall(manifest, updated));
     invalidatePublic();
     res.json({ ok: true, autoUpdate: body.enabled });
+  });
+
+  // Auto-download (issue #1): ONE setting — the interval, 0 = Off. Readable
+  // by the read-only view (the dataset ids in lastSweep are public through
+  // /datasets anyway); only admins change it.
+  reads.get('/settings/auto-download', (_req, res) => {
+    res.json(mgr.autoDownload.status());
+  });
+
+  router.put('/settings/auto-download', (req, res) => {
+    const body = (req.body ?? {}) as { intervalHours?: unknown };
+    if (!isValidInterval(body.intervalHours)) {
+      res.status(400).json({ error: `intervalHours must be one of ${JSON.stringify(mgr.autoDownload.status().choices)}` });
+      return;
+    }
+    try {
+      const status = mgr.autoDownload.setInterval(body.intervalHours);
+      invalidatePublic();
+      res.json(status);
+    } catch (e) {
+      res.status(503).json({ error: String((e as Error).message ?? e) });
+    }
   });
 
   // Non-admins share one scan (see sharedRead) and never see the absolute

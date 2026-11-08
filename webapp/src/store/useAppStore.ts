@@ -2,6 +2,8 @@ import { create } from 'zustand';
 
 import { api, ApiError, isPermissionError, LoginStatus } from '../api/client';
 import {
+  AutoDownloadInterval,
+  AutoDownloadSettings,
   CatalogSourceType,
   CatalogState,
   CleanupCandidate,
@@ -62,6 +64,11 @@ export interface AppState {
 
   storage: StorageStats | null;
   fetchStorage: () => Promise<void>;
+
+  /** Scheduled "Update All" (null until loaded). Per-dataset opt-outs only matter while it is on. */
+  autoDownload: AutoDownloadSettings | null;
+  fetchAutoDownload: () => Promise<void>;
+  setAutoDownload: (intervalHours: AutoDownloadInterval) => Promise<void>;
 
   cleanupCandidates: CleanupCandidate[];
   cleanupVesselPosition: { lat: number; lon: number } | null;
@@ -251,6 +258,16 @@ export const useAppStore = create<AppState>((set, get) => {
   fetchStorage: async () => {
     const storage = await api.getStorage();
     set({ storage });
+  },
+
+  autoDownload: null,
+  fetchAutoDownload: async () => {
+    const autoDownload = await api.getAutoDownload().catch(() => null);
+    if (autoDownload) set({ autoDownload });
+  },
+  setAutoDownload: async (intervalHours) => {
+    const autoDownload = await write(() => api.setAutoDownload(intervalHours));
+    set({ autoDownload });
   },
 
   cleanupCandidates: [],

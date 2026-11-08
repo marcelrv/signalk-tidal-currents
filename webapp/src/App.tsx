@@ -43,6 +43,7 @@ export function App() {
   const fetchDatasets = useAppStore((s) => s.fetchDatasets);
   const fetchStorage = useAppStore((s) => s.fetchStorage);
   const fetchPriority = useAppStore((s) => s.fetchPriority);
+  const fetchAutoDownload = useAppStore((s) => s.fetchAutoDownload);
   const fetchVesselPosition = useAppStore((s) => s.fetchVesselPosition);
   const view = useAppStore((s) => s.view);
   const openWizard = useAppStore((s) => s.openWizard);
@@ -56,8 +57,9 @@ export function App() {
     fetchAccess().finally(() => fetchDatasets().catch(() => undefined));
     fetchStorage().catch(() => undefined);
     fetchPriority();
+    fetchAutoDownload();
     fetchVesselPosition();
-  }, [fetchAccess, fetchCatalog, fetchDatasets, fetchStorage, fetchPriority, fetchVesselPosition]);
+  }, [fetchAccess, fetchCatalog, fetchDatasets, fetchStorage, fetchPriority, fetchAutoDownload, fetchVesselPosition]);
 
   // Read-only can come from an expired session (a 401/403 on a write) —
   // re-check on focus so logging back in elsewhere restores the controls.
