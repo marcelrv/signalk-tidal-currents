@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.0 — 2026-11-08
+
+### Added
+
+- Auto-download: the Download Manager can run "Update All" on a schedule
+  (Off, or every 1/6/12/24 h). The catalog is refreshed first, so updated
+  files are picked up too. Individual installs can opt out.
+- Smart Cleanup has select all / select none.
+
+### Changed
+
+- The chart overlay's land check is faster on large GRIB datasets.
+
+### Fixed
+
+- The chart no longer draws station arrows on land.
+- The last GRIB field is held for 30 min past its time range instead of 3 h,
+  so stale currents no longer linger after a forecast ends.
+- Smart Cleanup deletes only the selection on screen and locks rows while
+  deleting.
+- Failed or offline auto-download sweeps retry after 30 minutes. Turning
+  auto-download Off cancels a pending sweep, and save failures are shown.
+
 ## 0.4.0 — 2026-11-06
 
 ### Added
