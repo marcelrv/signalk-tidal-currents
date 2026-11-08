@@ -410,8 +410,8 @@ export function gribSeriesInRange(series: GridSeries, timeMs: number): boolean {
 /** Test hook: slot samples taken by gribSeriesDefinedAt's coastline scan. */
 export const gribProbeCounts = { definedAtSlotSamples: 0 };
 
-/** Coastline results of gribSeriesDefinedAt per series (freed with the series on reload). */
-const definedAtMemo = new WeakMap<GridSeries, Map<number, boolean>>();
+/** Coastline results of gribSeriesDefinedAt per series (freed with the series on reload), with the exact position they were sampled at. */
+const definedAtMemo = new WeakMap<GridSeries, Map<number, { lat: number; lon: number; defined: boolean }>>();
 
 /**
  * Is the series defined at (lat, lon) in ANY of its slots — i.e. is this sea
@@ -420,8 +420,10 @@ const definedAtMemo = new WeakMap<GridSeries, Map<number, boolean>>();
  * fully-defined and fully-undefined cells with one lookup; only a partially
  * defined (coastline) cell samples its slots until one answers.
  *
- * `memoKey` (optional) names the exact position; the coastline scan's result
- * is then kept per series under that key, so repeated requests don't rescan.
+ * `memoKey` (optional) keeps the coastline scan's result per series under that
+ * key, so repeated requests don't rescan. A hit is reused only for the exact
+ * same (lat, lon), so a key collision (e.g. lon 180 vs -180, which posKey
+ * folds together but locateGridCell may place in different cells) rescans.
  * Only pass it from a BOUNDED key space (e.g. the grid's own lattice nodes):
  * the memo has no cap, its size is bounded by the coastline positions asked.
  */
@@ -431,11 +433,11 @@ export function gribSeriesDefinedAt(series: GridSeries, lat: number, lon: number
   const m = series.cellMask[cell.j0 * series.grid.ni + cell.i0];
   if (m & 2) return series.slots.length > 0;
   if (!(m & 1)) return false;
-  let memo: Map<number, boolean> | undefined;
+  let memo: Map<number, { lat: number; lon: number; defined: boolean }> | undefined;
   if (memoKey !== undefined) {
     memo = definedAtMemo.get(series);
     const hit = memo?.get(memoKey);
-    if (hit !== undefined) return hit;
+    if (hit && hit.lat === lat && hit.lon === lon) return hit.defined;
   }
   let defined = false;
   for (const slot of series.slots) {
@@ -447,7 +449,7 @@ export function gribSeriesDefinedAt(series: GridSeries, lat: number, lon: number
   }
   if (memoKey !== undefined) {
     if (!memo) definedAtMemo.set(series, (memo = new Map()));
-    memo.set(memoKey, defined);
+    memo.set(memoKey, { lat, lon, defined });
   }
   return defined;
 }

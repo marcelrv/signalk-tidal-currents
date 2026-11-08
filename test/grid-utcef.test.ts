@@ -19,7 +19,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerRoutes, resolveVector, gridPoints, REST_FALLBACK_MAX_KM, ApiState } from '../dist/api.js';
-import { createGribSource, gribBuildCounts, gribProbeCounts } from '../dist/gribcurrents.js';
+import { createGribSource, gribBuildCounts, gribProbeCounts, gribSeriesDefinedAt, loadGribDir } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { claimAt, createResolveCtx, orderedLayers, ownWinCacheSize, ownWinFor, resolveAt, resolveBuildCounts, OWN_TIME_DEPENDENT, OWN_WIN_CACHE_CAP } from '../dist/resolve.js';
 import { createUtcefSource, utcefStationsInBbox } from '../dist/utcef.js';
@@ -730,6 +730,22 @@ test('the coastline land test is scanned once per node, not on every /grid reque
   assert.equal(gribProbeCounts.definedAtSlotSamples, s1, 'second request: no rescans');
   assert.deepEqual(first.filter((p) => p.longitude < 3 + 8 * d - 1e-9), [], 'no arrows over land');
   assert.ok(first.some((p) => p.longitude >= 3 + 8 * d - 1e-9 && p.stationId === 'S1'), 'sea nodes keep the station fill');
+});
+
+test('gribSeriesDefinedAt: a memo hit is reused only for the exact same position', () => {
+  // Coastline cell 7 (land node 7, sea node 8): a colliding memo key must not hand the land
+  // result of node 7 to a sea position in the same cell (e.g. lon 180 vs -180 share a posKey).
+  const n = 20;
+  const d = 0.125;
+  const land = (k: number) => k % n < 8;
+  const u = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1));
+  const series = loadGribDir(gribDirOf({ 'a.grb2': uvFields(52, 3, d, n, { u, v: u }) }))!.series[0];
+  const KEY = 42;
+  assert.equal(gribSeriesDefinedAt(series, 53, 3 + 7 * d, KEY), false, 'land node');
+  assert.equal(gribSeriesDefinedAt(series, 53, 3 + 7.9 * d, KEY), true, 'sea side of the same cell, same key');
+  const s0 = gribProbeCounts.definedAtSlotSamples;
+  assert.equal(gribSeriesDefinedAt(series, 53, 3 + 7.9 * d, KEY), true);
+  assert.equal(gribProbeCounts.definedAtSlotSamples, s0, 'same position: served from the memo');
 });
 
 test('a station outranking a stack GRIB subset keeps its vector where only the subset has data', () => {
