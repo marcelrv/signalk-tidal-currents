@@ -407,21 +407,49 @@ export function gribSeriesInRange(series: GridSeries, timeMs: number): boolean {
   return bracketIndex(series.slots, timeMs) >= 0;
 }
 
+/** Test hook: slot samples taken by gribSeriesDefinedAt's coastline scan. */
+export const gribProbeCounts = { definedAtSlotSamples: 0 };
+
+/** Coastline results of gribSeriesDefinedAt per series (freed with the series on reload). */
+const definedAtMemo = new WeakMap<GridSeries, Map<number, boolean>>();
+
 /**
  * Is the series defined at (lat, lon) in ANY of its slots — i.e. is this sea
  * rather than land for this grid? Time-independent (no range check): the same
  * non-null condition as gribSeriesSample at some slot. The cell mask settles
  * fully-defined and fully-undefined cells with one lookup; only a partially
  * defined (coastline) cell samples its slots until one answers.
+ *
+ * `memoKey` (optional) names the exact position; the coastline scan's result
+ * is then kept per series under that key, so repeated requests don't rescan.
+ * Only pass it from a BOUNDED key space (e.g. the grid's own lattice nodes):
+ * the memo has no cap, its size is bounded by the coastline positions asked.
  */
-export function gribSeriesDefinedAt(series: GridSeries, lat: number, lon: number): boolean {
+export function gribSeriesDefinedAt(series: GridSeries, lat: number, lon: number, memoKey?: number): boolean {
   const cell = locateGridCell(series.grid, lat, lon, scratchCell);
   if (!cell) return false;
   const m = series.cellMask[cell.j0 * series.grid.ni + cell.i0];
   if (m & 2) return series.slots.length > 0;
   if (!(m & 1)) return false;
-  for (const slot of series.slots) if (sampleSlot(slot, lat, lon) !== null) return true;
-  return false;
+  let memo: Map<number, boolean> | undefined;
+  if (memoKey !== undefined) {
+    memo = definedAtMemo.get(series);
+    const hit = memo?.get(memoKey);
+    if (hit !== undefined) return hit;
+  }
+  let defined = false;
+  for (const slot of series.slots) {
+    gribProbeCounts.definedAtSlotSamples++;
+    if (sampleSlot(slot, lat, lon) !== null) {
+      defined = true;
+      break;
+    }
+  }
+  if (memoKey !== undefined) {
+    if (!memo) definedAtMemo.set(series, (memo = new Map()));
+    memo.set(memoKey, defined);
+  }
+  return defined;
 }
 
 /** Out-flag of a coverage probe: set when the answer depended on the time beyond the series' range check. */

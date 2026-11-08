@@ -189,6 +189,8 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
      sea: where that grid has a value at the node in ANY slot
      (`gribSeriesDefinedAt`, cell mask + coastline sampling; any GRIB layer of
      the request on that grid counts, so a stack file-subset series does too).
+     The coastline scan's result is memoized per series (WeakMap) keyed by the
+     node's `posKey` — bounded by the grid's nodes, so no cap.
      The test is **time-independent**: past the GRIB range sea nodes keep the
      station fill. Land nodes are dropped: the resolver falls through to the
      nearest station there, and painting that vector on the lattice puts

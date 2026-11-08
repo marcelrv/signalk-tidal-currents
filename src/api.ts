@@ -604,9 +604,12 @@ function gridPointOf(r: ResolvedVector, lat: number, lon: number): GridPoint | n
  * through to; only land nodes are dropped.
  */
 function gridIsSea(ctx: ResolveCtx, grid: GridSeries['grid'], lat: number, lon: number): boolean {
+  // Lattice positions are a pure function of the grid node, so posKey is a
+  // bounded memo key for the coastline scan (no rescans across requests).
+  const key = posKey(lat, lon);
   for (const l of ctx.layers) {
     if (!l.series) continue;
-    for (const s of l.series) if (s.grid === grid && gribSeriesDefinedAt(s, lat, lon)) return true;
+    for (const s of l.series) if (s.grid === grid && gribSeriesDefinedAt(s, lat, lon, key)) return true;
   }
   return false;
 }

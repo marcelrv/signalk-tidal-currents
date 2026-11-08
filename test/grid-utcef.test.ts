@@ -19,7 +19,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerRoutes, resolveVector, gridPoints, REST_FALLBACK_MAX_KM, ApiState } from '../dist/api.js';
-import { createGribSource, gribBuildCounts } from '../dist/gribcurrents.js';
+import { createGribSource, gribBuildCounts, gribProbeCounts } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { claimAt, createResolveCtx, orderedLayers, ownWinCacheSize, ownWinFor, resolveAt, resolveBuildCounts, OWN_TIME_DEPENDENT, OWN_WIN_CACHE_CAP } from '../dist/resolve.js';
 import { createUtcefSource, utcefStationsInBbox } from '../dist/utcef.js';
@@ -702,6 +702,34 @@ test('past the GRIB time range, sea lattice nodes keep the station fill; land no
   assert.ok(sea.length > 10, `sea nodes show the station fill (${sea.length})`);
   assert.deepEqual(pts.filter((p) => p.longitude >= landLon - 1e-9), [], 'no arrows over land');
   assertParity(state, pts, t, 'past range');
+});
+
+test('the coastline land test is scanned once per node, not on every /grid request', () => {
+  // Land at columns < 8: the land node in column 7 sits in a partially defined cell (sea corner to
+  // the east), so deciding it means sampling every slot — which must happen only on the first
+  // request. 0.125° is exact in binary, so node 7 lands in cell 7 itself (wx = 0).
+  const n = 20;
+  const d = 0.125;
+  const land = (k: number) => k % n < 8;
+  const u = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 1));
+  const v = Array.from({ length: n * n }, (_, k) => (land(k) ? NaN : 0));
+  const gdir = gribDirOf({
+    'a.grb2': uvFields(52, 3, d, n, { u, v }),
+    'b.grb2': uvFields(52, 3, d, n, { u, v, forecastHours: 1 }),
+    'c.grb2': uvFields(52, 3, d, n, { u, v, forecastHours: 2 }),
+  });
+  const udir = writeUtcefDir({ 'u.utcef': [['S1', 53, 4.1]] });
+  const state: ApiState = { data: null, error: null, grib: createGribSource(gdir, 0), utcef: createUtcefSource(udir, 0), preferGrib: true };
+  const t = new Date(T0 + 4 * HOUR).toISOString(); // past the range: every node is a station answer
+  const req = () => makeApi(state)('/grid', { bbox: '3,52,5.5,54.5', time: t, maxPoints: '5000' }).points as P[];
+  const s0 = gribProbeCounts.definedAtSlotSamples;
+  const first = req();
+  const s1 = gribProbeCounts.definedAtSlotSamples;
+  assert.ok(s1 - s0 >= 3, 'first request scans the coastline land nodes over all three slots');
+  assert.deepEqual(req(), first);
+  assert.equal(gribProbeCounts.definedAtSlotSamples, s1, 'second request: no rescans');
+  assert.deepEqual(first.filter((p) => p.longitude < 3 + 8 * d - 1e-9), [], 'no arrows over land');
+  assert.ok(first.some((p) => p.longitude >= 3 + 8 * d - 1e-9 && p.stationId === 'S1'), 'sea nodes keep the station fill');
 });
 
 test('a station outranking a stack GRIB subset keeps its vector where only the subset has data', () => {
