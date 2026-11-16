@@ -175,6 +175,22 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   included); the download engine carries it over on re-download. A missing
   settings file migrates the old opt-in model once: any `autoUpdate: true` →
   interval 1 h, every other install marked `false`.
+- `src/currentsApi.ts` — the in-process handle other plugins get through
+  PropertyValues as the well-known property **`currentsApi`** (contract
+  version 1, documented in README "In-process API for other plugins";
+  signalk-routeiq consumes it). `{ version: 1, providerId, findStations(lat,
+  lon, limit?), getTimeline(id, startIso, endIso, stepMinutes?) }`; both
+  methods call the route handlers `handleStations` / `handleStationTimeline`
+  (exported from `api.ts`, also behind `GET /stations` and
+  `GET /stations/:id/timeline`) against a capturing response, so the results
+  are the HTTP JSON by construction — never give them a separate code path. A
+  route error status rejects with `CurrentsApiError {status, body}`. ONE
+  frozen handle per plugin instance, reading `state` live and gated on the
+  `running` flag (set in `start()`, cleared first thing in `stop()`), emitted
+  ONCE (`currentsApiEmitted`, first `start()`): the server caps PropertyValues
+  at 1000 values per name, so never emit on a data reload or a restart. Bump
+  `CURRENTS_API_VERSION` (and document it) only for a change that would break
+  a consumer; adding a method or a JSON field is not one.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).

@@ -329,6 +329,49 @@ flood/ebb axis (+ = flood); for **GRIB** samples there is no flood/ebb
 axis, so it is simply the current's magnitude (`direction`/`u`/`v` carry
 the vector either way).
 
+## In-process API for other plugins (`currentsApi`)
+
+Plugins running in the same Signal K server can ask for station
+predictions without an HTTP call back to their own server (which would need
+the right port, TLS setting and a token when security is on). The plugin
+publishes a handle through Signal K's PropertyValues mechanism
+(`app.emitPropertyValue` / `app.onPropertyValues`, see `propertyvalues.d.ts`
+in `@signalk/server-api`) under the well-known name **`currentsApi`**:
+
+```js
+app.onPropertyValues('currentsApi', (history) => {
+  const handle = history.filter(Boolean).pop()?.value;
+  if (handle?.version === 1) useCurrents(handle);
+});
+```
+
+**Version 1 contract**
+
+```ts
+interface CurrentsApiV1 {
+  version: 1;
+  providerId: 'signalk-tidal-currents';
+  findStations(latitude: number, longitude: number, limit?: number): Promise<CurrentStationDto[]>;
+  getTimeline(stationId: string, startIso: string, endIso: string, stepMinutes?: number): Promise<CurrentTimelineDto>;
+}
+```
+
+- `findStations` returns exactly the JSON of
+  `GET /stations?latitude=&longitude=&limit=` (incl. `vectorCapable`), and
+  `getTimeline` exactly that of `GET /stations/{id}/timeline?start=&end=&step=`.
+  Both run the same code as those routes, with the same defaults and limits.
+- Where the route would answer with an error, the promise rejects with an
+  `Error` carrying `status` (400/404/503) and `body` (the route's JSON body);
+  `message` is the body's `error` text.
+- The handle is emitted **once** per server run (the server keeps a bounded
+  history per property name) and stays valid across a plugin config save.
+  While the plugin is stopped or has no station data, every call rejects
+  with status 503 — treat that as "no currents", never as a fatal error.
+  Disabling the plugin emits nothing further; the handle simply rejects.
+- Like any PropertyValue, it may arrive before or after your plugin starts
+  (there is no load order): keep the `onPropertyValues` callback reactive.
+- A future incompatible change gets a new `version`; check it before use.
+
 ## Plugin configuration
 
 Most users won't touch these — the Tidal Currents Manager webapp handles
