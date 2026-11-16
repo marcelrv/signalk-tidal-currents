@@ -299,14 +299,21 @@ export function thinByCellLadder<T extends GeoItem>(items: T[], maxPoints: numbe
  * GET /stations — shared by the HTTP routes and the in-process `currentsApi`
  * handle (src/currentsApi.ts), so both answer with the very same JSON.
  */
-export function handleStations(state: ApiState, req: Req, res: Res): void {
+/**
+ * Station endpoints need a station-type source, harmonics or UTCEF. Without
+ * one, every station route answers 503 ("no data") — never 404, which would
+ * claim the requested station id is wrong. Returns true when it answered.
+ */
+function rejectWithoutStationData(state: ApiState, res: Res): boolean {
   const u = state.utcef?.get() ?? null;
-  const haveUtcef = !!(u && u.currentStations.length > 0);
-  // Station endpoints need a station-type source; either harmonics or UTCEF.
-  if (!state.data && !haveUtcef) {
-    res.status(503).json({ error: state.error ?? 'no station data loaded (harmonics or UTCEF)' });
-    return;
-  }
+  if (state.data || (u && u.currentStations.length > 0)) return false;
+  res.status(503).json({ error: state.error ?? 'no station data loaded (harmonics or UTCEF)' });
+  return true;
+}
+
+export function handleStations(state: ApiState, req: Req, res: Res): void {
+  if (rejectWithoutStationData(state, res)) return;
+  const u = state.utcef?.get() ?? null;
 
   // bbox mode: stations in a map viewport, not just the nearest few to a
   // single reference point. `maxPoints` (aliased by the legacy `limit`)
@@ -367,6 +374,7 @@ export function handleStations(state: ApiState, req: Req, res: Res): void {
 
 /** GET /stations/:id/timeline — shared like handleStations. */
 export function handleStationTimeline(state: ApiState, req: Req, res: Res): void {
+  if (rejectWithoutStationData(state, res)) return;
   const win = parseWindow(req, res);
   if (!win) return;
 
@@ -444,6 +452,7 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
   router.get('/stations', (req, res) => handleStations(state, req, res));
 
   router.get('/stations/:id', (req, res) => {
+    if (rejectWithoutStationData(state, res)) return;
     const s = state.data?.stations.find((st) => st.id === req.params.id);
     if (s) {
       res.json(stationInfo(s, { offsets: s.offsets }));

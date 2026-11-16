@@ -155,6 +155,20 @@ test('currentsApi: a handler that returns without a response rejects instead of 
   assert.equal(err.status, 500);
 });
 
+test('currentsApi: running but without station data, every call rejects 503 like the routes', async () => {
+  const empty: ApiState = { data: null, error: 'no harmonics pair' };
+  const http = httpApi(empty);
+  const api = createCurrentsApi(empty, () => true);
+  const start = '2026-01-10T00:00:00Z';
+  const end = '2026-01-10T01:00:00Z';
+
+  const tl = await rejection(api.getTimeline('UT-1', start, end));
+  assert.equal(tl.status, 503, 'not 404: the id is not the problem');
+  assert.deepEqual(tl.body, http('/stations/:id/timeline', { start, end }, { id: 'UT-1' }).body);
+  assert.equal((await rejection(api.findStations(53.2, 5.2))).status, 503);
+  assert.equal(http('/stations/:id', {}, { id: 'UT-1' }).code, 503);
+});
+
 test('currentsApi: a stopped plugin rejects even while data is still in memory', async () => {
   const state = loadedState();
   let running = true;
