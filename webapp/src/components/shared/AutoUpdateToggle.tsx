@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import { READ_ONLY_HINT, useAppStore, useReadOnly } from '../../store/useAppStore';
 import { DatasetEntry } from '../../api/types';
 
@@ -12,10 +14,12 @@ export function AutoUpdateToggle({ dataset }: { dataset: DatasetEntry }) {
   const setAutoUpdate = useAppStore((s) => s.setAutoUpdate);
   const autoDownloadOn = useAppStore((s) => (s.autoDownload?.intervalHours ?? 0) > 0);
   const readOnly = useReadOnly();
+  const [error, setError] = useState<string | null>(null);
   if (!dataset.catalogSourceId || !autoDownloadOn) return null;
-  // The checkbox is controlled by server state: on failure it simply stays as it was.
+  // The checkbox is controlled by server state: on failure it stays as it was; say why.
   const toggle = (enabled: boolean) => {
-    setAutoUpdate(dataset.id, enabled).catch(() => undefined);
+    setError(null);
+    setAutoUpdate(dataset.id, enabled).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   };
 
   return (
@@ -28,6 +32,7 @@ export function AutoUpdateToggle({ dataset }: { dataset: DatasetEntry }) {
         className="h-4 w-4"
       />
       Auto-download
+      {error && <span role="alert" className="text-danger" title={error}>· not saved</span>}
     </label>
   );
 }

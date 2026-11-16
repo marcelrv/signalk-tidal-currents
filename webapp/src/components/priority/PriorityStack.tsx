@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 
 import { useAppStore, useReadOnly } from '../../store/useAppStore';
 import { DatasetEntry } from '../../api/types';
@@ -25,6 +25,7 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
   const readOnly = useReadOnly();
   const catalog = useAppStore((s) => s.catalog);
   const select = useAppStore((s) => s.select);
+  const [error, setError] = useState<string | null>(null);
 
   const sources = useMemo(() => catalog?.document?.sources ?? [], [catalog]);
   const rows = useMemo(() => rowsForSources(sources), [sources]);
@@ -50,9 +51,10 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
     return <p className="py-2 text-sm text-muted">Nothing downloaded yet — priorities appear once datasets are installed.</p>;
   }
 
-  // On failure the store keeps the server's order, so the stack just doesn't move.
+  // On failure the store keeps the server's order; say why it didn't move.
   const apply = (ordered: DatasetEntry[]) => {
-    setDatasetPriority(ordered.map((d) => d.id)).catch(() => undefined);
+    setError(null);
+    setDatasetPriority(ordered.map((d) => d.id)).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   };
 
   const move = (index: number, dir: -1 | 1) => {
@@ -74,6 +76,7 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
 
   return (
     <div className="flex flex-col gap-2">
+      {error && <p role="alert" className="text-xs text-danger">Couldn't save the order: {error}</p>}
       {stack.length > 1 && !readOnly && (
         <button
           type="button"

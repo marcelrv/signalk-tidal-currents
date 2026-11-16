@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import { useAppStore, useReadOnly } from '../../store/useAppStore';
 import { SourceType } from '../../api/types';
 import { Icon } from '../shared/Icon';
@@ -16,17 +18,21 @@ export function PriorityList() {
   const priority = useAppStore((s) => s.priority);
   const setPriority = useAppStore((s) => s.setPriority);
   const readOnly = useReadOnly();
+  const [error, setError] = useState<string | null>(null);
 
   const move = (index: number, dir: -1 | 1) => {
     const next = [...priority];
     const j = index + dir;
     if (j < 0 || j >= next.length) return;
     [next[index], next[j]] = [next[j], next[index]];
-    // On failure the store keeps the server's order, so the list just doesn't move.
-    setPriority(next).catch(() => undefined);
+    // On failure the store keeps the server's order; say why it didn't move.
+    setError(null);
+    setPriority(next).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   };
 
   return (
+    <>
+    {error && <p role="alert" className="mb-1.5 text-xs text-danger">Couldn't save the order: {error}</p>}
     <ol className="flex flex-col gap-1.5">
       {priority.map((type, i) => (
         <li key={type} className="flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-1">
@@ -57,5 +63,6 @@ export function PriorityList() {
         </li>
       ))}
     </ol>
+    </>
   );
 }

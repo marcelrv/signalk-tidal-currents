@@ -15,7 +15,7 @@
     "build:webapp": "npm --prefix webapp ci && npm --prefix webapp run build",
     "test": "tsc && node -e \"require('fs').rmSync('dist-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node -e \"require('fs').cpSync('test/fixtures','dist-test/fixtures',{recursive:true})\" && node --test \"dist-test/*.test.js\"",
     "bench": "tsc && node -e \"require('fs').rmSync('dist-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node --expose-gc dist-test/bench.js",
-    "lint": "eslint src test && npm --prefix webapp run lint",
+    "lint": "tsc && eslint src test && npm --prefix webapp run lint",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

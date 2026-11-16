@@ -20,9 +20,12 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchCleanupCandidates().catch(() => undefined);
+    // A failed read must not masquerade as "nothing to clean up".
+    fetchCleanupCandidates().catch((e: unknown) => setLoadError(e instanceof Error ? e.message : String(e)));
   }, [fetchCleanupCandidates]); // zustand actions are stable, so this still runs once
 
   const toggle = (id: string) => {
@@ -42,10 +45,16 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
 
   const confirmDelete = async () => {
     setDeleting(true);
+    setDeleteError(null);
     try {
       for (const id of new Set(selectedCandidates.map((c) => c.id))) await deleteDataset(id);
       await Promise.all([fetchStorage(), fetchCleanupCandidates(maxDistanceNm)]);
       setSelected(new Set());
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+      // Some deletes may have gone through: re-read so the list shows what is left.
+      fetchCleanupCandidates(maxDistanceNm).catch(() => undefined);
+      fetchStorage().catch(() => undefined);
     } finally {
       setDeleting(false);
     }
@@ -53,7 +62,9 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <Modal title="Smart Cleanup" onClose={onClose}>
-      {!vesselPosition ? (
+      {loadError ? (
+        <p role="alert" className="text-sm text-danger">Couldn't load cleanup candidates: {loadError}</p>
+      ) : !vesselPosition ? (
         <p className="text-muted">Enable a vessel position fix to use Smart Cleanup.</p>
       ) : candidates.length === 0 ? (
         <p className="text-muted">Nothing to clean up — everything installed is within {maxDistanceNm} nm.</p>
@@ -90,11 +101,16 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
           <button
             type="button"
             disabled={selectedCandidates.length === 0 || deleting}
-            onClick={() => { confirmDelete().catch(() => undefined); }}
+            onClick={() => void confirmDelete()} // reports its own errors via setDeleteError
             className="min-h-11 rounded-full bg-accent px-4 text-sm font-medium text-bg disabled:opacity-50"
           >
             {deleting ? 'Removing…' : `Free ~${formatBytes(freeableBytes)}`}
           </button>
+          {deleteError && (
+            <p role="alert" className="text-sm text-danger">
+              Cleanup failed: {deleteError}
+            </p>
+          )}
         </div>
       )}
     </Modal>

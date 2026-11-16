@@ -21,23 +21,26 @@ interface FakeRes {
 
 /** Minimal in-file RouterLike capture harness: records handlers, and a matching fake Req/Res pair. */
 function makeHarness() {
-  const handlers = new Map<string, (req: any, res: any) => void | Promise<void>>();
+  const handlers = new Map<string, (req: any, res: any) => void>();
   const router: ManagerRouterLike = {
     get: (p, h) => handlers.set(`GET ${p}`, h),
     post: (p, h) => handlers.set(`POST ${p}`, h),
     put: (p, h) => handlers.set(`PUT ${p}`, h),
     delete: (p, h) => handlers.set(`DELETE ${p}`, h),
   };
-  async function call(method: string, routePath: string, opts: { params?: Record<string, string>; body?: unknown; skPrincipal?: { permissions: string } } = {}): Promise<FakeRes> {
+  function call(method: string, routePath: string, opts: { params?: Record<string, string>; body?: unknown; skPrincipal?: { permissions: string } } = {}): Promise<FakeRes> {
     const h = handlers.get(`${method} ${routePath}`);
     if (!h) throw new Error(`no handler registered for ${method} ${routePath}`);
     const result: FakeRes = { statusCode: 200, body: undefined };
-    const res = {
-      status(code: number) { result.statusCode = code; return res; },
-      json(body: unknown) { result.body = body; },
-    };
-    await h({ params: opts.params ?? {}, query: {}, body: opts.body, skPrincipal: opts.skPrincipal }, res);
-    return result;
+    // Handlers return void (the host router ignores promises), so wait for the
+    // response itself, as a real client would.
+    return new Promise<FakeRes>((resolve) => {
+      const res = {
+        status(code: number) { result.statusCode = code; return res; },
+        json(body: unknown) { result.body = body; resolve(result); },
+      };
+      h({ params: opts.params ?? {}, query: {}, body: opts.body, skPrincipal: opts.skPrincipal }, res);
+    });
   }
   return { router, call };
 }
@@ -463,18 +466,18 @@ test('non-admins get generic error texts (no paths, no catalog URL) on every job
     onAnyDone: (cb) => { anyDone.push(cb); return () => {}; },
   };
   mgr.catalog = { get: () => ({ status: 'cached', document: null, fetchedAt: null, error: 'fetch failed: https://intranet.example/c.json?token=abc', sourceUrl: 'https://intranet.example/c.json?token=abc', warnings: [] }), refresh: async () => mgr.catalog.get() } as CatalogClient;
-  const handlers = new Map<string, (req: any, res: any) => void | Promise<void>>();
+  const handlers = new Map<string, (req: any, res: any) => void>();
   registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
   const call = (p: string, principal?: { permissions: string }) => {
     let body: any;
-    void handlers.get(p)!({ params: { id: 'j' }, query: {}, skPrincipal: principal }, { status() { return this; }, json(b: unknown) { body = b; } });
+    handlers.get(p)!({ params: { id: 'j' }, query: {}, skPrincipal: principal }, { status() { return this; }, json(b: unknown) { body = b; } });
     return body;
   };
   const closers: (() => void)[] = [];
   const sse = (p: string, principal: { permissions: string }) => {
     const frames: any[] = [];
     const res = { status() { return res; }, json() {}, writeHead() {}, write(c: string) { if (c.startsWith('data: ')) frames.push(JSON.parse(c.slice(6))); return true; }, end() {}, on(_e: string, cb: () => void) { closers.push(cb); } };
-    void handlers.get(p)!({ params: { id: 'j' }, query: {}, skPrincipal: principal }, res);
+    handlers.get(p)!({ params: { id: 'j' }, query: {}, skPrincipal: principal }, res);
     return frames;
   };
   const anon = { permissions: 'readonly' };
@@ -586,7 +589,7 @@ test('a failing read is a 500 (generic text for non-admins, verbatim for admins)
 for (const route of ['/downloads/events', '/downloads/:id/events']) test(`SSE ${route} caps concurrent non-admin viewers (503 beyond MAX_PUBLIC_SSE_CLIENTS); admins are never capped`, () => {
   const { mgr } = baseMgr();
   const jobId = mgr.downloads.start('s', {}).id; // the per-job feed 404s an unknown job before admission
-  const handlers = new Map<string, (req: any, res: any) => void | Promise<void>>();
+  const handlers = new Map<string, (req: any, res: any) => void>();
   registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
   const closers: (() => void)[] = [];
   const open = (principal: { permissions: string }) => {
@@ -596,7 +599,7 @@ for (const route of ['/downloads/events', '/downloads/:id/events']) test(`SSE ${
       writeHead() {}, write() { return true; }, end() {},
       on(_e: string, cb: () => void) { closers.push(cb); },
     };
-    void handlers.get(route)!({ params: { id: jobId }, query: {}, skPrincipal: principal }, res);
+    handlers.get(route)!({ params: { id: jobId }, query: {}, skPrincipal: principal }, res);
     return status;
   };
   for (let i = 0; i < MAX_PUBLIC_SSE_CLIENTS; i++) assert.equal(open({ permissions: 'readonly' }), 200);
@@ -633,7 +636,7 @@ test('securityEnabled: a missing principal is NOT admin (fails closed)', async (
 test('SSE /downloads/:id/events on a terminal job closes at once and frees its public slot', () => {
   const { mgr } = baseMgr();
   mgr.downloads = { ...fakeDownloadEngine(), get: (id) => ({ id, catalogSourceId: 's', state: 'done', bytes: 1, totalBytes: 1 }) };
-  const handlers = new Map<string, (req: any, res: any) => void | Promise<void>>();
+  const handlers = new Map<string, (req: any, res: any) => void>();
   registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
   for (let i = 0; i < MAX_PUBLIC_SSE_CLIENTS + 1; i++) {
     let status = 200;
@@ -643,7 +646,7 @@ test('SSE /downloads/:id/events on a terminal job closes at once and frees its p
       writeHead() {}, write() { return true; }, end() { ended = true; },
       on() {},
     };
-    void handlers.get('/downloads/:id/events')!({ params: { id: 'j' }, query: {}, skPrincipal: { permissions: 'readonly' } }, res);
+    handlers.get('/downloads/:id/events')!({ params: { id: 'j' }, query: {}, skPrincipal: { permissions: 'readonly' } }, res);
     assert.equal(status, 200);
     assert.ok(ended, 'stream ended after the snapshot');
   }

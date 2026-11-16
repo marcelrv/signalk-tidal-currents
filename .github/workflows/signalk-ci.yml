@@ -37,7 +37,11 @@ on:
 jobs:
   # ── Lint (not covered by the reusable plugin workflow) ────
   lint:
+    # Lint gates push/PR only; manual dispatch runs are for armv7/integration.
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

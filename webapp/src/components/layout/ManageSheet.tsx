@@ -65,7 +65,7 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
             type="button"
             disabled={catalogLoading || readOnly}
             title={readOnly ? READ_ONLY_HINT : undefined}
-            onClick={() => { refreshCatalog().catch(() => undefined); }}
+            onClick={() => void refreshCatalog()} // never rejects (records catalogError itself)
             className="flex min-h-11 shrink-0 items-center gap-2 rounded-full bg-surface-2 px-4 text-sm font-medium text-accent disabled:opacity-50"
           >
             <Icon name="refresh" className={`h-4 w-4 ${catalogLoading ? 'motion-safe:animate-spin' : ''}`} />
