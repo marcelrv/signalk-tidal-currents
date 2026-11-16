@@ -69,8 +69,8 @@ export class CurrentsApiError extends Error {
   }
 }
 
-/** Runs a route handler against a capturing response; resolves with the 2xx body, rejects with CurrentsApiError otherwise. */
-function invoke(
+/** Runs a route handler against a capturing response; resolves with the 2xx body, rejects with CurrentsApiError otherwise. Exported for tests. */
+export function invoke(
   handler: (state: ApiState, req: Req, res: Res) => void,
   state: ApiState,
   params: Record<string, string>,
@@ -78,12 +78,14 @@ function invoke(
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let status = 200;
+    let answered = false;
     const res: Res = {
       status(code) {
         status = code;
         return res;
       },
       json(body) {
+        answered = true;
         if (status >= 400) reject(new CurrentsApiError(status, body));
         else resolve(body);
       },
@@ -92,7 +94,11 @@ function invoke(
       handler(state, { params, query }, res);
     } catch (e) {
       reject(e);
+      return;
     }
+    // Handlers answer synchronously; one that returned without a response
+    // must fail loudly here rather than leave the caller awaiting forever.
+    if (!answered) reject(new CurrentsApiError(500, { error: 'handler returned without a response' }));
   });
 }
 

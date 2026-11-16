@@ -440,16 +440,6 @@ function pluginConstructor(app: any) {
 
       attemptLoad(); // routes stay mounted below and report 503 if this failed
 
-      running = true;
-      if (!currentsApiEmitted && typeof app.emitPropertyValue === 'function') {
-        try {
-          app.emitPropertyValue(CURRENTS_API_PROPERTY, currentsApi);
-          currentsApiEmitted = true;
-        } catch (e) {
-          console.warn(`[${PLUGIN_ID}] could not emit ${CURRENTS_API_PROPERTY}: ${e}`);
-        }
-      }
-
       // Mount the v2-style domain API (same routes as the v1 plugin path)
       // directly on the underlying express app via a prefix shim — avoids a
       // runtime dependency on express itself. Mounted regardless of whether
@@ -517,6 +507,19 @@ function pluginConstructor(app: any) {
         };
         publish();
         timer = setInterval(publish, Math.max(10, config.updateSeconds) * 1000);
+      }
+
+      // Last, so the handle never serves a start() that threw halfway (the
+      // server then shows the plugin as failed). The emit follows `running`:
+      // an onPropertyValues callback runs synchronously and may call at once.
+      running = true;
+      if (!currentsApiEmitted && typeof app.emitPropertyValue === 'function') {
+        try {
+          app.emitPropertyValue(CURRENTS_API_PROPERTY, currentsApi);
+          currentsApiEmitted = true;
+        } catch (e) {
+          console.warn(`[${PLUGIN_ID}] could not emit ${CURRENTS_API_PROPERTY}: ${e}`);
+        }
       }
     },
 

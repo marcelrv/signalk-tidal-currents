@@ -345,7 +345,7 @@ export function handleStations(state: ApiState, req: Req, res: Res): void {
 
   const pos = parsePosition(req, res);
   if (!pos) return;
-  const limit = Math.min(50, parseInt(String(req.query.limit), 10) || 10);
+  const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 10));
   const legacy = state.data
     ? nearestCurrentStations(state.data, pos.lat, pos.lon, limit).map((n) => ({
         distanceKm: n.distanceKm,

@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerRoutes, ApiState } from '../dist/api.js';
-import { CURRENTS_API_PROPERTY, CurrentsApiError, CurrentsApiV1, createCurrentsApi } from '../dist/currentsApi.js';
+import { CURRENTS_API_PROPERTY, CurrentsApiError, CurrentsApiV1, createCurrentsApi, invoke } from '../dist/currentsApi.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { pluginConstructor } from '../dist/index.js';
 import { createUtcefSource } from '../dist/utcef.js';
@@ -137,6 +137,22 @@ test('currentsApi: route errors reject with the same status and body', async () 
 
   const empty = await rejection(createCurrentsApi({ data: null, error: 'nothing here' }, () => true).findStations(53, 5));
   assert.equal(empty.status, 503);
+});
+
+test('currentsApi.findStations: a non-positive limit is clamped, never slices from the end', async () => {
+  const state = loadedState();
+  const http = httpApi(state);
+  const api = createCurrentsApi(state, () => true);
+  const one = await api.findStations(53.2, 5.2, 1);
+  assert.equal(one.length, 1);
+  // -1 used to reach slice(0, -1) and return every station but one.
+  assert.deepEqual(await api.findStations(53.2, 5.2, -1), one);
+  assert.deepEqual(http('/stations', { latitude: '53.2', longitude: '5.2', limit: '-3' }).body, one);
+});
+
+test('currentsApi: a handler that returns without a response rejects instead of hanging', async () => {
+  const err = await rejection(invoke(() => {}, { data: null, error: null }, {}, {}));
+  assert.equal(err.status, 500);
 });
 
 test('currentsApi: a stopped plugin rejects even while data is still in memory', async () => {
