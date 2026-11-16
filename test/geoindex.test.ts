@@ -36,12 +36,12 @@ function inRing(ring: number[][], lat: number, lon: number): boolean {
 const inArea = (area: number[][][], lat: number, lon: number) =>
   inRing(area[0], lat, lon) || inRing(area[0], lat, lon + 360) || inRing(area[0], lat, lon - 360);
 
-function oldLinear(stations: any[], lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>) { // eslint-disable-line @typescript-eslint/no-explicit-any
+function oldLinear(stations: any[], lat: number, lon: number, maxKm: number, files?: ReadonlySet<string>) {
   const st = files ? stations.filter((s) => s.file !== undefined && files.has(s.file)) : stations;
   if (st.length === 0) return null;
   const c = st.find((s) => s.representativeArea && inArea(s.representativeArea, lat, lon));
   if (c) return { station: c, distanceKm: Math.round(distanceKm(lat, lon, c.latitude, c.longitude) * 100) / 100 };
-  let near: { station: any; distanceKm: number } | null = null; // eslint-disable-line @typescript-eslint/no-explicit-any
+  let near: { station: any; distanceKm: number } | null = null;
   for (const s of st) {
     const d = Math.round(distanceKm(lat, lon, s.latitude, s.longitude) * 100) / 100;
     if (!near || d < near.distanceKm) near = { station: s, distanceKm: d };
@@ -50,8 +50,8 @@ function oldLinear(stations: any[], lat: number, lon: number, maxKm: number, fil
   return near;
 }
 
-function syntheticStations(rand: () => number): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
-  const out: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+function syntheticStations(rand: () => number): any[] {
+  const out: any[] = [];
   const mk = (i: number, lat: number, lon: number, area?: number[][][]) =>
     out.push({ id: `S${i}`, name: `S${i}`, latitude: lat, longitude: lon, meanU: 0, meanV: 0, constituents: [], file: `f${i % 3}.utcef`, representativeArea: area });
   let i = 0;
@@ -82,7 +82,7 @@ function syntheticStations(rand: () => number): any[] { // eslint-disable-line @
 test('utcefVectorAt via the coverage index matches the linear algorithm', () => {
   const rand = rng(12345);
   const stations = syntheticStations(rand);
-  const data: any = { dir: '', files: ['f0.utcef', 'f1.utcef', 'f2.utcef'], currentStations: stations }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const data: any = { dir: '', files: ['f0.utcef', 'f1.utcef', 'f2.utcef'], currentStations: stations };
   const fileSets: Array<ReadonlySet<string> | undefined> = [undefined, new Set(['f0.utcef']), new Set(['f1.utcef', 'f2.utcef'])];
   const maxKms = [0, 1, 5, 50, 200];
   let hits = 0;
@@ -114,12 +114,12 @@ test('utcefVectorAt via the coverage index matches the linear algorithm', () => 
 
 test('large representative_area polygons: array-order containment across big and small areas', () => {
   const mk = (id: string, lat: number, lon: number, area: number[][][], file = 'a.utcef') =>
-    ({ id, name: id, latitude: lat, longitude: lon, meanU: 0, meanV: 0, constituents: [], file, representativeArea: area }) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    ({ id, name: id, latitude: lat, longitude: lon, meanU: 0, meanV: 0, constituents: [], file, representativeArea: area }) as any;
   const big = rect(-30, 20, 30, 70); // 120 x 100 cells at 0.5°: well past the fan-out cap
   const small = rect(9, 44, 11, 46);
   const L = mk('L', 60, 0, big);
   const S = mk('S', 45, 10, small);
-  const probe = (list: any[], lat: number, lon: number, files?: ReadonlySet<string>) => // eslint-disable-line @typescript-eslint/no-explicit-any
+  const probe = (list: any[], lat: number, lon: number, files?: ReadonlySet<string>) =>
     utcefCoverageIndex(list).stationAt(lat, lon, 0, files)?.id ?? null;
   assert.equal(probe([L, S], 45, 10), 'L'); // both contain; L is earlier
   assert.equal(probe([S, L], 45, 10), 'S'); // small earlier now
@@ -134,14 +134,14 @@ test('large representative_area polygons: array-order containment across big and
   assert.equal(probe([wrapBig], 0, 170), 'W');
   assert.equal(probe([wrapBig], 0, 100), null);
   // Same through utcefVectorAt.
-  const data: any = { dir: '', files: ['a.utcef'], currentStations: [S, L] }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const data: any = { dir: '', files: ['a.utcef'], currentStations: [S, L] };
   assert.equal(utcefVectorAt(data, 45, 10, T0, 50)?.station.id, 'S');
   assert.equal(utcefVectorAt(data, 60, 5, T0, 50)?.station.id, 'L');
 });
 
 
 function polarStation(id: string, lat: number, lon: number) {
-  return { id, name: id, latitude: lat, longitude: lon, meanU: 0, meanV: 0, constituents: [], file: 'a.utcef' } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  return { id, name: id, latitude: lat, longitude: lon, meanU: 0, meanV: 0, constituents: [], file: 'a.utcef' } as any;
 }
 
 test('coverage index finds a station across the pole (north and south)', () => {
@@ -156,10 +156,10 @@ test('coverage index finds a station across the pole (north and south)', () => {
 });
 
 test('coverage index with a large maxKm matches the linear scan', () => {
-  const list: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const list: any[] = [];
   for (let k = 0; k < 40; k++) list.push(polarStation('S' + k, 55 + ((k * 7) % 10), -20 + ((k * 13) % 60)));
   const idx = utcefCoverageIndex(list);
-  const data = { currentStations: list } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const data = { currentStations: list } as any;
   for (const [lat, lon] of [[60, 0], [58.3, 12.7], [64, -15], [10, 100]]) {
     for (const maxKm of [300, 2000, 5000]) {
       const lin = utcefVectorAt(data, lat, lon, T0, Infinity);
@@ -177,7 +177,7 @@ test('legacyCoverageIndexFor.stationAt matches stationVectorAt\'s selection (top
   const mk = (i: number, lat: number, lon: number, capable: boolean) => ({
     ...(capable ? sub : ref), id: `S${i}`, latitude: lat, longitude: lon,
   });
-  const stations: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const stations: any[] = [];
   // dense cluster of non-capable stations around (53,5) hides capable ones; plus global scatter
   for (let i = 0; i < 40; i++) stations.push(mk(i, 53 + Math.round((rand() - 0.5) * 20) / 100, 5 + Math.round((rand() - 0.5) * 20) / 100, false));
   for (let i = 40; i < 80; i++) stations.push(mk(i, 53 + (rand() - 0.5) * 3, 5 + (rand() - 0.5) * 3, rand() < 0.5));
@@ -205,10 +205,10 @@ test('legacyCoverageIndexFor.stationAt matches stationVectorAt\'s selection (top
 
 test('coverage index matches the linear scan close to the pole', () => {
   const rand = rng(7);
-  const list: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const list: any[] = [];
   for (let k = 0; k < 60; k++) list.push(polarStation('P' + k, 88.5 + rand() * 1.49, -180 + rand() * 360));
   const idx = utcefCoverageIndex(list);
-  const data = { currentStations: list } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const data = { currentStations: list } as any;
   for (let n = 0; n < 40; n++) {
     const lat = 89.5 + rand() * 0.45;
     const lon = -180 + rand() * 360;
@@ -223,11 +223,11 @@ test('coverage index matches the linear scan close to the pole', () => {
 
 test('inBbox gathers exactly the linear filter, in array order (antimeridian, wide and polar boxes)', () => {
   const rand = rng(31337);
-  const list: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const list: any[] = [];
   for (let k = 0; k < 400; k++) {
     list.push(polarStation('S' + k, k % 5 === 0 ? 85 + rand() * 5 : (rand() - 0.5) * 170, k % 3 === 0 ? 170 + rand() * 20 - (rand() < 0.5 ? 0 : 360) : (rand() - 0.5) * 360));
   }
-  const data = { currentStations: list } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const data = { currentStations: list } as any;
   const boxes: Array<[number, number, number, number]> = [
     [170, -10, 190, 10], [-10, -10, 10, 10], [-180, -90, 180, 90], [-540, -20, 540, 20], [175, 80, 185, 90], [100, 30, 130, 60], [-200, -5, -160, 5],
   ];
@@ -240,7 +240,7 @@ test('inBbox gathers exactly the linear filter, in array order (antimeridian, wi
   for (const [w, s, e, n] of boxes) {
     const want = list.filter((st) => st.latitude >= s && st.latitude <= n && lonInSpan(st.longitude, w, e));
     const got = utcefStationsInBbox(data, { west: w, south: s, east: e, north: n });
-    assert.deepEqual(got.map((x: any) => x.id), want.map((x) => x.id), `box ${w},${s},${e},${n}`); // eslint-disable-line @typescript-eslint/no-explicit-any
+    assert.deepEqual(got.map((x: any) => x.id), want.map((x) => x.id), `box ${w},${s},${e},${n}`);
     if (want.length) nonEmpty++;
   }
   assert.ok(nonEmpty > 15);

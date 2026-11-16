@@ -26,7 +26,7 @@ const uvDir = gribDirOf({ 'currents.grb2': uvFields(52.9, 4.9, 0.1, 7, { u: 1, v
 test('resolveVector honours a dataset stack mixing grib2, utcef and harmonic entries', () => {
   const dir = writeUtcefDir({ 'g.utcef': [['G', 53.2, 5.2]] });
   const base = { data: legacyData, error: null, grib: createGribSource(uvDir, 0), utcef: createUtcefSource(dir, 0), preferGrib: true };
-  const at = (stack: any[] | undefined) => resolveVector({ ...base, datasetRank: stack ? () => stack : undefined }, 53.2, 5.2, T0); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const at = (stack: any[] | undefined) => resolveVector({ ...base, datasetRank: stack ? () => stack : undefined }, 53.2, 5.2, T0);
   const G = { id: 'g', type: 'grib2', files: ['currents.grb2'] };
   const U = { id: 'u', type: 'utcef', files: ['g.utcef'] };
   const H = { id: 'h', type: 'harmonic', files: [] };

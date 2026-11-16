@@ -11,6 +11,8 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
 - npm scripts must stay **cross-platform** (CI runs them on Windows/macOS
   too): no `rm -rf`, `cp -r`, shell globs or quoting tricks — use
   `node -e "require('fs')…"` one-liners instead.
+- `npm run lint` (ESLint, plugin + webapp; bug-catching rules only, no
+  formatting) must pass before committing.
 
 ## CI
 

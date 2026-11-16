@@ -51,14 +51,15 @@ export function App() {
   const setManageOpen = useAppStore((s) => s.setManageOpen);
 
   useEffect(() => {
-    fetchCatalog();
+    void fetchCatalog(); // never rejects (records catalogError itself)
     // Datasets after access is known: an empty install opens the first-run
     // wizard, which is pointless for a visitor who can't download.
-    fetchAccess().finally(() => fetchDatasets().catch(() => undefined));
+    void fetchAccess().finally(() => fetchDatasets().catch(() => undefined)); // fetchAccess never rejects
     fetchStorage().catch(() => undefined);
-    fetchPriority();
-    fetchAutoDownload();
-    fetchVesselPosition();
+    // These three never reject (they catch internally).
+    void fetchPriority();
+    void fetchAutoDownload();
+    void fetchVesselPosition();
   }, [fetchAccess, fetchCatalog, fetchDatasets, fetchStorage, fetchPriority, fetchAutoDownload, fetchVesselPosition]);
 
   // Read-only can come from an expired session (a 401/403 on a write) —
@@ -66,7 +67,7 @@ export function App() {
   useEffect(() => {
     /** Re-reads loginStatus, but only while the UI is read-only. */
     const recheck = () => {
-      if (useAppStore.getState().access === 'readonly') fetchAccess();
+      if (useAppStore.getState().access === 'readonly') void fetchAccess();
     };
     window.addEventListener('focus', recheck);
     return () => window.removeEventListener('focus', recheck);
@@ -162,7 +163,7 @@ export function App() {
           <StorageGauge compact />
           <button
             type="button"
-            onClick={() => refreshCatalog()}
+            onClick={() => void refreshCatalog()}
             disabled={catalogLoading || readOnly}
             className={`min-w-0 truncate text-xs disabled:opacity-50 ${catalogError ? 'text-danger' : 'text-muted'}`}
             title={readOnly ? READ_ONLY_HINT : catalogError ? `Sync failed: ${catalogError} — tap to retry` : 'Tap to sync the catalog now'}

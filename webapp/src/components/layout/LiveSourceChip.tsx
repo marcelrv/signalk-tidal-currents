@@ -33,7 +33,7 @@ export function LiveSourceChip() {
       });
   };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `poll` is recreated every render; re-poll only when the position actually moves
   useEffect(poll, [vesselPosition?.latitude, vesselPosition?.longitude]);
   usePolling(poll, vesselPosition ? 15_000 : null);
 

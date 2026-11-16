@@ -28,16 +28,19 @@ function makeHarness() {
     put: (p, h) => handlers.set(`PUT ${p}`, h),
     delete: (p, h) => handlers.set(`DELETE ${p}`, h),
   };
-  async function call(method: string, routePath: string, opts: { params?: Record<string, string>; body?: unknown; skPrincipal?: { permissions: string } } = {}): Promise<FakeRes> {
+  function call(method: string, routePath: string, opts: { params?: Record<string, string>; body?: unknown; skPrincipal?: { permissions: string } } = {}): Promise<FakeRes> {
     const h = handlers.get(`${method} ${routePath}`);
     if (!h) throw new Error(`no handler registered for ${method} ${routePath}`);
     const result: FakeRes = { statusCode: 200, body: undefined };
-    const res = {
-      status(code: number) { result.statusCode = code; return res; },
-      json(body: unknown) { result.body = body; },
-    };
-    await h({ params: opts.params ?? {}, query: {}, body: opts.body, skPrincipal: opts.skPrincipal }, res);
-    return result;
+    // Handlers return void (the host router ignores promises), so wait for the
+    // response itself, as a real client would.
+    return new Promise<FakeRes>((resolve) => {
+      const res = {
+        status(code: number) { result.statusCode = code; return res; },
+        json(body: unknown) { result.body = body; resolve(result); },
+      };
+      h({ params: opts.params ?? {}, query: {}, body: opts.body, skPrincipal: opts.skPrincipal }, res);
+    });
   }
   return { router, call };
 }

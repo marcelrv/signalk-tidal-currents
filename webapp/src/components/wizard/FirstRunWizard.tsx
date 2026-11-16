@@ -33,9 +33,12 @@ export function FirstRunWizard() {
   const [installing, setInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const position = manualPos && manualPos.lat !== '' && manualPos.lon !== ''
-    ? { latitude: Number(manualPos.lat), longitude: Number(manualPos.lon) }
-    : vesselPosition;
+  const position = useMemo(
+    () => manualPos && manualPos.lat !== '' && manualPos.lon !== ''
+      ? { latitude: Number(manualPos.lat), longitude: Number(manualPos.lon) }
+      : vesselPosition,
+    [manualPos, vesselPosition],
+  );
 
   const candidates = useMemo(() => {
     if (!position || !catalog?.document) return [];
