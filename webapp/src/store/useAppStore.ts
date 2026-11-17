@@ -248,11 +248,16 @@ export const useAppStore = create<AppState>((set, get) => {
     // refresh everything that displays either, not just the dataset list.
     // Refresh on failure too: a failed delete usually means the list was
     // stale, and keeping the stale row invites retrying the same delete.
+    const refresh = () => Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
     try {
       await write(() => api.deleteDataset(id));
-    } finally {
-      await Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
+    } catch (e) {
+      // The DELETE error is what the dialog must show — a failing refresh
+      // must not replace it.
+      await refresh().catch(() => undefined);
+      throw e;
     }
+    await refresh();
   },
   setAutoUpdate: async (id, enabled) => {
     await write(() => api.setAutoUpdate(id, enabled));
