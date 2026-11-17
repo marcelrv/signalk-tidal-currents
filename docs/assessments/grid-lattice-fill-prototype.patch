@@ -1,18 +1,23 @@
 diff --git a/src/api.ts b/src/api.ts
-index 81fcaf9..ea1d9af 100644
+index fd14af6..c9390b4 100644
 --- a/src/api.ts
 +++ b/src/api.ts
-@@ -701,6 +701,9 @@ const multiplesIn = (min: number, max: number, stride: number): number => {
+@@ -694,6 +694,14 @@ const multiplesIn = (min: number, max: number, stride: number): number => {
   * The lattice never exceeds maxPoints (candidates are thinned first if k = 0
   * still overflows), so the total is <= maxPoints by construction.
   */
 +/** PROTOTYPE switch for measurement only. */
-+export const gridFillMode: { mode: 'baseline' | 'ladder' | 'ladder-guarded' | 'quincunx'; lastCandidates: number; lastResolved: number; lastSaturated: boolean } = { mode: 'baseline', lastCandidates: 0, lastResolved: 0, lastSaturated: false };
++export const gridFillMode: {
++  mode: 'baseline' | 'ladder' | 'ladder-guarded' | 'quincunx';
++  lastCandidates: number;
++  lastResolved: number;
++  lastSaturated: boolean;
++} = { mode: 'baseline', lastCandidates: 0, lastResolved: 0, lastSaturated: false };
 +
  export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints: number): GridPoint[] {
    // 1. Station winners. Whether a station wins its OWN position is almost
    // static (resolve.ts ownWinFor: one byte per station, filled once by the very
-@@ -766,7 +769,27 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
+@@ -780,7 +788,31 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
      for (const p of plans) n += multiplesIn(p.win.iMin, p.win.iMax, strideAt(p, k)) * multiplesIn(p.win.jMin, p.win.jMax, strideAt(p, k));
      return n;
    };
@@ -26,11 +31,15 @@ index 81fcaf9..ea1d9af 100644
 +        continue;
 +      }
 +      const h = s / 2;
-+      const a0 = Math.ceil(p.win.iMin / h), a1 = Math.floor(p.win.iMax / h);
-+      const b0 = Math.ceil(p.win.jMin / h), b1 = Math.floor(p.win.jMax / h);
++      const a0 = Math.ceil(p.win.iMin / h),
++        a1 = Math.floor(p.win.iMax / h);
++      const b0 = Math.ceil(p.win.jMin / h),
++        b1 = Math.floor(p.win.jMax / h);
 +      const ev = (x0: number, x1: number) => (x1 < x0 ? 0 : Math.floor(x1 / 2) - Math.ceil(x0 / 2) + 1);
-+      const ea = ev(a0, a1), oa = Math.max(0, a1 - a0 + 1) - ea;
-+      const eb = ev(b0, b1), ob = Math.max(0, b1 - b0 + 1) - eb;
++      const ea = ev(a0, a1),
++        oa = Math.max(0, a1 - a0 + 1) - ea;
++      const eb = ev(b0, b1),
++        ob = Math.max(0, b1 - b0 + 1) - eb;
 +      n += ea * eb + oa * ob;
 +    }
 +    return n;
@@ -40,7 +49,7 @@ index 81fcaf9..ea1d9af 100644
    const maxLevel = plans.reduce((m, p) => Math.max(m, Math.log2(p.base)), 0);
    for (let k = maxLevel; k >= 1; k--) {
      if (candidateCount(k) + wCount <= maxPoints) {
-@@ -774,33 +797,67 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
+@@ -788,33 +820,68 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
        break;
      }
    }
@@ -51,7 +60,8 @@ index 81fcaf9..ea1d9af 100644
 -    lon: number;
 -    grid: GridSeries['grid'];
 +  const mode = gridFillMode.mode;
-+  if (mode === 'quincunx' && level < maxLevel && quinCount(level) + wCount <= maxPoints && quinCount(level) > candidateCount(level)) half = true;
++  if (mode === 'quincunx' && level < maxLevel && quinCount(level) + wCount <= maxPoints && quinCount(level) > candidateCount(level))
++    half = true;
 +  // PROTOTYPE ladder: one level denser, thinned to the rest of the budget.
 +  let ladder = false;
 +  if ((mode === 'ladder' || mode === 'ladder-guarded') && level < maxLevel && candidateCount(level) + wCount <= maxPoints) {
@@ -79,11 +89,11 @@ index 81fcaf9..ea1d9af 100644
      for (let j = Math.ceil(win.jMin / s) * s; j <= win.jMax; j += s) {
        const lat = round4(grid.lat0 + j * grid.dj);
        for (let i = Math.ceil(win.iMin / s) * s; i <= win.iMax; i += s) {
--        const lon = round4(((grid.lon0 + i * grid.di + 180) % 360 + 360) % 360 - 180);
+-        const lon = round4(((((grid.lon0 + i * grid.di + 180) % 360) + 360) % 360) - 180);
 -        cands.push({ lat, lon, grid });
 +        if (q && ((i / s + j / s) & 1) !== 0) continue;
 +        cLat[cN] = lat;
-+        cLon[cN] = round4(((grid.lon0 + i * grid.di + 180) % 360 + 360) % 360 - 180);
++        cLon[cN] = round4(((((grid.lon0 + i * grid.di + 180) % 360) + 360) % 360) - 180);
 +        cPlan[cN] = pi;
 +        cN++;
        }
@@ -108,7 +118,7 @@ index 81fcaf9..ea1d9af 100644
 +        const p = plans[cPlan[k]];
 +        const s = strideAt(p, level);
 +        const grid = p.grid;
-+        const i = Math.round((((cLon[k] - grid.lon0) % 360) + 360) % 360 / grid.di);
++        const i = Math.round(((((cLon[k] - grid.lon0) % 360) + 360) % 360) / grid.di);
 +        const j = Math.round((cLat[k] - grid.lat0) / grid.dj);
 +        if (i % s === 0 && j % s === 0) keepIdx.push(k);
 +      }
