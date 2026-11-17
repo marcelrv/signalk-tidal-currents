@@ -21,7 +21,9 @@ import { encodeGrib2File, EncodeField } from './grib2-testutil.js';
 import { ROOT, T0, HOUR, rng, makeApi } from './grid-testutil.js';
 
 const mode = process.argv[2] ?? 'baseline';
-const fillMode = (api as unknown as { gridFillMode?: { mode: string; lastCandidates: number; lastResolved: number; lastSaturated: boolean } }).gridFillMode;
+const fillMode = (
+  api as unknown as { gridFillMode?: { mode: string; lastCandidates: number; lastResolved: number; lastSaturated: boolean } }
+).gridFillMode;
 if (fillMode) fillMode.mode = mode;
 const gc = (globalThis as { gc?: () => void }).gc!;
 const r2 = (x: number) => Math.round(x * 100) / 100;
@@ -57,11 +59,20 @@ function utcefDir(name: string, pts: [number, number][]): string {
       harmonic_constituents: { M2: { u_amplitude: 1.2, u_phase_g: 30, v_amplitude: 0.6, v_phase_g: 80 } },
     },
   }));
-  fs.writeFileSync(path.join(dir, `${name}.utcef`), JSON.stringify({ metadata: { schema_version: '1.0.0' }, dataset: { type: 'FeatureCollection', features } }));
+  fs.writeFileSync(
+    path.join(dir, `${name}.utcef`),
+    JSON.stringify({ metadata: { schema_version: '1.0.0' }, dataset: { type: 'FeatureCollection', features } }),
+  );
   return dir;
 }
 
-const coastGrib = createGribSource(gribDir('coast', [2, 3].flatMap((p) => [0, 6].map((h) => field(p, p === 2 ? 51 : 51, 2, 0.02, 150, 150, h)))), 0);
+const coastGrib = createGribSource(
+  gribDir(
+    'coast',
+    [2, 3].flatMap((p) => [0, 6].map((h) => field(p, p === 2 ? 51 : 51, 2, 0.02, 150, 150, h))),
+  ),
+  0,
+);
 let landFrac = 0;
 for (let j = 0; j < 150; j++) for (let i = 0; i < 150; i++) if (land(51 + j * 0.02, 2 + i * 0.02)) landFrac++;
 landFrac /= 150 * 150;
@@ -77,20 +88,30 @@ const coastUtcef = createUtcefSource(utcefDir('coast', landPts), 0);
 
 // ── Fixture 2: large — global 0.25° + regional 0.02° (8°×6°) + 200k UTCEF stations ──
 const t0 = performance.now();
-const NI = 1440, NJ = 721;
+const NI = 1440,
+  NJ = 721;
 const globalField = (param: number, h: number): EncodeField => {
   const values = new Array<number>(NI * NJ);
   for (let j = 0; j < NJ; j++)
     for (let i = 0; i < NI; i++) {
-      const lat = -90 + j * 0.25, lon = i * 0.25;
-      values[j * NI + i] = Math.sin(lon / 23) * Math.cos(lat / 17) > 0.55 ? NaN : param === 2 ? 0.6 * Math.sin(lat / 9 + h / 5) : 0.4 * Math.cos(lon / 11 + h / 7);
+      const lat = -90 + j * 0.25,
+        lon = i * 0.25;
+      values[j * NI + i] =
+        Math.sin(lon / 23) * Math.cos(lat / 17) > 0.55
+          ? NaN
+          : param === 2
+            ? 0.6 * Math.sin(lat / 9 + h / 5)
+            : 0.4 * Math.cos(lon / 11 + h / 7);
     }
   return { param, refTime: T0, forecastHours: h, la1: -90, lo1: 0, dLat: 0.25, dLon: 0.25, ni: NI, nj: NJ, values, decScale: 2 };
 };
 const bigDir = path.join(ROOT, 'bl-big');
 fs.mkdirSync(bigDir, { recursive: true });
 fs.writeFileSync(path.join(bigDir, 'global.grb2'), encodeGrib2File([2, 3].flatMap((p) => [0, 6, 12].map((h) => globalField(p, h)))));
-fs.writeFileSync(path.join(bigDir, 'region.grb2'), encodeGrib2File([2, 3].flatMap((p) => [0, 6, 12].map((h) => field(p, 50, -2, 0.02, 400, 300, h)))));
+fs.writeFileSync(
+  path.join(bigDir, 'region.grb2'),
+  encodeGrib2File([2, 3].flatMap((p) => [0, 6, 12].map((h) => field(p, 50, -2, 0.02, 400, 300, h)))),
+);
 const big: [number, number][] = [];
 const rb = rng(424242);
 for (let i = 0; i < 190_000; i++) big.push([35 + rb() * 30, -15 + rb() * 45]);
@@ -119,14 +140,25 @@ const out: Record<string, unknown> = { mode, node: process.version, arch: proces
   const b = g1(v, 400);
   out.coast = {
     noStations: { grib: a.filter((p) => p.source === 'grib').length, total: a.length },
-    with100Stations: { grib: b.filter((p) => p.source === 'grib').length, utcef: b.filter((p) => p.source === 'utcef').length, total: b.length },
+    with100Stations: {
+      grib: b.filter((p) => p.source === 'grib').length,
+      utcef: b.filter((p) => p.source === 'utcef').length,
+      total: b.length,
+    },
   };
 }
 
 // 2. Budget utilisation over a zoom/pan sweep on the coastal grid (GRIB only and with stations).
 function sweep(g: (bbox: string, mp: number) => Pt[], maxPoints: number) {
   const rs = rng(99);
-  let used = 0, n = 0, minU = 1, resolved = 0, cands = 0, lim = 0, limUse = 0, limCand = 0;
+  let used = 0,
+    n = 0,
+    minU = 1,
+    resolved = 0,
+    cands = 0,
+    lim = 0,
+    limUse = 0,
+    limCand = 0;
   for (let w = 0.25; w <= 4; w *= 1.07) {
     for (let r = 0; r < 4; r++) {
       const west = 2 + rs() * Math.max(0.01, 2.98 - w * 0.5);
@@ -147,7 +179,16 @@ function sweep(g: (bbox: string, mp: number) => Pt[], maxPoints: number) {
       }
     }
   }
-  return { budgetLimited: lim, budgetLimitedUse: lim ? r2(limUse / lim) : null, budgetLimitedResolvedShare: lim ? r2(limCand / lim) : null, meanUse: r2(used / n), minUse: r2(minU), requests: n, meanResolved: fillMode ? Math.round(resolved / n) : null, meanCandidates: fillMode ? Math.round(cands / n) : null };
+  return {
+    budgetLimited: lim,
+    budgetLimitedUse: lim ? r2(limUse / lim) : null,
+    budgetLimitedResolvedShare: lim ? r2(limCand / lim) : null,
+    meanUse: r2(used / n),
+    minUse: r2(minU),
+    requests: n,
+    meanResolved: fillMode ? Math.round(resolved / n) : null,
+    meanCandidates: fillMode ? Math.round(cands / n) : null,
+  };
 }
 {
   const g0 = gridCall({ data: null, error: null, grib: coastGrib, utcef: null, preferGrib: true });
@@ -159,10 +200,12 @@ function sweep(g: (bbox: string, mp: number) => Pt[], maxPoints: number) {
 {
   const g0 = gridCall({ data: null, error: null, grib: coastGrib, utcef: null, preferGrib: true });
   const rs = rng(5);
-  let kept = 0, inOverlap = 0;
+  let kept = 0,
+    inOverlap = 0;
   for (let k = 0; k < 40; k++) {
     const w = 0.5 + rs() * 1.5;
-    const west = 2.1 + rs() * 0.8, south = 51.1 + rs() * 0.8;
+    const west = 2.1 + rs() * 0.8,
+      south = 51.1 + rs() * 0.8;
     const A = g0(`${west},${south},${west + w},${south + w}`, 400);
     const sh = w / 4;
     const B = new Set(g0(`${west + sh},${south},${west + w + sh},${south + w}`, 400).map((p) => `${p.latitude},${p.longitude}`));
@@ -190,12 +233,15 @@ function sweep(g: (bbox: string, mp: number) => Pt[], maxPoints: number) {
   for (const [name, bbox, mp] of cases) {
     g(bbox, mp); // warm-up
     const times: number[] = [];
-    let alloc = 0, ab = 0, pts = 0, gribPts = 0;
+    let alloc = 0,
+      ab = 0,
+      pts = 0,
+      gribPts = 0;
     for (let s = 0; s < 24; s++) {
       gc();
       const m0 = process.memoryUsage();
       const st = performance.now();
-      const p = g(bbox, mp, T0 + s * HOUR / 2);
+      const p = g(bbox, mp, T0 + (s * HOUR) / 2);
       times.push(performance.now() - st);
       const m1 = process.memoryUsage();
       alloc = Math.max(alloc, m1.heapUsed - m0.heapUsed);
