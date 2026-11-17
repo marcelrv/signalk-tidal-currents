@@ -244,10 +244,20 @@ export const useAppStore = create<AppState>((set, get) => {
     }
   },
   deleteDataset: async (id) => {
-    await write(() => api.deleteDataset(id));
     // Deleting frees disk and drops the install out of the priority stack —
     // refresh everything that displays either, not just the dataset list.
-    await Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
+    // Refresh on failure too: a failed delete usually means the list was
+    // stale, and keeping the stale row invites retrying the same delete.
+    const refresh = () => Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
+    try {
+      await write(() => api.deleteDataset(id));
+    } catch (e) {
+      // The DELETE error is what the dialog must show — a failing refresh
+      // must not replace it.
+      await refresh().catch(() => undefined);
+      throw e;
+    }
+    await refresh();
   },
   setAutoUpdate: async (id, enabled) => {
     await write(() => api.setAutoUpdate(id, enabled));
