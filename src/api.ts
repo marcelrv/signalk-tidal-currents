@@ -184,6 +184,23 @@ function parseWindow(
 }
 
 /**
+ * A count parameter (`limit` / `maxPoints`): missing or unparseable → `def`,
+ * `0` → `max` ("as many as the endpoint allows" — never truly unlimited, the
+ * cap bounds the scan and the payload), `1..` → capped at `max`, negative →
+ * 400 (a caller bug, not something to guess around). Returns null when it
+ * answered with the 400.
+ */
+function parseLimit(name: string, raw: unknown, def: number, max: number, res: Res): number | null {
+  const n = parseInt(String(raw), 10);
+  if (Number.isNaN(n)) return def;
+  if (n < 0) {
+    res.status(400).json({ error: `${name} must be >= 0 (0 = the maximum, ${max})` });
+    return null;
+  }
+  return n === 0 ? max : Math.min(max, n);
+}
+
+/**
  * Cell sizes (degrees) for stable spatial thinning, fine → coarse. Cell
  * boundaries are aligned to the global origin (multiples of the size from
  * lon/lat 0), NOT to the query bbox — so which stations survive thinning
@@ -327,10 +344,14 @@ export function handleStations(state: ApiState, req: Req, res: Res): void {
   if (req.query.bbox !== undefined) {
     const bbox = parseBbox(req, res);
     if (!bbox) return;
-    const maxPoints = Math.min(
+    const maxPoints = parseLimit(
+      req.query.maxPoints !== undefined ? 'maxPoints' : 'limit',
+      req.query.maxPoints ?? req.query.limit,
+      500,
       5000,
-      Math.max(1, parseInt(String(req.query.maxPoints ?? req.query.limit), 10) || 500),
+      res,
     );
+    if (maxPoints === null) return;
 
     // Gather everything in the viewport first (capped), then thin the
     // MERGED set so harmonic + UTCEF together honour one budget.
@@ -352,7 +373,8 @@ export function handleStations(state: ApiState, req: Req, res: Res): void {
 
   const pos = parsePosition(req, res);
   if (!pos) return;
-  const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 10));
+  const limit = parseLimit('limit', req.query.limit, 10, 50, res);
+  if (limit === null) return;
   const legacy = state.data
     ? nearestCurrentStations(state.data, pos.lat, pos.lon, limit).map((n) => ({
         distanceKm: n.distanceKm,
@@ -559,7 +581,8 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       res.status(400).json({ error: 'invalid time — expected ISO 8601' });
       return;
     }
-    const maxPoints = Math.min(5000, Math.max(1, parseInt(String(req.query.maxPoints), 10) || 400));
+    const maxPoints = parseLimit('maxPoints', req.query.maxPoints, 400, 5000, res);
+    if (maxPoints === null) return;
     const ctx = createResolveCtx(state, REST_FALLBACK_MAX_KM, { bbox, legacy: includeStations });
     res.json({
       time: new Date(time).toISOString(),

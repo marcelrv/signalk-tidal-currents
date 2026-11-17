@@ -139,15 +139,37 @@ test('currentsApi: route errors reject with the same status and body', async () 
   assert.equal(empty.status, 503);
 });
 
-test('currentsApi.findStations: a non-positive limit is clamped, never slices from the end', async () => {
-  const state = loadedState();
+test('limit / maxPoints: missing → default, 0 → the maximum, negative → 400 (never slices from the end)', async () => {
+  // 60 UTCEF stations: more than the nearest-mode cap (50) and the default (10).
+  const many: Array<[string, number, number]> = [];
+  for (let i = 0; i < 60; i++) many.push([`M-${i}`, 53 + (i % 10) * 0.05, 5 + Math.floor(i / 10) * 0.05]);
+  const state: ApiState = { data: null, error: null, utcef: createUtcefSource(writeUtcefDir({ 'many.utcef': many })) };
   const http = httpApi(state);
   const api = createCurrentsApi(state, () => true);
-  const one = await api.findStations(53.2, 5.2, 1);
-  assert.equal(one.length, 1);
+  const near = { latitude: '53.2', longitude: '5.2' };
+
+  assert.equal((await api.findStations(53.2, 5.2)).length, 10, 'missing → default 10');
+  assert.equal(http('/stations', { ...near, limit: 'abc' }).body.length, 10, 'unparseable → default 10');
+  assert.equal((await api.findStations(53.2, 5.2, 1)).length, 1);
+  assert.equal((await api.findStations(53.2, 5.2, 0)).length, 50, '0 → the cap, 50');
+  assert.equal((await api.findStations(53.2, 5.2, 500)).length, 50, 'capped at 50');
   // -1 used to reach slice(0, -1) and return every station but one.
-  assert.deepEqual(await api.findStations(53.2, 5.2, -1), one);
-  assert.deepEqual(http('/stations', { latitude: '53.2', longitude: '5.2', limit: '-3' }).body, one);
+  const neg = await rejection(api.findStations(53.2, 5.2, -1));
+  assert.equal(neg.status, 400);
+  assert.deepEqual(neg.body, http('/stations', { ...near, limit: '-1' }).body);
+
+  const bbox = '4.9,52.9,5.4,53.6';
+  assert.equal(http('/stations', { bbox, maxPoints: '0' }).body.length, 60, 'bbox: 0 → the cap (5000), all 60');
+  assert.equal(http('/stations', { bbox, limit: '0' }).body.length, 60, 'bbox: legacy limit alias too');
+  assert.equal(http('/stations', { bbox, maxPoints: '-5' }).code, 400);
+  assert.match(http('/stations', { bbox, limit: '-5' }).body.error, /^limit must be >= 0/);
+
+  const time = '2026-01-10T00:00:00Z';
+  assert.equal(http('/grid', { bbox, time, maxPoints: '0' }).code, 200, '/grid: 0 → the cap');
+  assert.equal(http('/grid', { bbox, time, maxPoints: '0' }).body.points.length, 60);
+  const gneg = http('/grid', { bbox, time, maxPoints: '-1' });
+  assert.equal(gneg.code, 400);
+  assert.match(gneg.body.error, /^maxPoints must be >= 0/);
 });
 
 test('currentsApi: a handler that returns without a response rejects instead of hanging', async () => {

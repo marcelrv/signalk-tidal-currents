@@ -203,6 +203,12 @@ generic "download failed" / "catalog sync failed").
 | `GET /vector?latitude=&longitude=&time=` | Set/drift vector at a position (GRIB → UTCEF → station, configurable) |
 | `GET /grid?bbox=w,s,e,n&time=&maxPoints=&stations=` | Current vectors over a viewport for a flow-field overlay — GRIB lattice samples and UTCEF stations, each point answered by the same resolver as `/vector` (each point has a `source` field), at most `maxPoints`. `stations=1` opts legacy harmonic stations in too (`source: "station"`) so `/grid` agrees with `/vector` when they outrank GRIB; by default they are skipped (use `/stations?bbox=`) |
 
+**Count parameters** (`limit`, `maxPoints`): omitted or not a number → the
+default (`/stations` nearest: 10, `/stations?bbox=`: 500, `/grid`: 400);
+`0` → the endpoint's maximum (nearest: 50, viewport queries: 5000), never
+truly unlimited; larger values are capped at that maximum; a negative value
+is a 400 error.
+
 **Stations vs positions**: harmonic and UTCEF data are station-based; GRIB
 data is gridded and has no stations, so GRIB-backed lookups are purely
 positional (`/vector`, `/timeline`, `/grid`). `/grid` also includes UTCEF
@@ -359,7 +365,8 @@ interface CurrentsApiV1 {
 - `findStations` returns exactly the JSON of
   `GET /stations?latitude=&longitude=&limit=` (incl. `vectorCapable`), and
   `getTimeline` exactly that of `GET /stations/{id}/timeline?start=&end=&step=`.
-  Both run the same code as those routes, with the same defaults and limits.
+  Both run the same code as those routes, with the same defaults and limits
+  (`findStations` limit: omitted → 10, `0` → the maximum 50, negative → 400).
 - Where the route would answer with an error, the promise rejects with an
   `Error` carrying `status` (400/404/503) and `body` (the route's JSON body);
   `message` is the body's `error` text.

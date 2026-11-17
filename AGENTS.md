@@ -202,7 +202,9 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
   `?latitude=&longitude=` form) returns the current stations inside a
   viewport (gathered through the cell index), thinned to `maxPoints` (default
-  500, max 5000; legacy alias `limit`) via `thinByCellLadder()` — a stable
+  500, max 5000; legacy alias `limit`) via `thinByCellLadder()`. All count
+  params (`limit`/`maxPoints`, incl. `/grid`) go through `parseLimit`:
+  missing/NaN → default, `0` → the cap, negative → 400. Thinning is a stable
   spatial cell ladder (`CELL_LADDER_DEG`, fine→coarse) keeping ONE
   representative (nearest the cell centre) per occupied cell at the finest
   level whose occupancy fits. Cells are aligned to the **global origin**, not
