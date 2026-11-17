@@ -42,10 +42,10 @@ const EPOCH_MS = Date.UTC(2000, 0, 1, 0, 0, 0);
 export interface AstroArgs {
   /** Earth-rotation term: 15° × total UT hours since a day boundary. */
   T15: number;
-  s: number;  // mean longitude of the Moon
-  h: number;  // mean longitude of the Sun
-  p: number;  // mean longitude of lunar perigee
-  N: number;  // longitude of the Moon's ascending node
+  s: number; // mean longitude of the Moon
+  h: number; // mean longitude of the Sun
+  p: number; // mean longitude of lunar perigee
+  N: number; // longitude of the Moon's ascending node
   p1: number; // mean longitude of solar perigee (perihelion)
 }
 
@@ -63,7 +63,7 @@ export function astronomicalArgs(timeMs: number): AstroArgs {
 
   const s = 218.3164477 + 481267.88123421 * T - 0.0015786 * T * T + (T * T * T) / 538841;
   const h = 280.4664567 + 36000.76982779 * T + 0.0003032028 * T * T;
-  const p = 83.3532465 + 4069.0137287 * T - 0.0103200 * T * T;
+  const p = 83.3532465 + 4069.0137287 * T - 0.01032 * T * T;
   const N = 125.0445479 - 1934.1362891 * T + 0.0020754 * T * T;
   const p1 = 282.9373 + 1.7195366 * T + 0.0004597 * T * T;
 
@@ -103,16 +103,11 @@ interface ConstituentDef {
   nodal: NodalFamily;
 }
 
-const C = (
-  speed: number,
-  T15: number,
-  s: number,
-  h: number,
-  p: number,
-  p1: number,
-  konst: number,
-  nodal: NodalFamily,
-): ConstituentDef => ({ speed, combo: { T15, s, h, p, p1, const: konst }, nodal });
+const C = (speed: number, T15: number, s: number, h: number, p: number, p1: number, konst: number, nodal: NodalFamily): ConstituentDef => ({
+  speed,
+  combo: { T15, s, h, p, p1, const: konst },
+  nodal,
+});
 
 /**
  * Standard IHO/Schureman constituents. Speeds are the canonical catalog
@@ -123,44 +118,44 @@ const C = (
  */
 export const CONSTITUENTS: Record<string, ConstituentDef> = {
   // Semidiurnal
-  M2:  C(28.9841042, 2, -2,  2,  0,  0,    0, 'M2'),
-  S2:  C(30.0000000, 2,  0,  0,  0,  0,    0, 'none'),
-  N2:  C(28.4397295, 2, -3,  2,  1,  0,    0, 'M2'),
-  K2:  C(30.0821373, 2,  0,  2,  0,  0,    0, 'K2'),
-  NU2: C(28.5125831, 2, -3,  4, -1,  0,    0, 'M2'),
-  MU2: C(27.9682084, 2, -4,  4,  0,  0,    0, 'M2'),
-  '2N2': C(27.8953548, 2, -4,  2,  2,  0,   0, 'M2'),
-  L2:  C(29.5284789, 2, -1,  2, -1,  0,  180, 'M2'),
-  T2:  C(29.9589333, 2,  0, -1,  0,  1,    0, 'none'),
-  R2:  C(30.0410667, 2,  0,  1,  0, -1,  180, 'none'),
-  LAMBDA2: C(29.4556253, 2, -1,  0,  1,  0, 180, 'M2'),
-  '2SM2': C(31.0158958, 2,  2, -2,  0,  0,   0, 'M2⁻¹'),
+  M2: C(28.9841042, 2, -2, 2, 0, 0, 0, 'M2'),
+  S2: C(30.0, 2, 0, 0, 0, 0, 0, 'none'),
+  N2: C(28.4397295, 2, -3, 2, 1, 0, 0, 'M2'),
+  K2: C(30.0821373, 2, 0, 2, 0, 0, 0, 'K2'),
+  NU2: C(28.5125831, 2, -3, 4, -1, 0, 0, 'M2'),
+  MU2: C(27.9682084, 2, -4, 4, 0, 0, 0, 'M2'),
+  '2N2': C(27.8953548, 2, -4, 2, 2, 0, 0, 'M2'),
+  L2: C(29.5284789, 2, -1, 2, -1, 0, 180, 'M2'),
+  T2: C(29.9589333, 2, 0, -1, 0, 1, 0, 'none'),
+  R2: C(30.0410667, 2, 0, 1, 0, -1, 180, 'none'),
+  LAMBDA2: C(29.4556253, 2, -1, 0, 1, 0, 180, 'M2'),
+  '2SM2': C(31.0158958, 2, 2, -2, 0, 0, 0, 'M2⁻¹'),
   // Diurnal
-  K1:  C(15.0410686, 1,  0,  1,  0,  0,   90, 'K1'),
-  O1:  C(13.9430356, 1, -2,  1,  0,  0,  -90, 'O1'),
-  P1:  C(14.9589314, 1,  0, -1,  0,  0,  -90, 'none'),
-  Q1:  C(13.3986609, 1, -3,  1,  1,  0,  -90, 'O1'),
-  S1:  C(15.0000000, 1,  0,  0,  0,  0,    0, 'none'),
-  J1:  C(15.5854433, 1,  1,  1, -1,  0,   90, 'J1'),
-  '2Q1': C(12.8542862, 1, -4,  1,  2,  0, -90, 'O1'),
-  RHO1:  C(13.4715145, 1, -3,  3, -1,  0, -90, 'O1'),
+  K1: C(15.0410686, 1, 0, 1, 0, 0, 90, 'K1'),
+  O1: C(13.9430356, 1, -2, 1, 0, 0, -90, 'O1'),
+  P1: C(14.9589314, 1, 0, -1, 0, 0, -90, 'none'),
+  Q1: C(13.3986609, 1, -3, 1, 1, 0, -90, 'O1'),
+  S1: C(15.0, 1, 0, 0, 0, 0, 0, 'none'),
+  J1: C(15.5854433, 1, 1, 1, -1, 0, 90, 'J1'),
+  '2Q1': C(12.8542862, 1, -4, 1, 2, 0, -90, 'O1'),
+  RHO1: C(13.4715145, 1, -3, 3, -1, 0, -90, 'O1'),
   // Long period
-  MM:  C(0.5443747, 0,  1,  0, -1,  0,    0, 'Mm'),
-  MF:  C(1.0980331, 0,  2,  0,  0,  0,    0, 'Mf'),
-  SSA: C(0.0821373, 0,  0,  2,  0,  0,    0, 'none'),
-  SA:  C(0.0410686, 0,  0,  1,  0,  0,    0, 'none'),
-  MSF: C(1.0158958, 0,  2, -2,  0,  0,    0, 'M2⁻¹'), // S2−M2 compound
+  MM: C(0.5443747, 0, 1, 0, -1, 0, 0, 'Mm'),
+  MF: C(1.0980331, 0, 2, 0, 0, 0, 0, 'Mf'),
+  SSA: C(0.0821373, 0, 0, 2, 0, 0, 0, 'none'),
+  SA: C(0.0410686, 0, 0, 1, 0, 0, 0, 'none'),
+  MSF: C(1.0158958, 0, 2, -2, 0, 0, 0, 'M2⁻¹'), // S2−M2 compound
   // Shallow-water / overtides
-  M3:  C(43.4761563, 3, -3,  3,  0,  0,    0, 'M2^n'),
-  MK3: C(44.0251729, 3, -2,  3,  0,  0,   90, 'M2·K1'),
-  '2MK3': C(42.9271398, 3, -4,  3,  0,  0, -90, 'M2²·K1'),
-  M4:  C(57.9682084, 4, -4,  4,  0,  0,    0, 'M2^n'),
-  MS4: C(58.9841042, 4, -2,  2,  0,  0,    0, 'M2'),
-  MN4: C(57.4238337, 4, -5,  4,  1,  0,    0, 'M2^n'),
-  S4:  C(60.0000000, 4,  0,  0,  0,  0,    0, 'none'),
-  M6:  C(86.9523127, 6, -6,  6,  0,  0,    0, 'M2^n'),
-  S6:  C(90.0000000, 6,  0,  0,  0,  0,    0, 'none'),
-  M8:  C(115.9364166, 8, -8,  8,  0,  0,   0, 'M2^n'),
+  M3: C(43.4761563, 3, -3, 3, 0, 0, 0, 'M2^n'),
+  MK3: C(44.0251729, 3, -2, 3, 0, 0, 90, 'M2·K1'),
+  '2MK3': C(42.9271398, 3, -4, 3, 0, 0, -90, 'M2²·K1'),
+  M4: C(57.9682084, 4, -4, 4, 0, 0, 0, 'M2^n'),
+  MS4: C(58.9841042, 4, -2, 2, 0, 0, 0, 'M2'),
+  MN4: C(57.4238337, 4, -5, 4, 1, 0, 0, 'M2^n'),
+  S4: C(60.0, 4, 0, 0, 0, 0, 0, 'none'),
+  M6: C(86.9523127, 6, -6, 6, 0, 0, 0, 'M2^n'),
+  S6: C(90.0, 6, 0, 0, 0, 0, 0, 'none'),
+  M8: C(115.9364166, 8, -8, 8, 0, 0, 0, 'M2^n'),
   // Deliberately absent: M1 and OO1 (the NOS standard set's remaining pair).
   // Their nodal corrections need Schureman's full I/ξ/ν obliquity theory (no
   // reliable short cosine-in-N series), and their amplitudes at NOAA current
@@ -197,29 +192,33 @@ export function nodeFactors(a: AstroArgs, name: string): { f: number; u: number 
 
 function computeNodeFactors(def: ConstituentDef, a: AstroArgs): { f: number; u: number } {
   const N = a.N * DEG2RAD;
-  const cN = Math.cos(N), c2N = Math.cos(2 * N), c3N = Math.cos(3 * N);
-  const sN = Math.sin(N), s2N = Math.sin(2 * N), s3N = Math.sin(3 * N);
+  const cN = Math.cos(N),
+    c2N = Math.cos(2 * N),
+    c3N = Math.cos(3 * N);
+  const sN = Math.sin(N),
+    s2N = Math.sin(2 * N),
+    s3N = Math.sin(3 * N);
 
   switch (def.nodal) {
     case 'none':
       return { f: 1, u: 0 };
     case 'Mm':
-      return { f: 1.0 - 0.1300 * cN + 0.0013 * c2N, u: 0 };
+      return { f: 1.0 - 0.13 * cN + 0.0013 * c2N, u: 0 };
     case 'Mf':
-      return { f: 1.0429 + 0.4135 * cN - 0.0040 * c2N, u: -23.74 * sN + 2.68 * s2N - 0.38 * s3N };
+      return { f: 1.0429 + 0.4135 * cN - 0.004 * c2N, u: -23.74 * sN + 2.68 * s2N - 0.38 * s3N };
     case 'O1':
       return {
         f: 1.0089 + 0.1871 * cN - 0.0147 * c2N + 0.0014 * c3N,
-        u: 10.80 * sN - 1.34 * s2N + 0.19 * s3N,
+        u: 10.8 * sN - 1.34 * s2N + 0.19 * s3N,
       };
     case 'K1':
       return {
-        f: 1.0060 + 0.1150 * cN - 0.0088 * c2N + 0.0006 * c3N,
+        f: 1.006 + 0.115 * cN - 0.0088 * c2N + 0.0006 * c3N,
         u: -8.86 * sN + 0.68 * s2N - 0.07 * s3N,
       };
     case 'J1':
       return {
-        f: 1.0129 + 0.1676 * cN - 0.0170 * c2N + 0.0016 * c3N,
+        f: 1.0129 + 0.1676 * cN - 0.017 * c2N + 0.0016 * c3N,
         u: -12.94 * sN + 1.34 * s2N - 0.19 * s3N,
       };
     case 'M2': {
@@ -241,14 +240,14 @@ function computeNodeFactors(def: ConstituentDef, a: AstroArgs): { f: number; u: 
     case 'M2·K1': {
       const fM2 = 1.0004 - 0.0373 * cN + 0.0002 * c2N;
       const uM2 = -2.14 * sN;
-      const fK1 = 1.0060 + 0.1150 * cN - 0.0088 * c2N + 0.0006 * c3N;
+      const fK1 = 1.006 + 0.115 * cN - 0.0088 * c2N + 0.0006 * c3N;
       const uK1 = -8.86 * sN + 0.68 * s2N - 0.07 * s3N;
       return { f: fM2 * fK1, u: uM2 + uK1 };
     }
     case 'M2²·K1': {
       const fM2 = 1.0004 - 0.0373 * cN + 0.0002 * c2N;
       const uM2 = -2.14 * sN;
-      const fK1 = 1.0060 + 0.1150 * cN - 0.0088 * c2N + 0.0006 * c3N;
+      const fK1 = 1.006 + 0.115 * cN - 0.0088 * c2N + 0.0006 * c3N;
       const uK1 = -8.86 * sN + 0.68 * s2N - 0.07 * s3N;
       return { f: fM2 * fM2 * fK1, u: 2 * uM2 - uK1 };
     }

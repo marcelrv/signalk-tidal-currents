@@ -105,7 +105,11 @@ function toMsPerSecond(unit: string | undefined): number {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /** Parse one UTCEF document (already-decompressed JSON text) into current stations. */
-export function parseUtcef(text: string, sourceLabel: string, warnings: string[]): {
+export function parseUtcef(
+  text: string,
+  sourceLabel: string,
+  warnings: string[],
+): {
   title?: string;
   copyright?: string;
   license?: string;
@@ -128,9 +132,7 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
   const major = parseInt(version.split('.')[0], 10);
   if (Number.isFinite(major) && major > SUPPORTED_SCHEMA_MAJOR) {
     // Reject unsupported MAJOR versions (spec §2) rather than mis-parse.
-    throw new Error(
-      `${sourceLabel}: schema_version ${version} major ${major} > supported ${SUPPORTED_SCHEMA_MAJOR}`,
-    );
+    throw new Error(`${sourceLabel}: schema_version ${version} major ${major} > supported ${SUPPORTED_SCHEMA_MAJOR}`);
   }
 
   const features: any[] = Array.isArray(doc?.dataset?.features) ? doc.dataset.features : [];
@@ -161,12 +163,7 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
     }
 
     const coords = f?.geometry?.coordinates;
-    if (
-      f?.geometry?.type !== 'Point' ||
-      !Array.isArray(coords) ||
-      typeof coords[0] !== 'number' ||
-      typeof coords[1] !== 'number'
-    ) {
+    if (f?.geometry?.type !== 'Point' || !Array.isArray(coords) || typeof coords[0] !== 'number' || typeof coords[1] !== 'number') {
       warnings.push(`${sourceLabel}: feature "${id || name}" has no valid Point geometry — skipped`);
       continue;
     }
@@ -250,15 +247,11 @@ export function parseUtcef(text: string, sourceLabel: string, warnings: string[]
   }
 
   for (const [cname, count] of unknownConstituents) {
-    warnings.push(
-      `${sourceLabel}: ${count} station(s) reference unknown constituent "${cname}" — skipped`,
-    );
+    warnings.push(`${sourceLabel}: ${count} station(s) reference unknown constituent "${cname}" — skipped`);
   }
 
   const dataSources: UtcefDataSource[] | undefined = Array.isArray(meta.data_sources)
-    ? meta.data_sources
-        .filter((s: any) => s && typeof s.name === 'string')
-        .map((s: any) => ({ name: s.name, url: s.url, role: s.role }))
+    ? meta.data_sources.filter((s: any) => s && typeof s.name === 'string').map((s: any) => ({ name: s.name, url: s.url, role: s.role }))
     : undefined;
 
   return {
@@ -524,7 +517,7 @@ export function utcefSampleAt(station: UtcefCurrentStation, timeMs: number): Utc
   }
   const speedMs = Math.hypot(u, v);
   // Direction of set (°T): same convention as the GRIB source.
-  const direction = speedMs > 1e-6 ? ((90 - Math.atan2(v, u) * RAD2DEG) % 360 + 360) % 360 : 0;
+  const direction = speedMs > 1e-6 ? (((90 - Math.atan2(v, u) * RAD2DEG) % 360) + 360) % 360 : 0;
   return {
     time: new Date(timeMs).toISOString(),
     speedKn: Math.round((speedMs / KNOTS_TO_MS) * 100) / 100,
@@ -581,7 +574,12 @@ const LARGE_AREA_BUCKETS_LON = 360 / LARGE_AREA_BUCKET_DEG;
  * restricts the probe to one dataset's stations.
  */
 export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.5) {
-  const points = createCellIndex(stations, (s) => s.latitude, (s) => s.longitude, cellDeg);
+  const points = createCellIndex(
+    stations,
+    (s) => s.latitude,
+    (s) => s.longitude,
+    cellDeg,
+  );
   const nLon = Math.round(360 / cellDeg);
   const areaCells = new Map<number, number[]>(); // cell key → station ranks (ascending)
   // Polygons whose bbox covers more than MAX_AREA_CELLS cells would be pushed
@@ -589,7 +587,8 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
   // coarse 10° buckets instead (ranks ascending within a bucket).
   const largeAreas = new Map<number, Array<{ s: UtcefCurrentStation; rank: number; b: AreaBounds }>>();
   const MAX_AREA_CELLS = 64;
-  const bucketKey = (j: number, i: number) => j * LARGE_AREA_BUCKETS_LON + (((i % LARGE_AREA_BUCKETS_LON) + LARGE_AREA_BUCKETS_LON) % LARGE_AREA_BUCKETS_LON);
+  const bucketKey = (j: number, i: number) =>
+    j * LARGE_AREA_BUCKETS_LON + (((i % LARGE_AREA_BUCKETS_LON) + LARGE_AREA_BUCKETS_LON) % LARGE_AREA_BUCKETS_LON);
   for (let rank = 0; rank < stations.length; rank++) {
     const s = stations[rank];
     const b = utcefAreaBounds(s);
@@ -620,8 +619,7 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
       }
     }
   }
-  const inFiles = (s: UtcefCurrentStation, files?: ReadonlySet<string>) =>
-    !files || (s.file !== undefined && files.has(s.file));
+  const inFiles = (s: UtcefCurrentStation, files?: ReadonlySet<string>) => !files || (s.file !== undefined && files.has(s.file));
   return {
     /** The station cell index (nearest / within / bbox queries). */
     points,
@@ -644,9 +642,12 @@ export function utcefCoverageIndex(stations: UtcefCurrentStation[], cellDeg = 0.
         const b = a.b;
         if (lat < b.south || lat > b.north) continue;
         // Rings may be unwrapped past ±180: mirror pointInArea's three frames.
-        if (
-          !((lon >= b.west && lon <= b.east) || (lon + 360 >= b.west && lon + 360 <= b.east) || (lon - 360 >= b.west && lon - 360 <= b.east))
-        ) continue;
+        if (!(
+          (lon >= b.west && lon <= b.east) ||
+          (lon + 360 >= b.west && lon + 360 <= b.east) ||
+          (lon - 360 >= b.west && lon - 360 <= b.east)
+        ))
+          continue;
         if (inFiles(a.s, files) && pointInArea(a.s.representativeArea!, lat, lon)) {
           contained = a.s;
           break;
@@ -685,8 +686,7 @@ function pointInRing(area: number[][][], lat: number, lon: number): boolean {
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
     const [xi, yi] = ring[i];
     const [xj, yj] = ring[j];
-    const intersect =
-      yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    const intersect = yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
     if (intersect) inside = !inside;
   }
   return inside;
@@ -737,14 +737,10 @@ export function utcefVectorAt(
       sample: utcefSampleAt(st, timeMs),
     };
   }
-  const stations = files
-    ? data.currentStations.filter((s) => s.file !== undefined && files.has(s.file))
-    : data.currentStations;
+  const stations = files ? data.currentStations.filter((s) => s.file !== undefined && files.has(s.file)) : data.currentStations;
   if (stations.length === 0) return null;
 
-  const containing = stations.find(
-    (s) => s.representativeArea && pointInArea(s.representativeArea, lat, lon),
-  );
+  const containing = stations.find((s) => s.representativeArea && pointInArea(s.representativeArea, lat, lon));
   if (containing) {
     return {
       station: containing,

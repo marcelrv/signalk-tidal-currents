@@ -36,21 +36,8 @@ import {
 } from './gribcurrents.js';
 import { HarmonicsData, IdxStation } from './harmonics.js';
 import { DatasetRankEntry, SourceType } from './priority.js';
-import {
-  CurrentSample,
-  currentSampleAt,
-  distanceKm,
-  isVectorCapable,
-  legacyCoverageIndexFor,
-  lonHalfWidthDeg,
-} from './predict.js';
-import {
-  UtcefCurrentStation,
-  UtcefData,
-  utcefAreaBounds,
-  utcefCoverageIndexFor,
-  utcefSampleAt,
-} from './utcef.js';
+import { CurrentSample, currentSampleAt, distanceKm, isVectorCapable, legacyCoverageIndexFor, lonHalfWidthDeg } from './predict.js';
+import { UtcefCurrentStation, UtcefData, utcefAreaBounds, utcefCoverageIndexFor, utcefSampleAt } from './utcef.js';
 
 export interface ResolvedVector {
   source: 'grib' | 'utcef' | 'station';
@@ -143,7 +130,11 @@ export function orderedLayers(state: ApiState, maxStationKm: number): readonly L
   for (const e of entries) {
     if (e.maxStationKm !== maxStationKm || e.rank.length !== rank.length) continue;
     let same = true;
-    for (let i = 0; i < rank.length; i++) if (e.rank[i] !== rank[i]) { same = false; break; }
+    for (let i = 0; i < rank.length; i++)
+      if (e.rank[i] !== rank[i]) {
+        same = false;
+        break;
+      }
     if (same) return e.layers;
   }
   const stackKm = Math.min(maxStationKm, UTCEF_DATASET_FALLBACK_MAX_KM);
@@ -315,7 +306,11 @@ function utcefExtent(u: UtcefData, snapshot: readonly Layer[], l: Layer): Extent
     resolveBuildCounts.layerExtents++;
     e = new Extent();
     const perFile = fileExtentsFor(cache, u, l.utcefMaxKm);
-    if (l.files) for (const f of l.files) { const fe = perFile.get(f); if (fe) e.addAll(fe); }
+    if (l.files)
+      for (const f of l.files) {
+        const fe = perFile.get(f);
+        if (fe) e.addAll(fe);
+      }
     else for (const fe of perFile.values()) e.addAll(fe);
     cache.layerExtents.set(l, e);
   }
@@ -382,11 +377,7 @@ export interface CtxOptions {
  * answer, with their data resolved once. Cheap (everything long-lived is
  * cached per (data, layer snapshot)); nothing in it survives the request.
  */
-export function createResolveCtx(
-  state: ApiState,
-  maxStationKm = REST_FALLBACK_MAX_KM,
-  opts: CtxOptions = {},
-): ResolveCtx {
+export function createResolveCtx(state: ApiState, maxStationKm = REST_FALLBACK_MAX_KM, opts: CtxOptions = {}): ResolveCtx {
   const grib = state.grib?.get() ?? null;
   const utcefRaw = state.utcef?.get() ?? null;
   const utcef = utcefRaw && utcefRaw.currentStations.length > 0 ? utcefRaw : null;
@@ -510,9 +501,7 @@ export function sampleClaimAt(ctx: ResolveCtx, claim: Claim, lat: number, lon: n
   }
   const s = claim.station;
   const sample = currentSampleAt(ctx.harmonics!, s, timeMs);
-  return sample
-    ? { source: 'station', sample, station: s, distanceKm: round2(distanceKm(lat, lon, s.latitude, s.longitude)) }
-    : null;
+  return sample ? { source: 'station', sample, station: s, distanceKm: round2(distanceKm(lat, lon, s.latitude, s.longitude)) } : null;
 }
 
 /**
@@ -556,7 +545,11 @@ function rangeKey(ctx: ResolveCtx, timeMs: number): string {
     if (l.type !== 'grib2') continue;
     for (const s of l.series!) {
       bits = (bits << 1) | (gribSeriesInRange(s, timeMs) ? 1 : 0);
-      if (++n === 4) { key += bits.toString(16); bits = 0; n = 0; }
+      if (++n === 4) {
+        key += bits.toString(16);
+        bits = 0;
+        n = 0;
+      }
     }
   }
   return n > 0 ? key + bits.toString(16) + n : key;
@@ -615,14 +608,19 @@ export function ownWinFor(ctx: ResolveCtx, kind: 'utcef' | 'station', timeMs: nu
   resolveBuildCounts.ownWin++;
   const fill: ResolveCtx = { ...ctx, counters: { claims: 0, resolves: 0, layerProbes: 0, samples: 0 } };
   const td: TimeDependence = { timeDependent: false };
-  const stations: ReadonlyArray<UtcefCurrentStation | IdxStation> = kind === 'utcef' ? ctx.utcef!.currentStations : ctx.legacyIndex!.index.items;
+  const stations: ReadonlyArray<UtcefCurrentStation | IdxStation> =
+    kind === 'utcef' ? ctx.utcef!.currentStations : ctx.legacyIndex!.index.items;
   const out = new Uint8Array(stations.length);
   for (let k = 0; k < stations.length; k++) {
     const s = stations[k];
     if (kind === 'station' && !isVectorCapable(s as IdxStation)) continue; // never claimed
     td.timeDependent = false;
     const claim = claimLoop(fill, ctx.fullLayers, s.latitude, s.longitude, timeMs, td);
-    out[k] = td.timeDependent ? OWN_TIME_DEPENDENT : claim && claim.source === kind && (claim as { station?: unknown }).station === s ? OWN_WINS : OWN_LOSES;
+    out[k] = td.timeDependent
+      ? OWN_TIME_DEPENDENT
+      : claim && claim.source === kind && (claim as { station?: unknown }).station === s
+        ? OWN_WINS
+        : OWN_LOSES;
   }
   cache.set(key, out);
   if (cache.size > OWN_WIN_CACHE_CAP) cache.delete(cache.keys().next().value!);

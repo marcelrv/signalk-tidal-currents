@@ -177,9 +177,7 @@ function buildSlots(fields: Grib2Field[], file: string, warnings: string[]): Tim
       }
     }
     if (!made) {
-      warnings.push(
-        `${path.basename(file)}: current field(s) at ${new Date(time).toISOString()} lack a matching u/v or dir/speed pair`,
-      );
+      warnings.push(`${path.basename(file)}: current field(s) at ${new Date(time).toISOString()} lack a matching u/v or dir/speed pair`);
     }
   }
   return slots;
@@ -261,13 +259,7 @@ function makeSeries(grid: Grib2Grid, raw: TimeSlot[]): GridSeries {
   gribBuildCounts.series++;
   const ranked = raw
     .slice()
-    .sort(
-      (a, b) =>
-        a.time - b.time ||
-        a.depth - b.depth ||
-        b.refTime - a.refTime ||
-        (a.file < b.file ? 1 : a.file > b.file ? -1 : 0),
-    );
+    .sort((a, b) => a.time - b.time || a.depth - b.depth || b.refTime - a.refTime || (a.file < b.file ? 1 : a.file > b.file ? -1 : 0));
   const slots: TimeSlot[] = [];
   for (const s of ranked) if (slots.length === 0 || slots[slots.length - 1].time !== s.time) slots.push(s);
   const files = [...new Set(raw.map((s) => s.file))].sort();
@@ -506,12 +498,7 @@ export function gribClaimSeries(
  * Unlike station samples, `speedKn` is a magnitude (there is no flood/ebb
  * axis in gridded data — the sign convention does not apply).
  */
-export function gribSeriesSample(
-  series: GridSeries,
-  lat: number,
-  lon: number,
-  timeMs: number,
-): CurrentSample | null {
+export function gribSeriesSample(series: GridSeries, lat: number, lon: number, timeMs: number): CurrentSample | null {
   const lo = bracketIndex(series.slots, timeMs);
   if (lo < 0) return null;
   const s0 = series.slots[lo];
@@ -532,7 +519,7 @@ export function gribSeriesSample(
   }
 
   const speedMs = Math.hypot(u, v);
-  const direction = speedMs > 1e-6 ? ((Math.atan2(u, v) * RAD2DEG) % 360 + 360) % 360 : 0;
+  const direction = speedMs > 1e-6 ? (((Math.atan2(u, v) * RAD2DEG) % 360) + 360) % 360 : 0;
   return {
     time: new Date(timeMs).toISOString(),
     speedKn: Math.round((speedMs / KNOTS_TO_MS) * 100) / 100,
@@ -578,8 +565,7 @@ export function gribLatticeWindow(
   // index overshoots grid.ni with no upper clamp — iMin then exceeds the
   // (correctly clamped) iMax and the grid is wrongly reported as not
   // overlapping the bbox at all, even though it's fully contained in it.
-  const lonIndex = (lon: number): number =>
-    (((((lon - grid.lon0 + 180) % 360) + 360) % 360) - 180) / grid.di;
+  const lonIndex = (lon: number): number => (((((lon - grid.lon0 + 180) % 360) + 360) % 360) - 180) / grid.di;
   let iMinF = lonIndex(bbox.west);
   let iMaxF = lonIndex(bbox.east);
   if (iMaxF < iMinF) iMaxF += 360 / grid.di; // bbox straddles the grid's lon0 wrap point
@@ -612,9 +598,9 @@ export function gribSummary(data: GribCurrentsData): Record<string, unknown> {
   }
   // One entry per distinct grid (each downloaded region is its own grid).
   const regions = data.series.map(({ grid: g }) => {
-    const lonWest = ((g.lon0 + 180) % 360 + 360) % 360 - 180;
+    const lonWest = ((((g.lon0 + 180) % 360) + 360) % 360) - 180;
     const lonEastRaw = g.lon0 + (g.ni - 1) * g.di;
-    const lonEast = ((lonEastRaw + 180) % 360 + 360) % 360 - 180;
+    const lonEast = ((((lonEastRaw + 180) % 360) + 360) % 360) - 180;
     return {
       latMin: Math.round(Math.min(g.lat0, g.lat0 + (g.nj - 1) * g.dj) * 1e4) / 1e4,
       latMax: Math.round(Math.max(g.lat0, g.lat0 + (g.nj - 1) * g.dj) * 1e4) / 1e4,

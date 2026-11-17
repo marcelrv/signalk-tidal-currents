@@ -1,0 +1,6 @@
+# Commits that only reformat code. Use locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub blame picks this file up automatically.)
+
+# style: reformat src, test and webapp/src with Prettier
+16123b229b5c872ef66f4980886bed44d815593f

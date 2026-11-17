@@ -54,6 +54,7 @@ jobs:
       - run: npm ci
       - run: npm --prefix webapp ci
       - run: npm run lint
+      - run: npm run format:check
 
   # ── Automatic runs (push / pull request) ──────────────────
   test-plugin-auto:

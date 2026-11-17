@@ -32,10 +32,7 @@ test('V0 time-derivative matches each catalog speed', () => {
     let d = v1 - v0;
     d -= 360 * Math.round(d / 360);
     const rate = d / dtH;
-    assert.ok(
-      Math.abs(rate - constituentSpeed(name)!) < 1e-3,
-      `${name}: dV0/dt ${rate.toFixed(6)} vs speed ${constituentSpeed(name)}`,
-    );
+    assert.ok(Math.abs(rate - constituentSpeed(name)!) < 1e-3, `${name}: dV0/dt ${rate.toFixed(6)} vs speed ${constituentSpeed(name)}`);
   }
 });
 

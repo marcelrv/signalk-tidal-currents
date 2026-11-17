@@ -54,12 +54,7 @@ function writeGribDir(name: string, fields: EncodeField[]): string {
 }
 
 // u=1 m/s (east) at T0, u=2 m/s at T0+2h; v=0 throughout.
-const uvDir = writeGribDir('uv', [
-  gridField(2, 0, 1.0),
-  gridField(3, 0, 0.0),
-  gridField(2, 2, 2.0),
-  gridField(3, 2, 0.0),
-]);
+const uvDir = writeGribDir('uv', [gridField(2, 0, 1.0), gridField(3, 0, 0.0), gridField(2, 2, 2.0), gridField(3, 2, 0.0)]);
 
 test('loadGribDir pairs u/v fields into time slots', () => {
   const data = loadGribDir(uvDir)!;
@@ -384,7 +379,10 @@ test('GET /grid merges GRIB and UTCEF per point by source priority', (t) => {
   const gribFirst = makeApi({ data: null, error: null, grib, utcef, preferGrib: true });
   const a = gribFirst('/grid', { bbox, time: gridTime, maxPoints: '200' }).body.points;
   assert.ok(a.some((p: any) => p.source === 'grib'));
-  assert.deepEqual(a.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId), ['K']);
+  assert.deepEqual(
+    a.filter((p: any) => p.source === 'utcef').map((p: any) => p.stationId),
+    ['K'],
+  );
 
   // UTCEF first: G wins its 50 km neighbourhood (the whole small GRIB box), so
   // no GRIB arrows remain there; the lattice samples there are filled with G's
@@ -415,7 +413,15 @@ test('GET /grid merges GRIB and UTCEF per point by source priority', (t) => {
 
 test('GET /grid honours a distant station whose representative_area covers the viewport', (t) => {
   // Station ~110 km south of the GRIB box, its area polygon covering the box.
-  const area = [[[4.8, 52.0], [5.6, 52.0], [5.6, 53.6], [4.8, 53.6], [4.8, 52.0]]];
+  const area = [
+    [
+      [4.8, 52.0],
+      [5.6, 52.0],
+      [5.6, 53.6],
+      [4.8, 53.6],
+      [4.8, 52.0],
+    ],
+  ];
   const dir = writeUtcefDir({ 'far.utcef': [['F', 52.2, 5.2, area]] });
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const call = makeApi({
@@ -453,7 +459,15 @@ test('malformed representative_area is ignored instead of crashing probes', (t) 
 });
 
 test('representative_area written past 180 matches in /vector and /grid', (t) => {
-  const area = [[[170, -20], [190, -20], [190, -10], [170, -10], [170, -20]]];
+  const area = [
+    [
+      [170, -20],
+      [190, -20],
+      [190, -10],
+      [170, -10],
+      [170, -20],
+    ],
+  ];
   const dir = writeUtcefDir({ 'am.utcef': [['A', -15, 175, area]] });
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const utcef = createUtcefSource(dir, 0);
@@ -500,7 +514,12 @@ test('GET /grid splits the budget between sources instead of collapsing density'
 
 test('GET /grid and /stations?bbox find UTCEF stations in viewports past ±180', (t) => {
   // Fiji-ish station east of the antimeridian (stored as −179.5) and a NZ one west of it.
-  const dir = writeUtcefDir({ 'pac.utcef': [['E', -17, -179.5], ['W', -36, 174.8]] });
+  const dir = writeUtcefDir({
+    'pac.utcef': [
+      ['E', -17, -179.5],
+      ['W', -36, 174.8],
+    ],
+  });
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const utcef = createUtcefSource(dir, 0);
   const call = makeApi({ data: null, error: null, grib: null, utcef, preferGrib: true });
@@ -638,13 +657,13 @@ test('series model: regions sharing valid times each keep their own series (no c
   // SAME valid time (T0) in both regions — the real NOAA RTOFS case. The old
   // merged slot list deduped across grids and kept only one region.
   fs.writeFileSync(path.join(dir, 'a.grb2'), encodeGrib2File([gridField(2, 0, 1.0), gridField(3, 0, 0.0)]));
-  fs.writeFileSync(
-    path.join(dir, 'b.grb2'),
-    encodeGrib2File([remoteGridField(2, 0, 1.0), remoteGridField(3, 0, 0.0)]),
-  );
+  fs.writeFileSync(path.join(dir, 'b.grb2'), encodeGrib2File([remoteGridField(2, 0, 1.0), remoteGridField(3, 0, 0.0)]));
   const data = loadGribDir(dir)!;
   assert.equal(data.series.length, 2);
-  assert.deepEqual(data.series.map((s) => s.files), [['a.grb2'], ['b.grb2']]);
+  assert.deepEqual(
+    data.series.map((s) => s.files),
+    [['a.grb2'], ['b.grb2']],
+  );
   assert.ok(vec(data, 53.2, 5.2, T0), 'region A answers');
   assert.ok(vec(data, 30.2, -74.8, T0), 'region B answers');
   assert.equal(vec(data, 0, 0, T0), null);
@@ -661,12 +680,22 @@ test('series model: regions sharing valid times each keep their own series (no c
 
 test('series order: finest resolution first, ties by file name', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-tc-order-'));
-  const coarse = (p: number, v: number): EncodeField => ({ ...gridField(p, 0, v), dLat: 0.2, dLon: 0.2, ni: 4, nj: 4, values: new Array(16).fill(v) });
+  const coarse = (p: number, v: number): EncodeField => ({
+    ...gridField(p, 0, v),
+    dLat: 0.2,
+    dLon: 0.2,
+    ni: 4,
+    nj: 4,
+    values: new Array(16).fill(v),
+  });
   // z.grb2 is the FINE grid (0.1°), a.grb2 the coarse one (0.2°) over the same area.
   fs.writeFileSync(path.join(dir, 'a.grb2'), encodeGrib2File([coarse(2, 5), coarse(3, 0)]));
   fs.writeFileSync(path.join(dir, 'z.grb2'), encodeGrib2File([gridField(2, 0, 1), gridField(3, 0, 0)]));
   const data = loadGribDir(dir)!;
-  assert.deepEqual(data.series.map((s) => s.files[0]), ['z.grb2', 'a.grb2']);
+  assert.deepEqual(
+    data.series.map((s) => s.files[0]),
+    ['z.grb2', 'a.grb2'],
+  );
   const hit = gribVectorAt(data, 53.2, 5.2, T0)!;
   assert.equal(hit.series.files[0], 'z.grb2', 'the finest grid answers where several overlap');
   assert.ok(Math.abs(hit.sample.u! - 1) < 1e-6);
@@ -700,7 +729,7 @@ test('series dedup: one slot per valid time — shallowest depth first, then new
   assert.equal(data.series[0].slots[0].file, 'new.grb2');
 });
 
-test('gribSeriesFor: a file subset that is a region\'s whole file set IS the canonical series; a strict subset is built on the canonical grid', () => {
+test("gribSeriesFor: a file subset that is a region's whole file set IS the canonical series; a strict subset is built on the canonical grid", () => {
   const data = loadGribDir(uvDir)!;
   const whole = gribSeriesFor(data, new Set(['currents.grb2']));
   assert.equal(whole.length, 1);

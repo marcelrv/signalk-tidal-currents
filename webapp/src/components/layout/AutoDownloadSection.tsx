@@ -24,7 +24,8 @@ function feedback(s: AutoDownloadSettings): string {
     parts.push(`Last run ${timeAgo(last.at)}`);
     if (last.started.length > 0) parts.push(`started ${last.started.length}`);
     if (last.skippedInFlight.length > 0) parts.push(`${last.skippedInFlight.length} already downloading`);
-    if (last.started.length === 0 && last.skippedInFlight.length === 0 && last.skippedDiskFull.length === 0) parts.push('nothing to download');
+    if (last.started.length === 0 && last.skippedInFlight.length === 0 && last.skippedDiskFull.length === 0)
+      parts.push('nothing to download');
     if (last.skippedDiskFull.length > 0) parts.push(`${last.skippedDiskFull.length} skipped: disk almost full`);
     if (last.catalogError) parts.push('catalog refresh failed, retrying');
   }
@@ -73,10 +74,10 @@ export function AutoDownloadSection() {
   return (
     <section aria-label="Auto-download" className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2">
       <div className="min-w-0 text-sm">
-        <label htmlFor="auto-download-interval" className="font-medium">Auto-download</label>
-        <div className={`text-xs ${error ? 'text-danger' : 'text-muted'}`}>
-          {error ?? (settings ? feedback(settings) : '…')}
-        </div>
+        <label htmlFor="auto-download-interval" className="font-medium">
+          Auto-download
+        </label>
+        <div className={`text-xs ${error ? 'text-danger' : 'text-muted'}`}>{error ?? (settings ? feedback(settings) : '…')}</div>
       </div>
       <select
         id="auto-download-interval"
@@ -87,7 +88,9 @@ export function AutoDownloadSection() {
         className="min-h-11 shrink-0 rounded-full bg-surface-2 px-3 text-sm font-medium text-accent disabled:opacity-50"
       >
         {choices.map((h) => (
-          <option key={h} value={h}>{LABELS[h] ?? `Every ${h} h`}</option>
+          <option key={h} value={h}>
+            {LABELS[h] ?? `Every ${h} h`}
+          </option>
         ))}
       </select>
     </section>

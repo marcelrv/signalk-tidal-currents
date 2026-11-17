@@ -1,7 +1,14 @@
 import { useMemo, useState } from 'react';
 
 import { useAppStore } from '../../store/useAppStore';
-import { estimatedSizeBytes, hasUnknownSizeRisk, rowForDataset, rowsForSources, totalSizeBytes, wouldExceedDiskThreshold } from '../../lib/sources';
+import {
+  estimatedSizeBytes,
+  hasUnknownSizeRisk,
+  rowForDataset,
+  rowsForSources,
+  totalSizeBytes,
+  wouldExceedDiskThreshold,
+} from '../../lib/sources';
 import { formatBytes } from '../../lib/format';
 import { Modal } from '../shared/Modal';
 
@@ -53,7 +60,10 @@ export function UpdateAllBanner() {
       // silently vanish the way a bare try/finally with no catch would.
       const results = await Promise.allSettled(
         updatable.map(({ dataset }) =>
-          startDownload(dataset.catalogSourceId!, dataset.regionId ? { region_id: dataset.regionId, type: dataset.fileType, variant: dataset.variant } : undefined),
+          startDownload(
+            dataset.catalogSourceId!,
+            dataset.regionId ? { region_id: dataset.regionId, type: dataset.fileType, variant: dataset.variant } : undefined,
+          ),
         ),
       );
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
@@ -125,8 +135,8 @@ export function UpdateAllBanner() {
           <p className="mb-2 text-muted">
             Updating all {updatable.length} region(s) (~{formatBytes(knownTotal)}
             {unknownCount > 0 ? ` + ${unknownCount} of unknown size` : ''}) would push this disk past 90% full
-            {unknownSizeRisk ? ' — and some of these are forecast cycle files whose size can\'t be known ahead of time' : ''}.
-            Continue anyway?
+            {unknownSizeRisk ? " — and some of these are forecast cycle files whose size can't be known ahead of time" : ''}. Continue
+            anyway?
           </p>
           <ul className="mb-4 list-inside list-disc text-xs text-muted">
             {updatable.map(({ dataset, source, row }) => (

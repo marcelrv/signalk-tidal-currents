@@ -21,9 +21,7 @@ export function distanceKm(lat1: number, lon1: number, lat2: number, lon2: numbe
   const R = 6371;
   const dLat = (lat2 - lat1) * DEG2RAD;
   const dLon = (lon2 - lon1) * DEG2RAD;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * DEG2RAD) * Math.cos(lat2 * DEG2RAD) * Math.sin(dLon / 2) ** 2;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * DEG2RAD) * Math.cos(lat2 * DEG2RAD) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(Math.min(1, a)));
 }
 

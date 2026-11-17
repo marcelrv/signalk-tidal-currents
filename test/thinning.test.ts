@@ -34,9 +34,13 @@ test('thinByCellLadder caps output at maxPoints', () => {
 
 test('thinByCellLadder is stable: the chosen subset does not depend on input order', () => {
   const items = gridStations(60); // 3600 points
-  const a = thinByCellLadder(items, 300).map((s) => s.id).sort();
+  const a = thinByCellLadder(items, 300)
+    .map((s) => s.id)
+    .sort();
   const shuffled = [...items].reverse();
-  const b = thinByCellLadder(shuffled, 300).map((s) => s.id).sort();
+  const b = thinByCellLadder(shuffled, 300)
+    .map((s) => s.id)
+    .sort();
   assert.deepEqual(a, b);
 });
 
@@ -107,14 +111,18 @@ function refThin<T extends { lat: number; lon: number }>(items: T[], max: number
 
 test('thinByCellLadder (typed-array cells) picks exactly what the original Map-based algorithm picked, in the same order', () => {
   let a = 12345;
-  const rand = () => ((a = (Math.imul(a, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const rand = () => (a = (Math.imul(a, 1664525) + 1013904223) >>> 0) / 4294967296;
   const scenes: Array<Array<{ lat: number; lon: number; id: number }>> = [
     // Random, with duplicated coordinates and negative / antimeridian-side values.
     Array.from({ length: 6000 }, (_, id) => ({ lat: -80 + rand() * 160, lon: -180 + rand() * 360, id })),
     // A regular lattice: many exact distance ties (resolved by lat, lon).
     gridStations(70, 50, 0, 0.01).map((s, id) => ({ lat: s.lat, lon: s.lon, id })),
     // A dense cluster plus far outliers.
-    Array.from({ length: 4000 }, (_, id) => ({ lat: id % 50 === 0 ? 10 + rand() * 60 : 51.9 + rand() * 0.2, lon: id % 50 === 0 ? -40 + rand() * 80 : 3.9 + rand() * 0.4, id })),
+    Array.from({ length: 4000 }, (_, id) => ({
+      lat: id % 50 === 0 ? 10 + rand() * 60 : 51.9 + rand() * 0.2,
+      lon: id % 50 === 0 ? -40 + rand() * 80 : 3.9 + rand() * 0.4,
+      id,
+    })),
   ];
   for (const [n, items] of scenes.entries()) {
     for (const max of [0, 1, 2, 3, 7, 25, 100, 500, 3000]) {

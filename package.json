@@ -16,6 +16,8 @@
     "test": "tsc && node -e \"require('fs').rmSync('dist-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node -e \"require('fs').cpSync('test/fixtures','dist-test/fixtures',{recursive:true})\" && node --test \"dist-test/*.test.js\"",
     "bench": "tsc && node -e \"require('fs').rmSync('dist-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node --expose-gc dist-test/bench.js",
     "lint": "tsc && eslint src test && npm --prefix webapp run lint",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"webapp/src/**/*.{ts,tsx,css}\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"webapp/src/**/*.{ts,tsx,css}\"",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -76,6 +78,7 @@
     "@eslint/js": "9.39.5",
     "@types/node": "^22.0.0",
     "eslint": "9.39.5",
+    "prettier": "3.10.1",
     "typescript": "^5.5.0",
     "typescript-eslint": "8.72.1"
   },

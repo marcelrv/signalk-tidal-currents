@@ -21,7 +21,11 @@ export const API_BASE = '/plugins/signalk-tidal-currents';
 
 /** An HTTP error from the plugin API — `status` lets callers tell "not allowed" (401/403) apart from real failures; `body` is the parsed JSON response (e.g. the cached catalog a failed refresh still returns). */
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number, readonly body: unknown = null) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: unknown = null,
+  ) {
     super(message);
     this.name = 'ApiError';
   }
@@ -39,7 +43,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = await resp.json().catch(() => null);
   if (!resp.ok) {
-    const message = (body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : null) ?? `HTTP ${resp.status}`;
+    const message =
+      (body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : null) ?? `HTTP ${resp.status}`;
     throw new ApiError(message, resp.status, body);
   }
   return body as T;
@@ -72,8 +77,10 @@ export const api = {
   getCleanupCandidates: (maxDistanceNm?: number) =>
     request<CleanupCandidatesResponse>(`/cleanup-candidates${maxDistanceNm !== undefined ? `?maxDistanceNm=${maxDistanceNm}` : ''}`),
 
-  startDownload: (sourceId: string, selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; variant?: string; filename?: string }) =>
-    request<DownloadJob>('/downloads', { method: 'POST', body: JSON.stringify({ sourceId, ...selector }) }),
+  startDownload: (
+    sourceId: string,
+    selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; variant?: string; filename?: string },
+  ) => request<DownloadJob>('/downloads', { method: 'POST', body: JSON.stringify({ sourceId, ...selector }) }),
   getDownload: (id: string) => request<DownloadJob>(`/downloads/${encodeURIComponent(id)}`),
   listDownloads: () => request<DownloadJob[]>('/downloads'),
 
@@ -81,8 +88,7 @@ export const api = {
   setPriority: (body: { order?: SourceType[]; datasets?: string[] }) =>
     request<PriorityResponse>('/priority', { method: 'PUT', body: JSON.stringify(body) }),
 
-  getVectorAt: (lat: number, lon: number) =>
-    request<VectorResponse>(`/vector?latitude=${lat}&longitude=${lon}`),
+  getVectorAt: (lat: number, lon: number) => request<VectorResponse>(`/vector?latitude=${lat}&longitude=${lon}`),
 
   /** Throws an ApiError on any non-OK answer (incl. 404, e.g. a proxy not forwarding /skServer) — access then stays unknown/read-only, never granted. */
   getLoginStatus: async (): Promise<LoginStatus> => {

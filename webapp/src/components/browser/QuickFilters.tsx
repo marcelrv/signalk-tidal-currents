@@ -114,11 +114,7 @@ export function QuickFilters({ availableTags }: { availableTags: string[] }) {
             })}
           </div>
           {filters.tags.size > 0 && (
-            <button
-              type="button"
-              onClick={() => setFilters({ tags: new Set() })}
-              className="min-h-11 text-sm font-medium text-accent"
-            >
+            <button type="button" onClick={() => setFilters({ tags: new Set() })} className="min-h-11 text-sm font-medium text-accent">
               Clear all tags
             </button>
           )}

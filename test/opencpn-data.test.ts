@@ -22,10 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { currentSampleAt, currentSpeedAt, nearestCurrentStations, predictReference } from '../dist/predict.js';
 
-const DATA_DIR = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..', 'test', 'data-opencpn',
-);
+const DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'test', 'data-opencpn');
 
 // Formerly exported by src/download.ts (the removed OpenCPN auto-download
 // feature — superseded by the catalog download manager). Only this test
@@ -63,21 +60,18 @@ test('OpenCPN HARMONICS_NO_US real-data integration', { skip: !available && 'dat
   await t.test('contains current stations (Canada/Caribbean)', () => {
     const currents = data.stations.filter((s) => s.isCurrent);
     assert.ok(currents.length >= 50, `current stations: ${currents.length}`);
-    const vectorCapable = currents.filter(
-      (s) => s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null,
-    );
+    const vectorCapable = currents.filter((s) => s.offsets && s.offsets.floodDir !== null && s.offsets.ebbDir !== null);
     assert.ok(vectorCapable.length >= 20, `vector-capable: ${vectorCapable.length}`);
   });
 
   await t.test('height reference predictions are plausible', () => {
     // Any tide reference station: 25h of predictions must oscillate within
     // a plausible tidal range around its datum.
-    const ref = data.stations.find(
-      (s) => s.type === 'T' && !s.isSubordinate && currentSpeedAt(data, s, Date.now()) !== null,
-    );
+    const ref = data.stations.find((s) => s.type === 'T' && !s.isSubordinate && currentSpeedAt(data, s, Date.now()) !== null);
     assert.ok(ref, 'no resolvable reference station found');
     const rec = data.records.get(ref!.name) ?? [...data.records.values()].find((r) => !r.isCurrent);
-    let min = Infinity, max = -Infinity;
+    let min = Infinity,
+      max = -Infinity;
     const t0 = Date.now();
     for (let m = 0; m <= 25 * 60; m += 15) {
       const h = predictReference(rec!, data.constituents, t0 + m * 60_000);
@@ -94,7 +88,8 @@ test('OpenCPN HARMONICS_NO_US real-data integration', { skip: !available && 'dat
     const near = nearestCurrentStations(data, 48.8, -123.2, 10).filter((n) => n.vectorCapable);
     assert.ok(near.length > 0, 'no vector-capable current stations near BC');
     const st = near[0].station;
-    let sawFlood = false, sawEbb = false;
+    let sawFlood = false,
+      sawEbb = false;
     const t0 = Date.now();
     for (let m = 0; m <= 14 * 60; m += 20) {
       const s = currentSampleAt(data, st, t0 + m * 60_000)!;

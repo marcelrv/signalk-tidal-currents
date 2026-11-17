@@ -47,8 +47,8 @@ export function DeleteDatasetButton({ id, name, sizeBytes }: { id: string; name:
       {confirming && (
         <Modal title="Delete dataset" onClose={() => setConfirming(false)}>
           <p className="mb-4 text-sm text-muted">
-            Remove <span className="font-medium text-fg">{name}</span> from this device? Frees {formatBytes(sizeBytes)}. You
-            can download it again from the catalog at any time.
+            Remove <span className="font-medium text-fg">{name}</span> from this device? Frees {formatBytes(sizeBytes)}. You can download it
+            again from the catalog at any time.
           </p>
           {error && (
             <p role="alert" className="mb-3 text-sm text-danger">

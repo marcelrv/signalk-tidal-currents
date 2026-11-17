@@ -22,11 +22,29 @@ function validCatalogJson(sourceId = 'src-1') {
     source_count: 1,
     sources: [
       {
-        id: sourceId, source: 'noaa', type: 'grib2', name: 'Test', description: '…',
-        contributor: 'NOAA', url: 'https://example.org', tags: [],
+        id: sourceId,
+        source: 'noaa',
+        type: 'grib2',
+        name: 'Test',
+        description: '…',
+        contributor: 'NOAA',
+        url: 'https://example.org',
+        tags: [],
         region: {
-          name: 'Test', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
-          boundary_geometry: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]] },
+          name: 'Test',
+          bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
+          boundary_geometry: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [0, 0],
+                [1, 0],
+                [1, 1],
+                [0, 1],
+                [0, 0],
+              ],
+            ],
+          },
         },
         update_check: { method: 'sha256', last_checked: '2026-07-03T10:30:00Z' },
         files: [{ filename: 'f.grb2', url: 'https://example.org/f.grb2', sha256: 'x', size_bytes: 10 }],

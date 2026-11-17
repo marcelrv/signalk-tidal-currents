@@ -177,10 +177,7 @@ export function SourceMap() {
         style={{ background: 'var(--color-bg)' }}
       >
         {coastline && (
-          <GeoJSON
-            data={coastline as never}
-            style={{ color: colors.muted, weight: 1, fillColor: colors.muted, fillOpacity: 0.15 }}
-          />
+          <GeoJSON data={coastline as never} style={{ color: colors.muted, weight: 1, fillColor: colors.muted, fillOpacity: 0.15 }} />
         )}
         {rows.map((row) => {
           const status = displayStatus(datasetForRow(datasets, row));

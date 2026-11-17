@@ -122,13 +122,7 @@ function parseMajor(semver: unknown): number {
 }
 
 function isBoundingBox(v: any): v is BoundingBox {
-  return (
-    v &&
-    Number.isFinite(v.min_lat) &&
-    Number.isFinite(v.min_lon) &&
-    Number.isFinite(v.max_lat) &&
-    Number.isFinite(v.max_lon)
-  );
+  return v && Number.isFinite(v.min_lat) && Number.isFinite(v.min_lon) && Number.isFinite(v.max_lat) && Number.isFinite(v.max_lon);
 }
 
 function isGeoJsonGeometry(v: any): v is GeoJsonGeometry {
@@ -175,11 +169,13 @@ function validateSource(raw: any, warnings: string[]): CatalogSource | null {
     warnings.push(`source "${id}": missing/invalid update_check — dropped`);
     return null;
   }
-  const files: CatalogFile[] = Array.isArray(raw.files) ? raw.files.filter((f: any) => {
-    const ok = isCatalogFile(f);
-    if (!ok) warnings.push(`source "${id}": dropped a malformed file entry`);
-    return ok;
-  }) : [];
+  const files: CatalogFile[] = Array.isArray(raw.files)
+    ? raw.files.filter((f: any) => {
+        const ok = isCatalogFile(f);
+        if (!ok) warnings.push(`source "${id}": dropped a malformed file entry`);
+        return ok;
+      })
+    : [];
 
   return {
     id,
@@ -211,9 +207,7 @@ export function validateCatalogDocument(raw: unknown): { document: CatalogDocume
   }
   const major = parseMajor(doc.catalog_schema_version);
   if (Number.isFinite(major) && major > SUPPORTED_CATALOG_SCHEMA_MAJOR) {
-    throw new Error(
-      `catalog_schema_version ${doc.catalog_schema_version} major ${major} > supported ${SUPPORTED_CATALOG_SCHEMA_MAJOR}`,
-    );
+    throw new Error(`catalog_schema_version ${doc.catalog_schema_version} major ${major} > supported ${SUPPORTED_CATALOG_SCHEMA_MAJOR}`);
   }
   const rawSources: any[] = Array.isArray(doc.sources) ? doc.sources : [];
   const sources: CatalogSource[] = [];

@@ -63,7 +63,10 @@ export class CurrentsApiError extends Error {
     readonly status: number,
     readonly body: unknown,
   ) {
-    const msg = body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string' ? (body as { error: string }).error : `HTTP ${status}`;
+    const msg =
+      body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string'
+        ? (body as { error: string }).error
+        : `HTTP ${status}`;
     super(msg);
     this.name = 'CurrentsApiError';
   }
@@ -126,7 +129,12 @@ export function createCurrentsApi(state: ApiState, isRunning: () => boolean): Cu
     },
     getTimeline(stationId: string, startIso: string, endIso: string, stepMinutes?: number) {
       if (!isRunning()) return notRunning();
-      return invoke(handleStationTimeline, state, { id: String(stationId) }, definedOnly({ start: startIso, end: endIso, step: stepMinutes })) as Promise<CurrentTimelineDto>;
+      return invoke(
+        handleStationTimeline,
+        state,
+        { id: String(stationId) },
+        definedOnly({ start: startIso, end: endIso, step: stepMinutes }),
+      ) as Promise<CurrentTimelineDto>;
     },
   });
 }

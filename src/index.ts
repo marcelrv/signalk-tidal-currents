@@ -100,7 +100,9 @@ function readVesselPosition(app: any): { lat: number; lon: number } | null {
 /** Stand-in for `ManagerState.autoDownload` before start() / after stop(), so a request then can't kick off a sweep against a stopped engine. */
 const AUTO_DOWNLOAD_NOT_STARTED: AutoDownloadController = {
   status: () => ({ intervalHours: 0, lastSweep: null, choices: AUTO_DOWNLOAD_CHOICES, nextCheckAt: null, running: false }),
-  setInterval: () => { throw new Error('plugin not started'); },
+  setInterval: () => {
+    throw new Error('plugin not started');
+  },
   tick: async () => {},
   stop: () => {},
 };
@@ -125,9 +127,14 @@ function pluginConstructor(app: any) {
   // may run before or after start() depending on server lifecycle, and route
   // handlers read these fields at REQUEST time, so this works either way.
   const mgr: ManagerState = {
-    catalog: { get: () => ({ status: 'empty', document: null, fetchedAt: null, error: 'plugin not started', sourceUrl: '', warnings: [] }), refresh: async () => mgr.catalog.get() },
+    catalog: {
+      get: () => ({ status: 'empty', document: null, fetchedAt: null, error: 'plugin not started', sourceUrl: '', warnings: [] }),
+      refresh: async () => mgr.catalog.get(),
+    },
     downloads: {
-      start: () => { throw new Error('plugin not started'); },
+      start: () => {
+        throw new Error('plugin not started');
+      },
       get: () => undefined,
       list: () => [],
       cancel: () => {},
@@ -138,9 +145,13 @@ function pluginConstructor(app: any) {
     manifestPath: '',
     dataDir: '',
     getPriority: () => DEFAULT_PRIORITY,
-    setPriority: () => { /* not started yet */ },
+    setPriority: () => {
+      /* not started yet */
+    },
     getDatasetStack: () => [],
-    setDatasetStack: () => { /* not started yet */ },
+    setDatasetStack: () => {
+      /* not started yet */
+    },
     apiState: state,
     getVesselPosition: () => readVesselPosition(app),
     autoDownload: AUTO_DOWNLOAD_NOT_STARTED,
@@ -149,8 +160,7 @@ function pluginConstructor(app: any) {
   const plugin: any = {
     id: PLUGIN_ID,
     name: 'Tidal Currents',
-    description:
-      'Tidal current predictions from OpenCPN/XTide harmonic files and GRIB2 current fields',
+    description: 'Tidal current predictions from OpenCPN/XTide harmonic files and GRIB2 current fields',
 
     schema() {
       // Prefilled with the actual resolved default path (not an empty
@@ -189,7 +199,7 @@ function pluginConstructor(app: any) {
             description:
               'Order to try the 3 source TYPES in when several cover a position (Phase 1: applies ' +
               'per data type, not per dataset). This is a fallback control surface — the Tidal ' +
-              'Currents Manager webapp\'s reorder list is the primary way to change it, and any ' +
+              "Currents Manager webapp's reorder list is the primary way to change it, and any " +
               'change made there is saved independently of this form.',
             items: { type: 'string', enum: ['grib2', 'utcef', 'harmonic'] },
             default: DEFAULTS.sourcePriority,
@@ -197,8 +207,7 @@ function pluginConstructor(app: any) {
           publishDelta: {
             type: 'boolean',
             title: 'Publish environment.current',
-            description:
-              'Publish the predicted set/drift at the vessel position as Signal K deltas',
+            description: 'Publish the predicted set/drift at the vessel position as Signal K deltas',
             default: DEFAULTS.publishDelta,
           },
           updateSeconds: {
@@ -417,8 +426,7 @@ function pluginConstructor(app: any) {
           app.setPluginStatus(`Loaded ${parts.join(' + ')}`);
         } else {
           app.setPluginError(
-            `No current data: ${state.error ?? 'no harmonics pair'}, no GRIB2 files, and no UTCEF ` +
-              `files found under ${dataDir}`,
+            `No current data: ${state.error ?? 'no harmonics pair'}, no GRIB2 files, and no UTCEF ` + `files found under ${dataDir}`,
           );
         }
       };
@@ -465,13 +473,7 @@ function pluginConstructor(app: any) {
           try {
             const pos = readVesselPosition(app);
             if (!pos) return;
-            const resolved = resolveVector(
-              state,
-              pos.lat,
-              pos.lon,
-              Date.now(),
-              config.maxStationDistanceKm,
-            );
+            const resolved = resolveVector(state, pos.lat, pos.lon, Date.now(), config.maxStationDistanceKm);
             if (!resolved || resolved.sample.direction === null) return;
             const origin =
               resolved.source === 'grib'
@@ -609,7 +611,12 @@ const openApiSpec = {
           { name: 'latitude', in: 'query', schema: { type: 'number' }, description: 'Nearest-N mode (with longitude)' },
           { name: 'longitude', in: 'query', schema: { type: 'number' }, description: 'Nearest-N mode (with latitude)' },
           { name: 'bbox', in: 'query', schema: { type: 'string' }, description: 'Viewport mode: "west,south,east,north"' },
-          { name: 'maxPoints', in: 'query', schema: { type: 'integer', default: 500, maximum: 5000 }, description: 'Viewport mode: max stations returned (thinned, stable across pan/zoom). Legacy alias: limit.' },
+          {
+            name: 'maxPoints',
+            in: 'query',
+            schema: { type: 'integer', default: 500, maximum: 5000 },
+            description: 'Viewport mode: max stations returned (thinned, stable across pan/zoom). Legacy alias: limit.',
+          },
           { name: 'limit', in: 'query', schema: { type: 'integer', default: 10 }, description: 'Nearest-N mode: how many to return' },
         ],
         responses: { '200': { description: 'OK' } },
@@ -627,9 +634,18 @@ const openApiSpec = {
           { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: '"west,south,east,north"' },
           { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
           { name: 'maxPoints', in: 'query', schema: { type: 'integer', default: 400, maximum: 5000 } },
-          { name: 'stations', in: 'query', schema: { type: 'boolean', default: false }, description: 'Opt in: legacy harmonic (vector-capable) stations take part in the source arbitration and are returned with source "station".' },
+          {
+            name: 'stations',
+            in: 'query',
+            schema: { type: 'boolean', default: false },
+            description:
+              'Opt in: legacy harmonic (vector-capable) stations take part in the source arbitration and are returned with source "station".',
+          },
         ],
-        responses: { '200': { description: 'OK' }, '503': { description: 'Neither GRIB nor UTCEF current data loaded (nor harmonic data, with stations=1)' } },
+        responses: {
+          '200': { description: 'OK' },
+          '503': { description: 'Neither GRIB nor UTCEF current data loaded (nor harmonic data, with stations=1)' },
+        },
       },
     },
     '/stations/{id}': {
@@ -669,8 +685,7 @@ const openApiSpec = {
     '/vector': {
       get: {
         summary:
-          'Set/drift vector at a position (GRIB grid preferred, nearest usable station as fallback; ' +
-          'response `source` says which)',
+          'Set/drift vector at a position (GRIB grid preferred, nearest usable station as fallback; ' + 'response `source` says which)',
         parameters: [
           { name: 'latitude', in: 'query', required: true, schema: { type: 'number' } },
           { name: 'longitude', in: 'query', required: true, schema: { type: 'number' } },
@@ -689,13 +704,20 @@ const openApiSpec = {
       },
     },
     '/datasets': {
-      get: { summary: 'Installed dataset inventory (manifest installs + orphaned/legacy files)', responses: { '200': { description: 'OK' } } },
+      get: {
+        summary: 'Installed dataset inventory (manifest installs + orphaned/legacy files)',
+        responses: { '200': { description: 'OK' } },
+      },
     },
     '/datasets/{id}': {
       delete: {
         summary: 'Remove an installed or orphaned dataset',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: { '200': { description: 'OK' }, '400': { description: 'Refused — outside the managed directories' }, '404': { description: 'Unknown dataset id' } },
+        responses: {
+          '200': { description: 'OK' },
+          '400': { description: 'Refused — outside the managed directories' },
+          '404': { description: 'Unknown dataset id' },
+        },
       },
     },
     '/storage': {
@@ -717,7 +739,10 @@ const openApiSpec = {
     },
     '/priority': {
       get: { summary: 'Current source-type priority order and per-dataset stack', responses: { '200': { description: 'OK' } } },
-      put: { summary: 'Set the source-type priority order and/or the per-dataset stack', responses: { '200': { description: 'OK' }, '400': { description: 'Invalid order permutation or dataset id list' } } },
+      put: {
+        summary: 'Set the source-type priority order and/or the per-dataset stack',
+        responses: { '200': { description: 'OK' }, '400': { description: 'Invalid order permutation or dataset id list' } },
+      },
     },
   },
 };

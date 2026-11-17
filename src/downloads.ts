@@ -19,14 +19,7 @@ import * as path from 'path';
 import { Client as FtpClient } from 'basic-ftp';
 
 import { CatalogClient } from './catalog.js';
-import {
-  CatalogFile,
-  CatalogSource,
-  CatalogSourceType,
-  StaticCatalogFile,
-  TemplateCatalogFile,
-  isTemplateFile,
-} from './catalogTypes.js';
+import { CatalogFile, CatalogSource, CatalogSourceType, StaticCatalogFile, TemplateCatalogFile, isTemplateFile } from './catalogTypes.js';
 import { ManifestInstall, readManifest, upsertInstall, writeManifestAtomic } from './manifest.js';
 
 /**
@@ -162,7 +155,10 @@ function chooseCycleCandidates(
   maxAgeHours: number | undefined,
   count: number,
 ): Array<{ ymd: string; hh: string; iso: string }> {
-  const hours = [...file.cycle_hours].map((h) => parseInt(h, 10)).filter((h) => Number.isFinite(h)).sort((a, b) => a - b);
+  const hours = [...file.cycle_hours]
+    .map((h) => parseInt(h, 10))
+    .filter((h) => Number.isFinite(h))
+    .sort((a, b) => a - b);
   const now = new Date();
   if (hours.length === 0) return [cycleSlot(now, now.getUTCHours())];
 
@@ -180,7 +176,7 @@ function chooseCycleCandidates(
   if (latestCycle) {
     const d = new Date(latestCycle);
     if (hours.includes(d.getUTCHours())) {
-      upperBound = (maxAgeHours !== undefined && Date.now() - d.getTime() > maxAgeHours * 3600_000) ? now : d;
+      upperBound = maxAgeHours !== undefined && Date.now() - d.getTime() > maxAgeHours * 3600_000 ? now : d;
     } else {
       upperBound = now;
     }
@@ -314,8 +310,16 @@ async function downloadOneFtp(
   });
 
   const cleanup = () => {
-    try { client.close(); } catch { /* ignore */ }
-    try { out.destroy(); } catch { /* ignore */ }
+    try {
+      client.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      out.destroy();
+    } catch {
+      /* ignore */
+    }
   };
   signal.addEventListener('abort', cleanup, { once: true });
 
@@ -331,7 +335,11 @@ async function downloadOneFtp(
     await new Promise<void>((resolve) => out.end(resolve));
   } catch (e) {
     cleanup();
-    try { fs.unlinkSync(partPath); } catch { /* best effort */ }
+    try {
+      fs.unlinkSync(partPath);
+    } catch {
+      /* best effort */
+    }
     throw e;
   } finally {
     signal.removeEventListener('abort', cleanup);
@@ -385,7 +393,11 @@ async function downloadOne(
     await new Promise<void>((resolve) => out.end(resolve));
   } catch (e) {
     await new Promise<void>((resolve) => out.end(resolve));
-    try { fs.unlinkSync(partPath); } catch { /* best effort — nothing to clean up if it never got created */ }
+    try {
+      fs.unlinkSync(partPath);
+    } catch {
+      /* best effort — nothing to clean up if it never got created */
+    }
     throw e;
   }
 
@@ -450,16 +462,25 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         // or it inflates by (chunk count × file size) and the progress
         // percentage stays near 0 until the download is already done.
         let totalCounted = false;
-        const result = await downloadOne(url, target, (delta, total) => {
-          job.bytes += delta;
-          if (total !== null && !totalCounted) {
-            job.totalBytes = (job.totalBytes ?? 0) + total;
-            totalCounted = true;
-          }
-          notify(job, true);
-        }, controller.signal);
+        const result = await downloadOne(
+          url,
+          target,
+          (delta, total) => {
+            job.bytes += delta;
+            if (total !== null && !totalCounted) {
+              job.totalBytes = (job.totalBytes ?? 0) + total;
+              totalCounted = true;
+            }
+            notify(job, true);
+          },
+          controller.signal,
+        );
         if (file.sha256 && file.sha256 !== result.sha256) {
-          try { fs.unlinkSync(target); } catch { /* best effort */ }
+          try {
+            fs.unlinkSync(target);
+          } catch {
+            /* best effort */
+          }
           throw new Error(`sha256 mismatch for ${file.filename}: expected ${file.sha256}, got ${result.sha256}`);
         }
         // No integrity hash provided by the catalog for this file — skip
@@ -496,14 +517,17 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     const templateFiles = source.files.filter(isTemplateFile);
     const selector = selectors.get(job.id);
     const templateFile = selector?.region_id
-      ? templateFiles.find((f) =>
-          f.region_id === selector.region_id &&
-          (!selector.type || f.type === selector.type) &&
-          (selector.variant === undefined || f.variant === selector.variant),
+      ? templateFiles.find(
+          (f) =>
+            f.region_id === selector.region_id &&
+            (!selector.type || f.type === selector.type) &&
+            (selector.variant === undefined || f.variant === selector.variant),
         )
       : templateFiles[0];
     if (!templateFile) {
-      throw new Error(`no template file for region "${selector?.region_id}"${selector?.type ? ` (${selector.type})` : ''} in source "${source.id}"`);
+      throw new Error(
+        `no template file for region "${selector?.region_id}"${selector?.type ? ` (${selector.type})` : ''} in source "${source.id}"`,
+      );
     }
     // The catalog's `latest_cycle` is a single per-SOURCE timestamp, but it's
     // only ever confirmed against ONE of the source's files (observed: BSH's
@@ -530,7 +554,10 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     // disambiguate implicitly) — today every BSH variant happens to have a
     // distinct forecast_hours value, but nothing guarantees that stays true,
     // and two same-hour variants would otherwise silently collide on disk.
-    const regionTag = `${templateFile.region_id}_${templateFile.type}${templateFile.variant ? `_${templateFile.variant}` : ''}`.replace(/[^A-Za-z0-9._-]+/g, '-');
+    const regionTag = `${templateFile.region_id}_${templateFile.type}${templateFile.variant ? `_${templateFile.variant}` : ''}`.replace(
+      /[^A-Za-z0-9._-]+/g,
+      '-',
+    );
     // Files land under a per-region subfolder (region_id, sanitized) rather
     // than flat in the type directory — with several regions installed
     // (a boat cruising both US coasts, say), a flat GRIB directory becomes a
@@ -562,14 +589,19 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
           // Same fix as the static-file branch above: `total` repeats on every
           // chunk, only count it once per forecast-hour file.
           let totalCounted = false;
-          const result = await downloadOne(url, target, (delta, total) => {
-            job.bytes += delta;
-            if (total !== null && !totalCounted) {
-              job.totalBytes = (job.totalBytes ?? 0) + total;
-              totalCounted = true;
-            }
-            notify(job, true);
-          }, controller.signal);
+          const result = await downloadOne(
+            url,
+            target,
+            (delta, total) => {
+              job.bytes += delta;
+              if (total !== null && !totalCounted) {
+                job.totalBytes = (job.totalBytes ?? 0) + total;
+                totalCounted = true;
+              }
+              notify(job, true);
+            },
+            controller.signal,
+          );
           names.push(relName);
           sizeBytes += result.size;
         }
@@ -577,7 +609,11 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
         break;
       } catch (e) {
         for (const relName of names) {
-          try { fs.unlinkSync(path.join(opts.dataDir, relName)); } catch { /* best effort */ }
+          try {
+            fs.unlinkSync(path.join(opts.dataDir, relName));
+          } catch {
+            /* best effort */
+          }
         }
         if (!isFileNotFoundError(e)) throw e;
         lastNotFoundError = e;
@@ -585,7 +621,9 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
       }
     }
     if (!chosen) {
-      throw lastNotFoundError instanceof Error ? lastNotFoundError : new Error(`no cycle candidate available for "${templateFile.region_id}" (${templateFile.type}) in source "${source.id}"`);
+      throw lastNotFoundError instanceof Error
+        ? lastNotFoundError
+        : new Error(`no cycle candidate available for "${templateFile.region_id}" (${templateFile.type}) in source "${source.id}"`);
     }
 
     const install: ManifestInstall = {
@@ -624,7 +662,11 @@ export function createDownloadEngine(opts: DownloadEngineOptions): DownloadEngin
     if (previousInstall) {
       for (const relName of previousInstall.files) {
         if (names.includes(relName)) continue; // same cycle re-requested — this path is the file we just (re)wrote, not a stale one
-        try { fs.unlinkSync(path.join(opts.dataDir, relName)); } catch { /* best effort — already gone, or a permissions issue; not fatal */ }
+        try {
+          fs.unlinkSync(path.join(opts.dataDir, relName));
+        } catch {
+          /* best effort — already gone, or a permissions issue; not fatal */
+        }
       }
     }
   }

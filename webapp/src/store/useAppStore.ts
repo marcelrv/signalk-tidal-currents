@@ -41,7 +41,7 @@ export const READ_ONLY_HINT = 'Read-only — log in as an administrator to chang
 export const useReadOnly = () => useAppStore((s) => s.access !== 'admin');
 
 /** The placeholder catalog served before start() has `status: 'empty'` + an error that is not a sync failure. */
-const catalogErrorOf = (c: CatalogState) => (c.status === 'empty' ? null : c.error ?? null);
+const catalogErrorOf = (c: CatalogState) => (c.status === 'empty' ? null : (c.error ?? null));
 
 export interface AppState {
   access: Access;
@@ -89,7 +89,10 @@ export interface AppState {
   downloads: Record<string, DownloadJob>;
   /** Keyed by downloadKeyFor(sourceId, regionId) — lets ANY component (a row's own button, or a bulk "Update All" action) find and render the right progress for a source/region it didn't necessarily start itself. */
   jobIdBySource: Record<string, string>;
-  startDownload: (sourceId: string, selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; variant?: string; filename?: string }) => Promise<string>;
+  startDownload: (
+    sourceId: string,
+    selector?: { region_id?: string; type?: 'forecast' | 'nowcast'; variant?: string; filename?: string },
+  ) => Promise<string>;
   pollDownload: (id: string) => Promise<void>;
   /** Pure setter shared by the SSE hook and the polling fallback — one place that writes job state into the store. */
   setDownloadJob: (job: DownloadJob) => void;
@@ -147,240 +150,248 @@ export const useAppStore = create<AppState>((set, get) => {
   let accessSeq = 0;
 
   return {
-  access: 'unknown',
-  /** Reads /skServer/loginStatus into `access` (latest call wins; fails closed; retries transient failures) and reloads what a read-only phase may have missed once the visitor becomes admin. */
-  fetchAccess: async () => {
-    if (accessRetry) clearTimeout(accessRetry);
-    accessRetry = null;
-    const seq = ++accessSeq;
-    let st: LoginStatus;
-    try {
-      st = await api.getLoginStatus();
-    } catch (e) {
+    access: 'unknown',
+    /** Reads /skServer/loginStatus into `access` (latest call wins; fails closed; retries transient failures) and reloads what a read-only phase may have missed once the visitor becomes admin. */
+    fetchAccess: async () => {
+      if (accessRetry) clearTimeout(accessRetry);
+      accessRetry = null;
+      const seq = ++accessSeq;
+      let st: LoginStatus;
+      try {
+        st = await api.getLoginStatus();
+      } catch (e) {
+        if (seq !== accessSeq) return;
+        // Couldn't tell: grant nothing — fail closed if we had no answer yet (a
+        // confirmed admin keeps theirs). Retry transient failures (network,
+        // 5xx); a 404 (e.g. a reverse proxy not forwarding /skServer) won't
+        // fix itself, so don't poll it.
+        if (get().access === 'unknown') set({ access: 'readonly' });
+        if (!(e instanceof ApiError && e.status === 404)) accessRetry = setTimeout(() => void get().fetchAccess(), 10_000);
+        return;
+      }
       if (seq !== accessSeq) return;
-      // Couldn't tell: grant nothing — fail closed if we had no answer yet (a
-      // confirmed admin keeps theirs). Retry transient failures (network,
-      // 5xx); a 404 (e.g. a reverse proxy not forwarding /skServer) won't
-      // fix itself, so don't poll it.
-      if (get().access === 'unknown') set({ access: 'readonly' });
-      if (!(e instanceof ApiError && e.status === 404)) accessRetry = setTimeout(() => void get().fetchAccess(), 10_000);
-      return;
-    }
-    if (seq !== accessSeq) return;
-    const prev = get().access;
-    // Only a confirmed "security not enforced" or a logged-in admin may write.
-    const next: Access =
-      st.authenticationRequired === false || (st.status === 'loggedIn' && st.userLevel === 'admin') ? 'admin' : 'readonly';
-    set({ access: next });
-    // Became admin after having been read-only (a failed first check later
-    // retried, or a login elsewhere): re-run the empty-install check that
-    // fetchDatasets skipped, so first-run onboarding isn't lost.
-    // Same for the catalog: a refused first read left it empty + readsDenied.
-    if (next === 'admin' && prev === 'readonly') {
-      void get().fetchCatalog();
-      get().fetchDatasets().catch(() => undefined);
-      // Storage and priority reads may likewise have been refused while
-      // read-only (signalk-server < 2.35).
-      get().fetchStorage().catch(() => undefined);
-      void get().fetchPriority();
-    }
-  },
+      const prev = get().access;
+      // Only a confirmed "security not enforced" or a logged-in admin may write.
+      const next: Access =
+        st.authenticationRequired === false || (st.status === 'loggedIn' && st.userLevel === 'admin') ? 'admin' : 'readonly';
+      set({ access: next });
+      // Became admin after having been read-only (a failed first check later
+      // retried, or a login elsewhere): re-run the empty-install check that
+      // fetchDatasets skipped, so first-run onboarding isn't lost.
+      // Same for the catalog: a refused first read left it empty + readsDenied.
+      if (next === 'admin' && prev === 'readonly') {
+        void get().fetchCatalog();
+        get()
+          .fetchDatasets()
+          .catch(() => undefined);
+        // Storage and priority reads may likewise have been refused while
+        // read-only (signalk-server < 2.35).
+        get()
+          .fetchStorage()
+          .catch(() => undefined);
+        void get().fetchPriority();
+      }
+    },
 
-  catalog: null,
-  catalogLoading: false,
-  catalogError: null,
-  readsDenied: false,
-  /** Loads the cached catalog. A 401/403 sets `readsDenied` (the read-only view isn't offered); any other failure sets `catalogError`. */
-  fetchCatalog: async () => {
-    set({ catalogLoading: true });
-    try {
-      const catalog = await api.getCatalog();
-      set({ catalog, catalogError: catalogErrorOf(catalog), readsDenied: false });
-    } catch (e) {
-      // A refused READ isn't a sync failure: the server doesn't offer the
-      // read-only manager view to this visitor (signalk-server < 2.35 has no
-      // per-route readonly access) — the banner explains it instead.
-      if (isPermissionError(e)) set({ readsDenied: true });
-      else set({ catalogError: errorMessage(e) });
-    } finally {
-      set({ catalogLoading: false });
-    }
-  },
-  /** Asks the server to re-sync the catalog (admin-only). On failure keeps showing the cached copy and surfaces why in `catalogError`. */
-  refreshCatalog: async () => {
-    set({ catalogLoading: true });
-    try {
-      const catalog = await write(() => api.refreshCatalog());
-      set({ catalog, catalogError: catalogErrorOf(catalog) });
-    } catch (e) {
-      // Refresh failed — keep showing whatever is cached (a 502 already
-      // carries it in the body; otherwise re-read it in case we had nothing
-      // yet), but surface why instead of swallowing it. A permission refusal
-      // isn't a sync failure: keep the catalog's own error instead.
-      const body = e instanceof ApiError ? e.body : null;
-      const cached =
-        body && typeof body === 'object' && 'status' in body ? (body as CatalogState) : await api.getCatalog().catch(() => null);
-      if (cached) set({ catalog: cached });
-      if (!isPermissionError(e)) set({ catalogError: errorMessage(e) });
-      else if (cached) set({ catalogError: catalogErrorOf(cached) });
-    } finally {
-      set({ catalogLoading: false });
-    }
-  },
+    catalog: null,
+    catalogLoading: false,
+    catalogError: null,
+    readsDenied: false,
+    /** Loads the cached catalog. A 401/403 sets `readsDenied` (the read-only view isn't offered); any other failure sets `catalogError`. */
+    fetchCatalog: async () => {
+      set({ catalogLoading: true });
+      try {
+        const catalog = await api.getCatalog();
+        set({ catalog, catalogError: catalogErrorOf(catalog), readsDenied: false });
+      } catch (e) {
+        // A refused READ isn't a sync failure: the server doesn't offer the
+        // read-only manager view to this visitor (signalk-server < 2.35 has no
+        // per-route readonly access) — the banner explains it instead.
+        if (isPermissionError(e)) set({ readsDenied: true });
+        else set({ catalogError: errorMessage(e) });
+      } finally {
+        set({ catalogLoading: false });
+      }
+    },
+    /** Asks the server to re-sync the catalog (admin-only). On failure keeps showing the cached copy and surfaces why in `catalogError`. */
+    refreshCatalog: async () => {
+      set({ catalogLoading: true });
+      try {
+        const catalog = await write(() => api.refreshCatalog());
+        set({ catalog, catalogError: catalogErrorOf(catalog) });
+      } catch (e) {
+        // Refresh failed — keep showing whatever is cached (a 502 already
+        // carries it in the body; otherwise re-read it in case we had nothing
+        // yet), but surface why instead of swallowing it. A permission refusal
+        // isn't a sync failure: keep the catalog's own error instead.
+        const body = e instanceof ApiError ? e.body : null;
+        const cached =
+          body && typeof body === 'object' && 'status' in body ? (body as CatalogState) : await api.getCatalog().catch(() => null);
+        if (cached) set({ catalog: cached });
+        if (!isPermissionError(e)) set({ catalogError: errorMessage(e) });
+        else if (cached) set({ catalogError: catalogErrorOf(cached) });
+      } finally {
+        set({ catalogLoading: false });
+      }
+    },
 
-  datasets: [],
-  datasetsLoading: false,
-  /** Loads installed datasets; opens the first-run wizard on an empty install, for a confirmed admin only. */
-  fetchDatasets: async () => {
-    set({ datasetsLoading: true });
-    try {
-      const datasets = await api.getDatasets();
-      set({ datasets });
-      // Only for a CONFIRMED admin: an unknown access (loginStatus still
-      // pending/failing) must not pop the install wizard for a visitor.
-      if (datasets.length === 0 && !get().wizard.dismissed && get().access === 'admin') set({ wizard: { open: true, dismissed: false } });
-    } finally {
-      set({ datasetsLoading: false });
-    }
-  },
-  deleteDataset: async (id) => {
-    // Deleting frees disk and drops the install out of the priority stack —
-    // refresh everything that displays either, not just the dataset list.
-    // Refresh on failure too: a failed delete usually means the list was
-    // stale, and keeping the stale row invites retrying the same delete.
-    const refresh = () => Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
-    try {
-      await write(() => api.deleteDataset(id));
-    } catch (e) {
-      // The DELETE error is what the dialog must show — a failing refresh
-      // must not replace it.
-      await refresh().catch(() => undefined);
-      throw e;
-    }
-    await refresh();
-  },
-  setAutoUpdate: async (id, enabled) => {
-    await write(() => api.setAutoUpdate(id, enabled));
-    await get().fetchDatasets();
-  },
+    datasets: [],
+    datasetsLoading: false,
+    /** Loads installed datasets; opens the first-run wizard on an empty install, for a confirmed admin only. */
+    fetchDatasets: async () => {
+      set({ datasetsLoading: true });
+      try {
+        const datasets = await api.getDatasets();
+        set({ datasets });
+        // Only for a CONFIRMED admin: an unknown access (loginStatus still
+        // pending/failing) must not pop the install wizard for a visitor.
+        if (datasets.length === 0 && !get().wizard.dismissed && get().access === 'admin') set({ wizard: { open: true, dismissed: false } });
+      } finally {
+        set({ datasetsLoading: false });
+      }
+    },
+    deleteDataset: async (id) => {
+      // Deleting frees disk and drops the install out of the priority stack —
+      // refresh everything that displays either, not just the dataset list.
+      // Refresh on failure too: a failed delete usually means the list was
+      // stale, and keeping the stale row invites retrying the same delete.
+      const refresh = () => Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
+      try {
+        await write(() => api.deleteDataset(id));
+      } catch (e) {
+        // The DELETE error is what the dialog must show — a failing refresh
+        // must not replace it.
+        await refresh().catch(() => undefined);
+        throw e;
+      }
+      await refresh();
+    },
+    setAutoUpdate: async (id, enabled) => {
+      await write(() => api.setAutoUpdate(id, enabled));
+      await get().fetchDatasets();
+    },
 
-  storage: null,
-  fetchStorage: async () => {
-    const storage = await api.getStorage();
-    set({ storage });
-  },
+    storage: null,
+    fetchStorage: async () => {
+      const storage = await api.getStorage();
+      set({ storage });
+    },
 
-  autoDownload: null,
-  fetchAutoDownload: async () => {
-    const autoDownload = await api.getAutoDownload().catch(() => null);
-    if (autoDownload) set({ autoDownload });
-  },
-  setAutoDownload: async (intervalHours) => {
-    const autoDownload = await write(() => api.setAutoDownload(intervalHours));
-    set({ autoDownload });
-  },
+    autoDownload: null,
+    fetchAutoDownload: async () => {
+      const autoDownload = await api.getAutoDownload().catch(() => null);
+      if (autoDownload) set({ autoDownload });
+    },
+    setAutoDownload: async (intervalHours) => {
+      const autoDownload = await write(() => api.setAutoDownload(intervalHours));
+      set({ autoDownload });
+    },
 
-  cleanupCandidates: [],
-  cleanupVesselPosition: null,
-  cleanupMaxDistanceNm: 50,
-  fetchCleanupCandidates: async (maxDistanceNm) => {
-    const res = await api.getCleanupCandidates(maxDistanceNm);
-    set({ cleanupCandidates: res.candidates, cleanupVesselPosition: res.vesselPosition, cleanupMaxDistanceNm: res.maxDistanceNm });
-  },
+    cleanupCandidates: [],
+    cleanupVesselPosition: null,
+    cleanupMaxDistanceNm: 50,
+    fetchCleanupCandidates: async (maxDistanceNm) => {
+      const res = await api.getCleanupCandidates(maxDistanceNm);
+      set({ cleanupCandidates: res.candidates, cleanupVesselPosition: res.vesselPosition, cleanupMaxDistanceNm: res.maxDistanceNm });
+    },
 
-  priority: ['grib2', 'utcef', 'harmonic'],
-  priorityDatasets: [],
-  fetchPriority: async () => {
-    const res = await api.getPriority().catch(() => null);
-    if (res) set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
-  },
-  setPriority: async (order) => {
-    const res = await write(() => api.setPriority({ order }));
-    set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
-  },
-  setDatasetPriority: async (datasets) => {
-    const res = await write(() => api.setPriority({ datasets }));
-    set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
-  },
+    priority: ['grib2', 'utcef', 'harmonic'],
+    priorityDatasets: [],
+    fetchPriority: async () => {
+      const res = await api.getPriority().catch(() => null);
+      if (res) set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
+    },
+    setPriority: async (order) => {
+      const res = await write(() => api.setPriority({ order }));
+      set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
+    },
+    setDatasetPriority: async (datasets) => {
+      const res = await write(() => api.setPriority({ datasets }));
+      set({ priority: res.order, priorityDatasets: res.datasets ?? [] });
+    },
 
-  manageOpen: false,
-  setManageOpen: (open) => set({ manageOpen: open }),
+    manageOpen: false,
+    setManageOpen: (open) => set({ manageOpen: open }),
 
-  downloads: {},
-  jobIdBySource: {},
-  startDownload: async (sourceId, selector) => {
-    const job = await write(() => api.startDownload(sourceId, selector));
-    const key = downloadKeyFor(sourceId, selector?.region_id, selector?.type, selector?.variant);
-    set((s) => ({
-      downloads: { ...s.downloads, [job.id]: job },
-      jobIdBySource: { ...s.jobIdBySource, [key]: job.id },
-    }));
-    return job.id;
-  },
-  pollDownload: async (id) => {
-    const job = await api.getDownload(id);
-    get().setDownloadJob(job);
-  },
-  /** Stores one job update; refetches datasets/storage when the job just reached a terminal state. */
-  setDownloadJob: (job) => {
-    const prev = get().downloads[job.id];
-    set((s) => ({ downloads: { ...s.downloads, [job.id]: job } }));
-    // The download itself succeeded/failed here, but nothing else re-reads
-    // the manifest on its own — without this, a finished job's row/button
-    // just reverts to whatever `datasets`/`storage` said before the
-    // download started (looking like the click "did nothing"), since the
-    // job leaving `active` state is the only signal that data changed.
-    if (job.state !== prev?.state && (job.state === 'done' || job.state === 'error')) {
-      get().fetchDatasets().catch(() => undefined);
-      get().fetchStorage().catch(() => undefined);
-    }
-  },
+    downloads: {},
+    jobIdBySource: {},
+    startDownload: async (sourceId, selector) => {
+      const job = await write(() => api.startDownload(sourceId, selector));
+      const key = downloadKeyFor(sourceId, selector?.region_id, selector?.type, selector?.variant);
+      set((s) => ({
+        downloads: { ...s.downloads, [job.id]: job },
+        jobIdBySource: { ...s.jobIdBySource, [key]: job.id },
+      }));
+      return job.id;
+    },
+    pollDownload: async (id) => {
+      const job = await api.getDownload(id);
+      get().setDownloadJob(job);
+    },
+    /** Stores one job update; refetches datasets/storage when the job just reached a terminal state. */
+    setDownloadJob: (job) => {
+      const prev = get().downloads[job.id];
+      set((s) => ({ downloads: { ...s.downloads, [job.id]: job } }));
+      // The download itself succeeded/failed here, but nothing else re-reads
+      // the manifest on its own — without this, a finished job's row/button
+      // just reverts to whatever `datasets`/`storage` said before the
+      // download started (looking like the click "did nothing"), since the
+      // job leaving `active` state is the only signal that data changed.
+      if (job.state !== prev?.state && (job.state === 'done' || job.state === 'error')) {
+        get()
+          .fetchDatasets()
+          .catch(() => undefined);
+        get()
+          .fetchStorage()
+          .catch(() => undefined);
+      }
+    },
 
-  /** Merges a full job snapshot without reverting completions (see AppState.reconcileDownloads). */
-  reconcileDownloads: (jobs) => {
-    const known = get().downloads;
-    // Only a job we saw in flight that has now finished proves data changed.
-    // Historical finished jobs (prev undefined) must not trigger refetches:
-    // datasets are already loaded, and the server keeps old jobs in memory.
-    const finishedWhileAway = jobs.some((job) => {
-      const prev = known[job.id];
-      return (
-        !!prev &&
-        (prev.state === 'queued' || prev.state === 'active') &&
-        (job.state === 'done' || job.state === 'error')
-      );
-    });
-    const terminal = (j?: DownloadJob) => j?.state === 'done' || j?.state === 'error';
-    set((s) => {
-      const downloads = { ...s.downloads };
-      // Job states only move forward: never let this (possibly older) snapshot
-      // revert a completion the live feed delivered while it was in flight.
-      for (const job of jobs) if (!(terminal(s.downloads[job.id]) && !terminal(job))) downloads[job.id] = job;
-      return { downloads };
-    });
-    if (finishedWhileAway) {
-      get().fetchDatasets().catch(() => undefined);
-      get().fetchStorage().catch(() => undefined);
-    }
-  },
+    /** Merges a full job snapshot without reverting completions (see AppState.reconcileDownloads). */
+    reconcileDownloads: (jobs) => {
+      const known = get().downloads;
+      // Only a job we saw in flight that has now finished proves data changed.
+      // Historical finished jobs (prev undefined) must not trigger refetches:
+      // datasets are already loaded, and the server keeps old jobs in memory.
+      const finishedWhileAway = jobs.some((job) => {
+        const prev = known[job.id];
+        return !!prev && (prev.state === 'queued' || prev.state === 'active') && (job.state === 'done' || job.state === 'error');
+      });
+      const terminal = (j?: DownloadJob) => j?.state === 'done' || j?.state === 'error';
+      set((s) => {
+        const downloads = { ...s.downloads };
+        // Job states only move forward: never let this (possibly older) snapshot
+        // revert a completion the live feed delivered while it was in flight.
+        for (const job of jobs) if (!(terminal(s.downloads[job.id]) && !terminal(job))) downloads[job.id] = job;
+        return { downloads };
+      });
+      if (finishedWhileAway) {
+        get()
+          .fetchDatasets()
+          .catch(() => undefined);
+        get()
+          .fetchStorage()
+          .catch(() => undefined);
+      }
+    },
 
-  view: 'list',
-  setView: (view) => set({ view }),
+    view: 'list',
+    setView: (view) => set({ view }),
 
-  filters: { types: new Set(), query: '', tags: new Set() },
-  setFilters: (patch) => set((s) => ({ filters: { ...s.filters, ...patch } })),
+    filters: { types: new Set(), query: '', tags: new Set() },
+    setFilters: (patch) => set((s) => ({ filters: { ...s.filters, ...patch } })),
 
-  selection: { key: null },
-  select: (key) => set({ selection: { key } }),
+    selection: { key: null },
+    select: (key) => set({ selection: { key } }),
 
-  vesselPosition: null,
-  fetchVesselPosition: async () => {
-    const pos = await api.getVesselPosition().catch(() => null);
-    set({ vesselPosition: pos });
-  },
+    vesselPosition: null,
+    fetchVesselPosition: async () => {
+      const pos = await api.getVesselPosition().catch(() => null);
+      set({ vesselPosition: pos });
+    },
 
-  wizard: { open: false, dismissed: false },
-  openWizard: () => set({ wizard: { open: true, dismissed: false } }),
-  dismissWizard: () => set({ wizard: { open: false, dismissed: true } }),
+    wizard: { open: false, dismissed: false },
+    openWizard: () => set({ wizard: { open: true, dismissed: false } }),
+    dismissWizard: () => set({ wizard: { open: false, dismissed: true } }),
   };
 });

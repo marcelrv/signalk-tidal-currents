@@ -53,7 +53,12 @@ function httpApi(state: ApiState) {
 
 /** Harmonics fixture (52.9–53.5N, 4.9–5.5E) plus two UTCEF stations in the same area. */
 function loadedState(): ApiState {
-  const utcefDir = writeUtcefDir({ 'a.utcef': [['UT-1', 53.21, 5.21], ['UT-2', 53.35, 5.05]] });
+  const utcefDir = writeUtcefDir({
+    'a.utcef': [
+      ['UT-1', 53.21, 5.21],
+      ['UT-2', 53.35, 5.05],
+    ],
+  });
   return {
     data: loadHarmonicsDir(FIXTURES),
     error: null,

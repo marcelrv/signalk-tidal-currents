@@ -175,7 +175,12 @@ export function datasetCoverageAreaSqDeg(dataset: DatasetEntry, sources: Catalog
   if (dataset.regionId) {
     const file = source.files
       .filter(isTemplateFile)
-      .find((f) => f.region_id === dataset.regionId && (dataset.fileType === undefined || f.type === dataset.fileType) && (dataset.variant === undefined || f.variant === dataset.variant));
+      .find(
+        (f) =>
+          f.region_id === dataset.regionId &&
+          (dataset.fileType === undefined || f.type === dataset.fileType) &&
+          (dataset.variant === undefined || f.variant === dataset.variant),
+      );
     if (file) {
       const bbox = geometryBbox(file.boundary_geometry);
       if (bbox) return bboxAreaSqDeg(bbox);

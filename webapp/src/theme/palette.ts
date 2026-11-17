@@ -25,16 +25,34 @@ export interface ThemePalette {
 
 export const THEME_COLORS: Record<Theme, ThemePalette> = {
   day: {
-    success: '#15803d', warn: '#b45309', danger: '#b91c1c', muted: '#64748b', accent: '#0369a1',
-    typeHarmonic: '#7c3aed', typeGrib2: '#1d4ed8', typeUtcef: '#0f766e',
+    success: '#15803d',
+    warn: '#b45309',
+    danger: '#b91c1c',
+    muted: '#64748b',
+    accent: '#0369a1',
+    typeHarmonic: '#7c3aed',
+    typeGrib2: '#1d4ed8',
+    typeUtcef: '#0f766e',
   },
   dark: {
-    success: '#4ade80', warn: '#fbbf24', danger: '#f87171', muted: '#94a3b8', accent: '#38bdf8',
-    typeHarmonic: '#c4b5fd', typeGrib2: '#60a5fa', typeUtcef: '#5eead4',
+    success: '#4ade80',
+    warn: '#fbbf24',
+    danger: '#f87171',
+    muted: '#94a3b8',
+    accent: '#38bdf8',
+    typeHarmonic: '#c4b5fd',
+    typeGrib2: '#60a5fa',
+    typeUtcef: '#5eead4',
   },
   red: {
-    success: '#ff4040', warn: '#cc2020', danger: '#ffffff', muted: '#a03030', accent: '#ff4040',
+    success: '#ff4040',
+    warn: '#cc2020',
+    danger: '#ffffff',
+    muted: '#a03030',
+    accent: '#ff4040',
     // 3 lightness levels — light/bright/dark — since hue can't vary here.
-    typeHarmonic: '#ffb3b3', typeGrib2: '#ff3333', typeUtcef: '#800000',
+    typeHarmonic: '#ffb3b3',
+    typeGrib2: '#ff3333',
+    typeUtcef: '#800000',
   },
 };

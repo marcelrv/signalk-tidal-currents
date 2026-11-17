@@ -39,14 +39,7 @@ import {
   resolveAt,
   sampleClaimAt,
 } from './resolve.js';
-import {
-  UtcefCurrentStation,
-  UtcefSource,
-  nearestUtcefStations,
-  utcefSampleAt,
-  utcefStationsInBbox,
-  utcefSummary,
-} from './utcef.js';
+import { UtcefCurrentStation, UtcefSource, nearestUtcefStations, utcefSampleAt, utcefStationsInBbox, utcefSummary } from './utcef.js';
 
 // Minimal express-compatible typings (the router instance is supplied by the
 // Signal K server; this plugin has no runtime dependency on express).
@@ -148,11 +141,10 @@ function parsePosition(req: Req, res: Res): { lat: number; lon: number } | null 
   return { lat, lon };
 }
 
-function parseBbox(
-  req: Req,
-  res: Res,
-): { west: number; south: number; east: number; north: number } | null {
-  const parts = String(req.query.bbox ?? '').split(',').map(Number);
+function parseBbox(req: Req, res: Res): { west: number; south: number; east: number; north: number } | null {
+  const parts = String(req.query.bbox ?? '')
+    .split(',')
+    .map(Number);
   if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
     res.status(400).json({ error: 'bbox query parameter must be "west,south,east,north"' });
     return null;
@@ -165,10 +157,7 @@ function parseBbox(
   return { west, south, east, north };
 }
 
-function parseWindow(
-  req: Req,
-  res: Res,
-): { start: number; end: number; stepMs: number } | null {
+function parseWindow(req: Req, res: Res): { start: number; end: number; stepMs: number } | null {
   const start = req.query.start ? Date.parse(String(req.query.start)) : Date.now();
   const end = req.query.end ? Date.parse(String(req.query.end)) : start + 24 * 3600_000;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
@@ -361,7 +350,11 @@ export function handleStations(state: ApiState, req: Req, res: Res): void {
     const gathered: Array<{ lat: number; lon: number; info: () => unknown }> = [];
     if (state.data) {
       for (const n of stationsInBbox(state.data, bbox.west, bbox.south, bbox.east, bbox.north, STATION_GATHER_CAP)) {
-        gathered.push({ lat: n.station.latitude, lon: n.station.longitude, info: () => stationInfo(n.station, { vectorCapable: n.vectorCapable }) });
+        gathered.push({
+          lat: n.station.latitude,
+          lon: n.station.longitude,
+          info: () => stationInfo(n.station, { vectorCapable: n.vectorCapable }),
+        });
       }
     }
     if (u) {
@@ -526,8 +519,7 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
         ? utcefStationInfo(utcefStation.utcefStation, { distanceKm: utcefStation.distanceKm })
         : null,
       units: {
-        speedKn:
-          'knots (legacy-station samples: signed along flood/ebb axis; UTCEF/GRIB samples: magnitude)',
+        speedKn: 'knots (legacy-station samples: signed along flood/ebb axis; UTCEF/GRIB samples: magnitude)',
         u: 'm/s east',
         v: 'm/s north',
       },
@@ -573,7 +565,9 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     const stationsQ = String(req.query.stations ?? '').toLowerCase();
     const includeStations = stationsQ === '1' || stationsQ === 'true';
     if (!g && !haveUtcef && !(includeStations && state.data)) {
-      res.status(503).json({ error: includeStations ? 'no GRIB, UTCEF or harmonic current data loaded' : 'no GRIB or UTCEF current data loaded' });
+      res
+        .status(503)
+        .json({ error: includeStations ? 'no GRIB, UTCEF or harmonic current data loaded' : 'no GRIB or UTCEF current data loaded' });
       return;
     }
     const bbox = parseBbox(req, res);
@@ -610,8 +604,7 @@ type Bbox = { west: number; south: number; east: number; north: number };
 
 const round4 = (x: number): number => Math.round(x * 1e4) / 1e4;
 /** Numeric position key at the lattice's 1e-4° output rounding (lon folded into [0, 360)). */
-const posKey = (lat: number, lon: number): number =>
-  Math.round(lat * 1e4) * 4_000_000 + Math.round((((lon % 360) + 360) % 360) * 1e4);
+const posKey = (lat: number, lon: number): number => Math.round(lat * 1e4) * 4_000_000 + Math.round((((lon % 360) + 360) % 360) * 1e4);
 
 /**
  * Geometry-only base stride of a lattice: the smallest power of two for which a
@@ -710,15 +703,36 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
   // when every station in a zoomed-out view wins): a Winner object exists only
   // for the survivors of the thinning below.
   const hasLayer = (type: 'utcef' | 'harmonic') => ctx.layers.some((l) => l.type === type);
-  type Source = { kind: 'utcef' | 'station'; ranks: Uint32Array; items: readonly (UtcefCurrentStation | IdxStation)[]; own: Uint8Array; lat(r: number): number; lon(r: number): number };
+  type Source = {
+    kind: 'utcef' | 'station';
+    ranks: Uint32Array;
+    items: readonly (UtcefCurrentStation | IdxStation)[];
+    own: Uint8Array;
+    lat(r: number): number;
+    lon(r: number): number;
+  };
   const sources: Source[] = [];
   if (ctx.utcef && ctx.utcefIndex && hasLayer('utcef')) {
     const index = ctx.utcefIndex.points;
-    sources.push({ kind: 'utcef', ranks: index.inBboxRanks(bbox.west, bbox.south, bbox.east, bbox.north, false), items: ctx.utcef.currentStations, own: ownWinFor(ctx, 'utcef', time), lat: index.latAt, lon: index.lonAt });
+    sources.push({
+      kind: 'utcef',
+      ranks: index.inBboxRanks(bbox.west, bbox.south, bbox.east, bbox.north, false),
+      items: ctx.utcef.currentStations,
+      own: ownWinFor(ctx, 'utcef', time),
+      lat: index.latAt,
+      lon: index.lonAt,
+    });
   }
   if (ctx.harmonics && ctx.legacyIndex && hasLayer('harmonic')) {
     const index = ctx.legacyIndex.index;
-    sources.push({ kind: 'station', ranks: index.inBboxRanks(bbox.west, bbox.south, bbox.east, bbox.north, false), items: index.items, own: ownWinFor(ctx, 'station', time), lat: index.latAt, lon: index.lonAt });
+    sources.push({
+      kind: 'station',
+      ranks: index.inBboxRanks(bbox.west, bbox.south, bbox.east, bbox.north, false),
+      items: index.items,
+      own: ownWinFor(ctx, 'station', time),
+      lat: index.latAt,
+      lon: index.lonAt,
+    });
   }
   let capacity = 0;
   for (const src of sources) for (const r of src.ranks) if (src.own[r] !== OWN_LOSES) capacity++;
@@ -788,7 +802,7 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
     for (let j = Math.ceil(win.jMin / s) * s; j <= win.jMax; j += s) {
       const lat = round4(grid.lat0 + j * grid.dj);
       for (let i = Math.ceil(win.iMin / s) * s; i <= win.iMax; i += s) {
-        const lon = round4(((grid.lon0 + i * grid.di + 180) % 360 + 360) % 360 - 180);
+        const lon = round4(((((grid.lon0 + i * grid.di + 180) % 360) + 360) % 360) - 180);
         cands.push({ lat, lon, grid });
       }
     }

@@ -40,11 +40,11 @@ import * as path from 'path';
 
 export interface ConstituentTable {
   names: string[];
-  speeds: number[];       // degrees per hour
+  speeds: number[]; // degrees per hour
   firstYear: number;
   numYears: number;
   equilibrium: number[][]; // [constituent][yearIndex] degrees
-  nodeFactor: number[][];  // [constituent][yearIndex]
+  nodeFactor: number[][]; // [constituent][yearIndex]
 }
 
 export interface HarmonicStation {
@@ -52,10 +52,10 @@ export interface HarmonicStation {
   meridianSeconds: number; // phase reference offset from UTC (e.g. +3600 for "01:00")
   tzname?: string;
   datum: number;
-  units: string;           // "meters", "feet", "knots", …
+  units: string; // "meters", "feet", "knots", …
   isCurrent: boolean;
-  amplitude: number[];     // per constituent
-  epoch: number[];         // per constituent, degrees
+  amplitude: number[]; // per constituent
+  epoch: number[]; // per constituent, degrees
 }
 
 export interface SubordinateOffsets {
@@ -71,7 +71,7 @@ export interface SubordinateOffsets {
 }
 
 export interface IdxStation {
-  id: string;              // stable slug derived from the name
+  id: string; // stable slug derived from the name
   type: 'T' | 't' | 'C' | 'c';
   zone: string;
   name: string;
@@ -247,8 +247,7 @@ export function parseHarmonicFile(text: string): {
   const isRecordStart = (): boolean => {
     const meridianLine = r.peekAt(1);
     const datumLine = r.peekAt(2);
-    return meridianLine !== null && datumLine !== null &&
-      MERIDIAN_RE.test(meridianLine) && DATUM_RE.test(datumLine);
+    return meridianLine !== null && datumLine !== null && MERIDIAN_RE.test(meridianLine) && DATUM_RE.test(datumLine);
   };
 
   const records = new Map<string, HarmonicStation>();
@@ -390,8 +389,7 @@ export function parseIdxFile(text: string): IdxStation[] {
       name,
       latitude: lat,
       longitude: lon,
-      timeZoneMinutes:
-        (m[5].startsWith('-') ? -1 : 1) * (Math.abs(parseInt(m[5], 10)) * 60 + parseInt(m[6], 10)),
+      timeZoneMinutes: (m[5].startsWith('-') ? -1 : 1) * (Math.abs(parseInt(m[5], 10)) * 60 + parseInt(m[6], 10)),
       isCurrent: type === 'C' || type === 'c',
       isSubordinate: isSub,
       offsets,
@@ -426,10 +424,7 @@ function getNormalizedIndex(records: Map<string, HarmonicStation>): Map<string, 
  * Relaxed record lookup: IDX reference names may differ from HARMONIC record
  * names in case, spacing, or by being a prefix (OpenCPN's "slackcmp").
  */
-export function findStationHarmonics(
-  records: Map<string, HarmonicStation>,
-  name: string,
-): HarmonicStation | undefined {
+export function findStationHarmonics(records: Map<string, HarmonicStation>, name: string): HarmonicStation | undefined {
   const exact = records.get(name);
   if (exact) return exact;
   const want = normalizeStationName(name);

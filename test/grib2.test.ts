@@ -58,14 +58,30 @@ test('scan mode 0x00 (north→south) is normalized to south→north order', () =
   // Same logical field encoded twice with different scan modes.
   const south = [1, 2, 3, 4]; // 2x2 normalized: row j=0 = southern
   const msgNorm = encodeGrib2Message({
-    param: 3, refTime: T0, forecastHours: 0,
-    la1: 53.0, lo1: 5.0, dLat: 0.1, dLon: 0.1, ni: 2, nj: 2,
-    scan: 0x40, values: south,
+    param: 3,
+    refTime: T0,
+    forecastHours: 0,
+    la1: 53.0,
+    lo1: 5.0,
+    dLat: 0.1,
+    dLon: 0.1,
+    ni: 2,
+    nj: 2,
+    scan: 0x40,
+    values: south,
   });
   const msgNS = encodeGrib2Message({
-    param: 3, refTime: T0, forecastHours: 0,
-    la1: 53.1, lo1: 5.0, dLat: 0.1, dLon: 0.1, ni: 2, nj: 2,
-    scan: 0x00, values: [3, 4, 1, 2], // northern row first
+    param: 3,
+    refTime: T0,
+    forecastHours: 0,
+    la1: 53.1,
+    lo1: 5.0,
+    dLat: 0.1,
+    dLon: 0.1,
+    ni: 2,
+    nj: 2,
+    scan: 0x00,
+    values: [3, 4, 1, 2], // northern row first
   });
   const a = parseGrib2(msgNorm).fields[0];
   const b = parseGrib2(msgNS).fields[0];
@@ -76,8 +92,15 @@ test('scan mode 0x00 (north→south) is normalized to south→north order', () =
 test('bitmap: NaN input points decode as NaN', () => {
   const values = [1.5, NaN, 2.5, NaN];
   const msg = encodeGrib2Message({
-    param: 2, refTime: T0, forecastHours: 0,
-    la1: 53.0, lo1: 5.0, dLat: 0.1, dLon: 0.1, ni: 2, nj: 2,
+    param: 2,
+    refTime: T0,
+    forecastHours: 0,
+    la1: 53.0,
+    lo1: 5.0,
+    dLat: 0.1,
+    dLon: 0.1,
+    ni: 2,
+    nj: 2,
     values,
   });
   const f = parseGrib2(msg).fields[0];
@@ -173,7 +196,8 @@ test('complex packing (5.2): two groups incl. constant group', () => {
   bw.write(0, 8).write(0, 8).align(); // scaled group lengths (last overridden)
   bw.write(0, 2).write(3, 2); // group 1 packed values
   const msg = complexMessage(
-    2, 2,
+    2,
+    2,
     sect5Complex({ template: 2, numDataPoints: 4, nbits: 4, numGroups: 2, refGroupLengths: 2, lastGroupLength: 2 }),
     bw.toUint8Array(),
   );
@@ -190,7 +214,8 @@ test('complex packing (5.2): primary missing value management', () => {
   bw.write(0, 8).align(); // scaled length (last group → 4)
   bw.write(0, 2).write(3, 2).write(1, 2).write(2, 2);
   const msg = complexMessage(
-    2, 2,
+    2,
+    2,
     sect5Complex({ template: 2, numDataPoints: 4, nbits: 4, missingMgmt: 1, numGroups: 1, lastGroupLength: 4 }),
     bw.toUint8Array(),
   );
@@ -212,7 +237,8 @@ test('complex packing with spatial differencing (5.3, order 1)', () => {
   bw.write(0, 8).align(); // scaled length (last group → 3)
   bw.write(0, 1).write(0, 1).write(1, 1);
   const msg = complexMessage(
-    3, 1,
+    3,
+    1,
     sect5Complex({ template: 3, numDataPoints: 3, nbits: 0, numGroups: 1, lastGroupLength: 3, sdOrder: 1 }),
     bw.toUint8Array(),
   );
@@ -231,7 +257,8 @@ test('complex packing with spatial differencing (5.3, order 2)', () => {
   bw.write(0, 8).align(); // group width = 0
   bw.write(0, 8).align(); // scaled length (last group → 4)
   const msg = complexMessage(
-    4, 1,
+    4,
+    1,
     sect5Complex({ template: 3, numDataPoints: 4, nbits: 0, numGroups: 1, lastGroupLength: 4, sdOrder: 2 }),
     bw.toUint8Array(),
   );
@@ -274,30 +301,30 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const BSH_FIXTURE = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  'fixtures',
-  'bsh_nowcast.grb2',
-);
+const BSH_FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'bsh_nowcast.grb2');
 
-test('real BSH GRIB2 file with JPEG2000 (template 5.40) decodes to sensible values', { skip: !fs.existsSync(BSH_FIXTURE) ? 'fixture file not present — download from BSH FTP' : false }, () => {
-  const buf = fs.readFileSync(BSH_FIXTURE);
-  const { fields, skipped } = parseGrib2(buf);
-  assert.deepEqual(skipped, []);
-  assert.ok(fields.length > 0);
-  // Should have u/v component pairs at multiple forecast hours.
-  const uFields = fields.filter((f) => f.paramNumber === 2);
-  const vFields = fields.filter((f) => f.paramNumber === 3);
-  assert.ok(uFields.length > 0);
-  assert.equal(uFields.length, vFields.length);
-  // Verify grid metadata.
-  const f = fields[0];
-  assert.equal(f.paramCategory, 1);
-  assert.ok(f.grid.ni > 10 && f.grid.nj > 10);
-  // Verify decoded values are in a plausible range (m/s).
-  const nonNaN = f.values.filter((v) => !Number.isNaN(v));
-  assert.ok(nonNaN.length > 0);
-  for (const v of nonNaN) {
-    assert.ok(v > -10 && v < 10, `velocity ${v} out of plausible range`);
-  }
-});
+test(
+  'real BSH GRIB2 file with JPEG2000 (template 5.40) decodes to sensible values',
+  { skip: !fs.existsSync(BSH_FIXTURE) ? 'fixture file not present — download from BSH FTP' : false },
+  () => {
+    const buf = fs.readFileSync(BSH_FIXTURE);
+    const { fields, skipped } = parseGrib2(buf);
+    assert.deepEqual(skipped, []);
+    assert.ok(fields.length > 0);
+    // Should have u/v component pairs at multiple forecast hours.
+    const uFields = fields.filter((f) => f.paramNumber === 2);
+    const vFields = fields.filter((f) => f.paramNumber === 3);
+    assert.ok(uFields.length > 0);
+    assert.equal(uFields.length, vFields.length);
+    // Verify grid metadata.
+    const f = fields[0];
+    assert.equal(f.paramCategory, 1);
+    assert.ok(f.grid.ni > 10 && f.grid.nj > 10);
+    // Verify decoded values are in a plausible range (m/s).
+    const nonNaN = f.values.filter((v) => !Number.isNaN(v));
+    assert.ok(nonNaN.length > 0);
+    for (const v of nonNaN) {
+      assert.ok(v > -10 && v < 10, `velocity ${v} out of plausible range`);
+    }
+  },
+);
