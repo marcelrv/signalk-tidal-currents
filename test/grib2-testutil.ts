@@ -18,7 +18,10 @@ export class ByteWriter {
     return this.u8(v >> 8).u8(v);
   }
   u32(v: number): this {
-    return this.u8(v / 0x1000000).u8(v >> 16).u8(v >> 8).u8(v);
+    return this.u8(v / 0x1000000)
+      .u8(v >> 16)
+      .u8(v >> 8)
+      .u8(v);
   }
   /** GRIB2 sign-magnitude 32-bit. */
   s32sm(v: number): this {
@@ -91,7 +94,10 @@ export function section(num: number, body: (w: ByteWriter) => void): Uint8Array 
   body(w);
   const content = w.toUint8Array();
   const out = new ByteWriter();
-  out.u32(content.length + 5).u8(num).raw(content);
+  out
+    .u32(content.length + 5)
+    .u8(num)
+    .raw(content);
   return out.toUint8Array();
 }
 
@@ -111,22 +117,18 @@ export function makeSection1(refTime: number): Uint8Array {
 }
 
 /** Section 3, grid template 3.0. la1/lo1 = first point per scan mode. */
-export function makeSection3(
-  ni: number,
-  nj: number,
-  la1: number,
-  lo1: number,
-  dLat: number,
-  dLon: number,
-  scan = 0x40,
-): Uint8Array {
+export function makeSection3(ni: number, nj: number, la1: number, lo1: number, dLat: number, dLon: number, scan = 0x40): Uint8Array {
   const iPlus = (scan & 0x80) === 0;
   const jPlus = (scan & 0x40) !== 0;
   const la2 = la1 + (jPlus ? 1 : -1) * (nj - 1) * dLat;
   const lo2 = lo1 + (iPlus ? 1 : -1) * (ni - 1) * dLon;
   const toMicro = (deg: number) => Math.round(deg * 1e6);
   return section(3, (w) => {
-    w.u8(0).u32(ni * nj).u8(0).u8(0).u16(0);
+    w.u8(0)
+      .u32(ni * nj)
+      .u8(0)
+      .u8(0)
+      .u16(0);
     w.u8(6);
     w.u8(0).u32(0).u8(0).u32(0).u8(0).u32(0);
     w.u32(ni).u32(nj);
@@ -140,13 +142,7 @@ export function makeSection3(
 }
 
 /** Section 4, product template 4.0. */
-export function makeSection4(
-  category: number,
-  param: number,
-  forecastHours: number,
-  surfaceType = 1,
-  surfaceValue = 0,
-): Uint8Array {
+export function makeSection4(category: number, param: number, forecastHours: number, surfaceType = 1, surfaceValue = 0): Uint8Array {
   return section(4, (w) => {
     w.u16(0).u16(0).u8(category).u8(param);
     w.u8(2).u8(0).u8(0).u16(0).u8(0);

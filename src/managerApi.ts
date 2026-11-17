@@ -201,8 +201,15 @@ function orphanDatasets(mgr: ManagerState): DatasetEntry[] {
         continue;
       }
       results.push({
-        id: `orphan:${tag}:${f}`, catalogSourceId: null, type, name: f,
-        files: [f], sizeBytes, downloadedAt: null, status: 'active', autoUpdate: false,
+        id: `orphan:${tag}:${f}`,
+        catalogSourceId: null,
+        type,
+        name: f,
+        files: [f],
+        sizeBytes,
+        downloadedAt: null,
+        status: 'active',
+        autoUpdate: false,
       });
     }
   };
@@ -225,7 +232,12 @@ export type ManagerReadRouterLike = Pick<ManagerRouterLike, 'get'>;
  * public demo) while everything on `router` stays admin-only. A new route is
  * public only if it is registered on `reads` — never by HTTP method alone.
  */
-export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerState, reads: ManagerReadRouterLike = router, opts: ManagerRouteOptions = {}): void {
+export function registerManagerRoutes(
+  router: ManagerRouterLike,
+  mgr: ManagerState,
+  reads: ManagerReadRouterLike = router,
+  opts: ManagerRouteOptions = {},
+): void {
   /**
    * Admin iff security is off or the principal is admin. With security on,
    * every request reaching a plugin route carries a principal (anonymous
@@ -244,8 +256,10 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
    * fixed generic text instead — no string rewriting to get wrong. Admins
    * see everything verbatim.
    */
-  const jobFor = (req: MReq) => <T extends { error?: string }>(job: T): T =>
-    job.error && !isAdminRequest(req) ? { ...job, error: PUBLIC_DOWNLOAD_ERROR } : job;
+  const jobFor =
+    (req: MReq) =>
+    <T extends { error?: string }>(job: T): T =>
+      job.error && !isAdminRequest(req) ? { ...job, error: PUBLIC_DOWNLOAD_ERROR } : job;
 
   // --- Shared results for non-admin reads -------------------------------
   // `gen` changes whenever the data behind /datasets, /storage or /priority
@@ -254,7 +268,9 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
   // or data directory (registration can run before start(), so the
   // completion hook follows whichever engine is current at request time).
   let gen = 0;
-  const invalidatePublic = () => { gen++; };
+  const invalidatePublic = () => {
+    gen++;
+  };
   let hookedEngine: DownloadEngine | null = null;
   let unhookEngine: () => void = () => {};
   let lastStamp: unknown[] = [];
@@ -296,14 +312,21 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
         if (!entry || entry.gen !== g || Date.now() - entry.at > PUBLIC_SCAN_TTL_MS) {
           const e = { at: Date.now(), gen: g, value: run().then(toPublic) };
           entry = e;
-          e.value.catch(() => { if (entry === e) entry = null; });
+          e.value.catch(() => {
+            if (entry === e) entry = null;
+          });
         }
         return entry.value;
       },
       fresh(): Promise<F> {
         const g = currentGen();
         const full = run();
-        full.then((f) => { entry = { at: Date.now(), gen: g, value: Promise.resolve(toPublic(f)) }; }, () => undefined);
+        full.then(
+          (f) => {
+            entry = { at: Date.now(), gen: g, value: Promise.resolve(toPublic(f)) };
+          },
+          () => undefined,
+        );
         return full;
       },
     };
@@ -349,16 +372,19 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
   // The host router ignores a returned promise, so a rejection would hang the
   // request and surface as an unhandled rejection: answer 500 instead.
   router.post('/catalog/refresh', (_req, res) => {
-    mgr.catalog.refresh().then((state) => {
-      invalidatePublic(); // dataset names/status derive from the catalog document
-      if (state.error) {
-        res.status(502).json(state);
-        return;
-      }
-      res.json(state);
-    }).catch((e: unknown) => {
-      res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
-    });
+    mgr.catalog
+      .refresh()
+      .then((state) => {
+        invalidatePublic(); // dataset names/status derive from the catalog document
+        if (state.error) {
+          res.status(502).json(state);
+          return;
+        }
+        res.json(state);
+      })
+      .catch((e: unknown) => {
+        res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+      });
   });
 
   // The scan is synchronous (manifest read, per-file existsSync, recursive
@@ -377,7 +403,11 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
         return;
       }
       for (const t of targets) {
-        try { fs.unlinkSync(t); } catch { /* already gone */ }
+        try {
+          fs.unlinkSync(t);
+        } catch {
+          /* already gone */
+        }
       }
       writeManifestAtomic(mgr.manifestPath, removeInstall(manifest, id));
       invalidatePublic();
@@ -483,7 +513,13 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
   });
 
   router.post('/downloads', (req, res) => {
-    const body = (req.body ?? {}) as { sourceId?: string; region_id?: string; type?: 'forecast' | 'nowcast'; variant?: string; filename?: string };
+    const body = (req.body ?? {}) as {
+      sourceId?: string;
+      region_id?: string;
+      type?: 'forecast' | 'nowcast';
+      variant?: string;
+      filename?: string;
+    };
     if (!body.sourceId) {
       res.status(400).json({ error: 'sourceId is required' });
       return;
@@ -596,8 +632,8 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
     const heartbeat = terminal
       ? undefined
       : setInterval(() => {
-        if (!closed) raw.write(':hb\n\n');
-      }, 15_000);
+          if (!closed) raw.write(':hb\n\n');
+        }, 15_000);
     let unsubscribe: () => void = () => {};
     function cleanup(): void {
       if (closed) return;
@@ -624,10 +660,13 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
   // `datasets` is the RESOLVED full stack (persisted order first, then any
   // unranked installs appended in type-order) so the webapp can render the
   // whole Phase 3 priority stack directly without re-deriving the merge.
-  const resolvedStack = () =>
-    resolveDatasetStack(mgr.getDatasetStack(), mgr.getPriority(), readManifest(mgr.manifestPath).installs);
+  const resolvedStack = () => resolveDatasetStack(mgr.getDatasetStack(), mgr.getPriority(), readManifest(mgr.manifestPath).installs);
 
-  const priorityRead = sharedRead(() => ({ order: mgr.getPriority(), default: DEFAULT_PRIORITY, datasets: resolvedStack().map((e) => e.id) }));
+  const priorityRead = sharedRead(() => ({
+    order: mgr.getPriority(),
+    default: DEFAULT_PRIORITY,
+    datasets: resolvedStack().map((e) => e.id),
+  }));
   reads.get('/priority', (req, res) => serveRead(req, res, priorityRead));
 
   router.put('/priority', (req, res) => {

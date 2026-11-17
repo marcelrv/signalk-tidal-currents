@@ -31,15 +31,32 @@ function tmpDirs() {
 
 function install(id: string, autoUpdate?: boolean): ManifestInstall {
   return {
-    id, catalogSourceId: id, type: 'harmonic', files: ['f.dat'], sha256: 'old-hash', size_bytes: 1,
-    downloaded_at: new Date().toISOString(), ...(autoUpdate === undefined ? {} : { autoUpdate }),
+    id,
+    catalogSourceId: id,
+    type: 'harmonic',
+    files: ['f.dat'],
+    sha256: 'old-hash',
+    size_bytes: 1,
+    downloaded_at: new Date().toISOString(),
+    ...(autoUpdate === undefined ? {} : { autoUpdate }),
   } as ManifestInstall;
 }
 
 function source(id: string, sha256: string): CatalogSource {
   return {
-    id, source: 'test', type: 'harmonic', name: id, description: '', contributor: 'T', url: 'https://x', tags: [],
-    region: { name: 'r', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 }, boundary_geometry: { type: 'Polygon', coordinates: [] } },
+    id,
+    source: 'test',
+    type: 'harmonic',
+    name: id,
+    description: '',
+    contributor: 'T',
+    url: 'https://x',
+    tags: [],
+    region: {
+      name: 'r',
+      bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
+      boundary_geometry: { type: 'Polygon', coordinates: [] },
+    },
     update_check: { method: 'sha256', last_checked: new Date().toISOString() },
     files: [{ filename: 'f.dat', url: 'https://x/f.dat', size_bytes: 1, sha256 }],
   } as unknown as CatalogSource;
@@ -48,7 +65,11 @@ function source(id: string, sha256: string): CatalogSource {
 /** Catalog whose refresh() swaps in `afterRefresh` sources and bumps fetchedAt to "now". */
 function fakeCatalog(sources: CatalogSource[], fetchedAt: string | null, now: () => number, afterRefresh = sources) {
   let state: CatalogState = {
-    status: 'cached', fetchedAt, error: null, sourceUrl: 'https://example.org/c.json', warnings: [],
+    status: 'cached',
+    fetchedAt,
+    error: null,
+    sourceUrl: 'https://example.org/c.json',
+    warnings: [],
     document: { catalog_schema_version: '1.0.0', version: 1, generated: '', source_count: sources.length, sources },
   };
   const client: CatalogClient & { refreshes: number } = {
@@ -67,8 +88,16 @@ function fakeDownloads(): DownloadEngine & { started: string[] } {
   const started: string[] = [];
   return {
     started,
-    start: (id) => { started.push(id); return { id: `j${started.length}`, catalogSourceId: id, state: 'queued', bytes: 0, totalBytes: null } as DownloadJob; },
-    get: () => undefined, list: () => [], cancel: () => {}, onUpdate: () => () => {}, onAnyDone: () => () => {}, hasInFlight: () => false,
+    start: (id) => {
+      started.push(id);
+      return { id: `j${started.length}`, catalogSourceId: id, state: 'queued', bytes: 0, totalBytes: null } as DownloadJob;
+    },
+    get: () => undefined,
+    list: () => [],
+    cancel: () => {},
+    onUpdate: () => () => {},
+    onAnyDone: () => () => {},
+    hasInFlight: () => false,
   };
 }
 
@@ -97,7 +126,10 @@ test('migration: old per-dataset opt-ins switch auto-download on and opt every o
   assert.deepEqual(byId, { on: true, never: false, off: false });
 
   // Second load reads the saved file — a later re-include of 'never' must not be undone.
-  writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [install('on', true), install('never', true), install('off', false)] });
+  writeManifestAtomic(manifestPath, {
+    manifest_version: 1,
+    installs: [install('on', true), install('never', true), install('off', false)],
+  });
   assert.equal(loadAutoDownloadSettings(root, manifestPath).intervalHours, MIGRATED_INTERVAL);
   assert.equal(readManifest(manifestPath).installs.find((i) => i.id === 'never')!.autoUpdate, true);
 });
@@ -119,7 +151,10 @@ test('nextDueAt: null while Off, 0 when never swept, else last sweep + interval'
   assert.equal(nextDueAt({ intervalHours: 0, lastSweep: null }), null);
   assert.equal(nextDueAt({ intervalHours: 6, lastSweep: null }), 0);
   const at = '2026-01-01T00:00:00.000Z';
-  assert.equal(nextDueAt({ intervalHours: 6, lastSweep: { at, started: [], skippedInFlight: [], skippedDiskFull: [] } }), Date.parse(at) + 6 * HOUR);
+  assert.equal(
+    nextDueAt({ intervalHours: 6, lastSweep: { at, started: [], skippedInFlight: [], skippedDiskFull: [] } }),
+    Date.parse(at) + 6 * HOUR,
+  );
 });
 
 test('scheduler: Off never sweeps; switching on sweeps at once; then waits for the interval', async () => {
@@ -176,7 +211,8 @@ test('scheduler: a persisted recent sweep is not repeated after a restart', asyn
   writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [install('a')] });
   const t = Date.parse('2026-06-01T12:00:00Z');
   saveAutoDownloadSettingsAtomic(root, {
-    intervalHours: 24, lastSweep: { at: new Date(t - HOUR).toISOString(), started: [], skippedInFlight: [], skippedDiskFull: [] },
+    intervalHours: 24,
+    lastSweep: { at: new Date(t - HOUR).toISOString(), started: [], skippedInFlight: [], skippedDiskFull: [] },
   });
   const downloads = fakeDownloads();
   const sched = createAutoDownloadScheduler(
@@ -192,7 +228,10 @@ test('nextDueAt: a failed sweep (catalog or run) retries after AUTO_DOWNLOAD_RET
   const base = { at, started: [], skippedInFlight: [], skippedDiskFull: [] };
   assert.equal(nextDueAt({ intervalHours: 24, lastSweep: { ...base, catalogError: 'offline' } }), Date.parse(at) + AUTO_DOWNLOAD_RETRY_MS);
   assert.equal(nextDueAt({ intervalHours: 24, lastSweep: { ...base, error: 'boom' } }), Date.parse(at) + AUTO_DOWNLOAD_RETRY_MS);
-  assert.equal(nextDueAt({ intervalHours: 1, lastSweep: { ...base, catalogError: 'offline' } }), Date.parse(at) + Math.min(HOUR, AUTO_DOWNLOAD_RETRY_MS));
+  assert.equal(
+    nextDueAt({ intervalHours: 1, lastSweep: { ...base, catalogError: 'offline' } }),
+    Date.parse(at) + Math.min(HOUR, AUTO_DOWNLOAD_RETRY_MS),
+  );
 });
 
 test('nextDueAt: a last sweep in the future (clock corrected backwards) is due now', () => {
@@ -230,7 +269,7 @@ test('scheduler: a failed catalog refresh still records the sweep and retries af
   assert.equal(catalog.refreshes, 2, 'retried after the short delay');
 });
 
-test('scheduler: stop() during a sweep keeps it from saving over the successor\'s settings', async () => {
+test("scheduler: stop() during a sweep keeps it from saving over the successor's settings", async () => {
   const { root, manifestPath } = tmpDirs();
   fs.writeFileSync(path.join(root, 'f.dat'), 'x');
   writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [install('a')] });
@@ -238,9 +277,14 @@ test('scheduler: stop() during a sweep keeps it from saving over the successor\'
   const t = Date.parse('2026-06-01T00:00:00Z');
   const catalog = fakeCatalog([source('a', 'new')], null, () => t);
   let release!: () => void;
-  const gate = new Promise<void>((r) => { release = r; });
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
   const realRefresh = catalog.refresh;
-  catalog.refresh = async () => { await gate; return realRefresh(); };
+  catalog.refresh = async () => {
+    await gate;
+    return realRefresh();
+  };
   const downloads = fakeDownloads();
   const old = createAutoDownloadScheduler({ catalog, downloads, manifestPath, dataDir: root }, { now: () => t, timers: false });
   const pending = old.tick();
@@ -281,9 +325,14 @@ test('scheduler: turning auto-download Off during a pending sweep abandons it', 
   const t = Date.parse('2026-06-01T00:00:00Z');
   const catalog = fakeCatalog([source('a', 'new')], null, () => t);
   let release!: () => void;
-  const gate = new Promise<void>((r) => { release = r; });
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
   const realRefresh = catalog.refresh;
-  catalog.refresh = async () => { await gate; return realRefresh(); };
+  catalog.refresh = async () => {
+    await gate;
+    return realRefresh();
+  };
   const downloads = fakeDownloads();
   const sched = createAutoDownloadScheduler({ catalog, downloads, manifestPath, dataDir: root }, { now: () => t, timers: false });
   const pending = sched.tick();

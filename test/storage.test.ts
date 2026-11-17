@@ -58,7 +58,13 @@ test('reports real total/free bytes when statfs is available', async () => {
 
 function mkSource(id: string, bbox: { min_lat: number; min_lon: number; max_lat: number; max_lon: number }) {
   return {
-    id, source: 'test', type: 'grib2' as const, name: `Source ${id}`, description: '', contributor: 'Test', url: 'https://x',
+    id,
+    source: 'test',
+    type: 'grib2' as const,
+    name: `Source ${id}`,
+    description: '',
+    contributor: 'Test',
+    url: 'https://x',
     tags: [],
     region: { name: id, bounding_box: bbox, boundary_geometry: { type: 'Polygon' as const, coordinates: [] } },
     update_check: { method: 'sha256' as const, last_checked: new Date().toISOString() },
@@ -68,8 +74,12 @@ function mkSource(id: string, bbox: { min_lat: number; min_lon: number; max_lat:
 
 function mkInstall(id: string, catalogSourceId: string, sizeBytes: number) {
   return {
-    id, catalogSourceId, type: 'grib2' as const, files: ['f.grb2'],
-    size_bytes: sizeBytes, downloaded_at: new Date().toISOString(),
+    id,
+    catalogSourceId,
+    type: 'grib2' as const,
+    files: ['f.grb2'],
+    size_bytes: sizeBytes,
+    downloaded_at: new Date().toISOString(),
   };
 }
 
@@ -95,7 +105,7 @@ test('cleanupCandidates: vessel far outside a bbox is included with correct nm d
   // to the expected clamped point (lat clamped to bbox.max_lat=1, lon
   // unchanged since 0 is already inside [0,1]) — this verifies the
   // clamping/nm-conversion logic, not the haversine formula itself.
-  const expectedNm = (distanceKm(vessel.lat, vessel.lon, 1, 0) / 1.852);
+  const expectedNm = distanceKm(vessel.lat, vessel.lon, 1, 0) / 1.852;
   assert.ok(Math.abs(candidates[0].distanceNm! - expectedNm) < 0.01, `${candidates[0].distanceNm} vs ${expectedNm}`);
 });
 
@@ -154,5 +164,8 @@ test('cleanupCandidates: sorts by distance descending, then size descending, amo
     mkSource('src-far2', { min_lat: 20, min_lon: 0, max_lat: 21, max_lon: 1 }),
   );
   const candidates = cleanupCandidates(manifest, catalogDoc, { lat: 0, lon: 0 }, 1);
-  assert.deepEqual(candidates.map((c) => c.id), ['far-big', 'far-small', 'near']);
+  assert.deepEqual(
+    candidates.map((c) => c.id),
+    ['far-big', 'far-small', 'near'],
+  );
 });

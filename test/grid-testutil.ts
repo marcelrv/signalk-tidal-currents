@@ -88,7 +88,15 @@ export function writeUtcefDir(files: Record<string, UtcefStationSpec[]>): string
 }
 
 export function rect(w: number, s: number, e: number, n: number): number[][][] {
-  return [[[w, s], [e, s], [e, n], [w, n], [w, s]]];
+  return [
+    [
+      [w, s],
+      [e, s],
+      [e, n],
+      [w, n],
+      [w, s],
+    ],
+  ];
 }
 
 /** Call a registered route handler directly and return its JSON body. */
@@ -103,7 +111,16 @@ export function makeApi(state: ApiState) {
   };
 }
 
-export type P = { latitude: number; longitude: number; source: string; stationId?: string; u: number; v: number; speedKn: number; direction: number };
+export type P = {
+  latitude: number;
+  longitude: number;
+  source: string;
+  stationId?: string;
+  u: number;
+  v: number;
+  speedKn: number;
+  direction: number;
+};
 
 /** Seeded PRNG (mulberry32). */
 export function rng(seed: number) {

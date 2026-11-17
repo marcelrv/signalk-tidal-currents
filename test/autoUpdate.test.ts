@@ -20,24 +20,53 @@ function tmpDirs() {
 
 function fakeCatalogClient(sources: CatalogSource[]): CatalogClient {
   const document: CatalogDocument = {
-    catalog_schema_version: '1.0.0', version: 1, generated: new Date().toISOString(),
-    source_count: sources.length, sources,
+    catalog_schema_version: '1.0.0',
+    version: 1,
+    generated: new Date().toISOString(),
+    source_count: sources.length,
+    sources,
   };
-  const state: CatalogState = { status: 'cached', document, fetchedAt: new Date().toISOString(), error: null, sourceUrl: 'https://example.org/x.json', warnings: [] };
+  const state: CatalogState = {
+    status: 'cached',
+    document,
+    fetchedAt: new Date().toISOString(),
+    error: null,
+    sourceUrl: 'https://example.org/x.json',
+    warnings: [],
+  };
   return { get: () => state, refresh: async () => state };
 }
 
 function region() {
   return {
-    name: 'Test', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
-    boundary_geometry: { type: 'Polygon' as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]] },
+    name: 'Test',
+    bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
+    boundary_geometry: {
+      type: 'Polygon' as const,
+      coordinates: [
+        [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+    },
   };
 }
 
 function mkSource(id: string, sha256: string): CatalogSource {
   return {
-    id, source: 'test', type: 'harmonic', name: `Source ${id}`, description: '', contributor: 'Test', url: 'https://x',
-    tags: [], region: region(),
+    id,
+    source: 'test',
+    type: 'harmonic',
+    name: `Source ${id}`,
+    description: '',
+    contributor: 'Test',
+    url: 'https://x',
+    tags: [],
+    region: region(),
     update_check: { method: 'sha256', last_checked: new Date().toISOString() },
     files: [{ filename: 'f.dat', url: 'https://x/f.dat', size_bytes: 100, sha256 }],
   } as unknown as CatalogSource;
@@ -45,8 +74,12 @@ function mkSource(id: string, sha256: string): CatalogSource {
 
 function mkInstall(overrides: Partial<ManifestInstall> & Pick<ManifestInstall, 'id' | 'catalogSourceId'>): ManifestInstall {
   return {
-    type: 'harmonic', files: ['f.dat'], sha256: 'old-hash',
-    size_bytes: 100, downloaded_at: new Date().toISOString(), autoUpdate: true,
+    type: 'harmonic',
+    files: ['f.dat'],
+    sha256: 'old-hash',
+    size_bytes: 100,
+    downloaded_at: new Date().toISOString(),
+    autoUpdate: true,
     ...overrides,
   } as ManifestInstall;
 }
@@ -64,14 +97,27 @@ class FakeDownloadEngine implements DownloadEngine {
     this.selectors.set(job.id, fileSelector);
     return job;
   }
-  get(id: string) { return this.jobs.find((j) => j.id === id); }
-  list() { return this.jobs; }
-  cancel() { /* unused */ }
-  onUpdate() { return () => {}; }
-  onAnyDone() { return () => {}; }
+  get(id: string) {
+    return this.jobs.find((j) => j.id === id);
+  }
+  list() {
+    return this.jobs;
+  }
+  cancel() {
+    /* unused */
+  }
+  onUpdate() {
+    return () => {};
+  }
+  onAnyDone() {
+    return () => {};
+  }
   hasInFlight(sourceId: string, selector?: FileSelector): boolean {
     return this.jobs.some(
-      (j) => j.catalogSourceId === sourceId && (j.state === 'queued' || j.state === 'active') && selectorsOverlap(this.selectors.get(j.id), selector),
+      (j) =>
+        j.catalogSourceId === sourceId &&
+        (j.state === 'queued' || j.state === 'active') &&
+        selectorsOverlap(this.selectors.get(j.id), selector),
     );
   }
 }
@@ -179,20 +225,37 @@ test('no candidates when nothing is stale or nothing has autoUpdate enabled', as
 
 function mkTemplateSource(id: string, files: Array<{ region_id: string; type: 'nowcast' | 'forecast'; variant?: string }>): CatalogSource {
   return {
-    id, source: 'bsh', type: 'grib2', name: `Source ${id}`, description: '', contributor: 'Test', url: 'https://x',
-    tags: [], region: region(),
+    id,
+    source: 'bsh',
+    type: 'grib2',
+    name: `Source ${id}`,
+    description: '',
+    contributor: 'Test',
+    url: 'https://x',
+    tags: [],
+    region: region(),
     update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 1 },
     files: files.map((f) => ({
-      region_id: f.region_id, name: f.region_id, description: '', boundary_geometry: region().boundary_geometry,
-      type: f.type, variant: f.variant, url_template: 'https://x/{YYYYMMDD}/{HH}/f{hour:03d}.grb2',
-      forecast_hours: [24], cycle_hours: ['00'],
+      region_id: f.region_id,
+      name: f.region_id,
+      description: '',
+      boundary_geometry: region().boundary_geometry,
+      type: f.type,
+      variant: f.variant,
+      url_template: 'https://x/{YYYYMMDD}/{HH}/f{hour:03d}.grb2',
+      forecast_hours: [24],
+      cycle_hours: ['00'],
     })),
   } as unknown as CatalogSource;
 }
 
 function mkTemplateInstall(overrides: Partial<ManifestInstall> & Pick<ManifestInstall, 'id' | 'catalogSourceId'>): ManifestInstall {
   return {
-    type: 'grib2', files: ['f.dat'], size_bytes: 100, downloaded_at: new Date().toISOString(), autoUpdate: true,
+    type: 'grib2',
+    files: ['f.dat'],
+    size_bytes: 100,
+    downloaded_at: new Date().toISOString(),
+    autoUpdate: true,
     // 48h old vs the source's 1h max_age_hours above — always stale.
     cycle: new Date(Date.now() - 48 * 3600_000).toISOString(),
     ...overrides,
@@ -205,12 +268,19 @@ test('a BSH-style nowcast job already in flight does not block its sibling forec
   fs.writeFileSync(path.join(root, 'forecast.dat'), 'x');
 
   const nowcastInstall = mkTemplateInstall({
-    id: 'bsh_currents:north_sea:nowcast', catalogSourceId: 'bsh_currents', files: ['nowcast.dat'],
-    regionId: 'north_sea', fileType: 'nowcast',
+    id: 'bsh_currents:north_sea:nowcast',
+    catalogSourceId: 'bsh_currents',
+    files: ['nowcast.dat'],
+    regionId: 'north_sea',
+    fileType: 'nowcast',
   });
   const forecastInstall = mkTemplateInstall({
-    id: 'bsh_currents:north_sea:forecast:+24h', catalogSourceId: 'bsh_currents', files: ['forecast.dat'],
-    regionId: 'north_sea', fileType: 'forecast', variant: '+24h',
+    id: 'bsh_currents:north_sea:forecast:+24h',
+    catalogSourceId: 'bsh_currents',
+    files: ['forecast.dat'],
+    regionId: 'north_sea',
+    fileType: 'forecast',
+    variant: '+24h',
   });
   writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [nowcastInstall, forecastInstall] });
 
@@ -236,7 +306,10 @@ test('a cancelled sweep (scheduler stopped during the storage scan) starts nothi
   writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [mkInstall({ id: 'a', catalogSourceId: 'a' })] });
   const downloads = new FakeDownloadEngine();
   let cancelled = false;
-  const sweep = runAutoUpdateSweep(baseDeps(root, manifestPath, fakeCatalogClient([mkSource('a', 'new-hash')]), downloads), () => cancelled);
+  const sweep = runAutoUpdateSweep(
+    baseDeps(root, manifestPath, fakeCatalogClient([mkSource('a', 'new-hash')]), downloads),
+    () => cancelled,
+  );
   cancelled = true; // flips while the sweep awaits statStorage
   const result = await sweep;
   assert.deepEqual(result.started, []);

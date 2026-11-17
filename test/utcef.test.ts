@@ -8,14 +8,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 
-import {
-  createUtcefSource,
-  loadUtcefDir,
-  nearestUtcefStations,
-  parseUtcef,
-  utcefSampleAt,
-  utcefVectorAt,
-} from '../dist/utcef.js';
+import { createUtcefSource, loadUtcefDir, nearestUtcefStations, parseUtcef, utcefSampleAt, utcefVectorAt } from '../dist/utcef.js';
 import { astronomicalArgs, nodeFactors } from '../dist/astro.js';
 
 const KNOTS_TO_MS = 0.514444;
@@ -31,7 +24,7 @@ function crc32(buf: Buffer): number {
     c ^= buf[i];
     for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
   }
-  return (~c) >>> 0;
+  return ~c >>> 0;
 }
 
 /** Minimal single-entry ZIP (deflate) — a real `.utcef` container. */
@@ -174,9 +167,7 @@ test('surfaces license/citation/attribution metadata (PRD attribution surface)',
   assert.equal(data.license, 'CC-BY-4.0');
   assert.equal(data.licenseUrl, 'https://example.org/license.pdf');
   assert.equal(data.citationRequired, 'Please cite Test Dataset 2026');
-  assert.deepEqual(data.dataSources, [
-    { name: 'Test Model', url: 'https://example.org', role: 'Model Developer' },
-  ]);
+  assert.deepEqual(data.dataSources, [{ name: 'Test Model', url: 'https://example.org', role: 'Model Developer' }]);
 });
 
 test('predicts a finite, well-formed set/drift vector', () => {
@@ -262,7 +253,10 @@ test('rejects an unsupported major schema version', () => {
   fs.writeFileSync(path.join(dir, 'v2.utcef'), JSON.stringify(doc));
   const data = loadUtcefDir(dir)!;
   assert.equal(data.currentStations.length, 0);
-  assert.ok(data.warnings.some((w) => /major 2/.test(w)), data.warnings.join('; '));
+  assert.ok(
+    data.warnings.some((w) => /major 2/.test(w)),
+    data.warnings.join('; '),
+  );
 });
 
 test('warns on an unknown constituent but keeps the known ones', () => {
@@ -368,7 +362,15 @@ test('representative_area wins over nearest-station distance', () => {
         // Far point, but its area contains the query.
         mk('AREA', 5.0, 53.0, {
           type: 'Polygon',
-          coordinates: [[[3.9, 51.9], [4.1, 51.9], [4.1, 52.1], [3.9, 52.1], [3.9, 51.9]]],
+          coordinates: [
+            [
+              [3.9, 51.9],
+              [4.1, 51.9],
+              [4.1, 52.1],
+              [3.9, 52.1],
+              [3.9, 51.9],
+            ],
+          ],
         }),
       ],
     },
@@ -447,7 +449,10 @@ test('loadUtcefDir per-file cache: unchanged files are reused, changed files re-
   fs.utimesSync(path.join(dir, 'b.utcef'), future, future);
   const bSigBefore = cache.get('b.utcef')!.sig;
   const third = loadUtcefDir(dir, cache)!;
-  assert.equal(third.currentStations.find((s) => s.id === 'NL_03_OFF'), aStationFirst);
+  assert.equal(
+    third.currentStations.find((s) => s.id === 'NL_03_OFF'),
+    aStationFirst,
+  );
   assert.notEqual(cache.get('b.utcef')!.sig, bSigBefore);
 
   // Delete b: its cache entry must be evicted, a still served from cache.

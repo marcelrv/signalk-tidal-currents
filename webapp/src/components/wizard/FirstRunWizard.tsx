@@ -34,9 +34,10 @@ export function FirstRunWizard() {
   const [error, setError] = useState<string | null>(null);
 
   const position = useMemo(
-    () => manualPos && manualPos.lat !== '' && manualPos.lon !== ''
-      ? { latitude: Number(manualPos.lat), longitude: Number(manualPos.lon) }
-      : vesselPosition,
+    () =>
+      manualPos && manualPos.lat !== '' && manualPos.lon !== ''
+        ? { latitude: Number(manualPos.lat), longitude: Number(manualPos.lon) }
+        : vesselPosition,
     [manualPos, vesselPosition],
   );
 
@@ -64,7 +65,9 @@ export function FirstRunWizard() {
   // utcef_north_sea); installing the smallest one must not make the
   // next-smallest pop up as a fresh "recommended" pick.
   const liveRecommendedKey = allGrouped.live.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.live[0]?.key ?? null);
-  const backupRecommendedKey = allGrouped.backup.some((r) => isRowInstalled(datasets, r)) ? null : (notInstalledGrouped.backup[0]?.key ?? null);
+  const backupRecommendedKey = allGrouped.backup.some((r) => isRowInstalled(datasets, r))
+    ? null
+    : (notInstalledGrouped.backup[0]?.key ?? null);
 
   useEffect(() => {
     // The component stays mounted while closed — don't resurface a stale install error on reopen.
@@ -107,7 +110,11 @@ export function FirstRunWizard() {
     setInstalling(true);
     setError(null);
     try {
-      const results = await Promise.allSettled(newDownloads.map((row) => startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined)));
+      const results = await Promise.allSettled(
+        newDownloads.map((row) =>
+          startDownload(row.source.id, row.regionId ? { region_id: row.regionId, type: row.fileType, variant: row.variant } : undefined),
+        ),
+      );
       const failed = newDownloads.filter((_, i) => results[i].status === 'rejected');
       if (failed.length === 0) {
         dismissWizard();
@@ -129,8 +136,7 @@ export function FirstRunWizard() {
       {!position ? (
         <div className="flex flex-col gap-3">
           <p className="text-muted">
-            No vessel position available yet. Enter a position to see which datasets cover it, or browse the
-            full catalog instead.
+            No vessel position available yet. Enter a position to see which datasets cover it, or browse the full catalog instead.
           </p>
           <div className="flex gap-2">
             <input
@@ -178,8 +184,8 @@ export function FirstRunWizard() {
       ) : (
         <div className="flex flex-col gap-3">
           <p className="text-sm text-muted">
-            {candidates.length} dataset{candidates.length === 1 ? '' : 's'} cover{' '}
-            {position.latitude.toFixed(2)}, {position.longitude.toFixed(2)}:
+            {candidates.length} dataset{candidates.length === 1 ? '' : 's'} cover {position.latitude.toFixed(2)},{' '}
+            {position.longitude.toFixed(2)}:
           </p>
           <TierSection
             title="Live forecast"
@@ -272,7 +278,13 @@ function TierSection({
     const d = datasetForRow(datasets, row);
     return (
       <li key={row.key}>
-        <WizardSourceCard row={row} dataset={d ?? null} checked={selected.has(row.key)} onToggle={() => toggle(row.key)} recommended={recommended} />
+        <WizardSourceCard
+          row={row}
+          dataset={d ?? null}
+          checked={selected.has(row.key)}
+          onToggle={() => toggle(row.key)}
+          recommended={recommended}
+        />
       </li>
     );
   };

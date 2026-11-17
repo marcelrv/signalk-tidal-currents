@@ -86,7 +86,7 @@ export function DownloadButton({
   // job leaves `active`, looking exactly like the click did nothing — this is
   // what made "Update"/"Update all" appear to silently fail on rows whose
   // background job errored (e.g. a 404 on every cycle candidate).
-  const jobError = job?.state === 'error' ? job.error ?? 'Download failed' : null;
+  const jobError = job?.state === 'error' ? (job.error ?? 'Download failed') : null;
 
   if (status === 'active' && !jobError) {
     return (

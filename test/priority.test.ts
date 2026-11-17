@@ -40,18 +40,44 @@ function fakeGribState() {
 /** A minimal UTCEF station whose representative_area covers (52,4) with a constant vector. */
 function fakeUtcefState() {
   const station = {
-    id: 'FAKE', name: 'Fake station', latitude: 52, longitude: 4,
-    meanU: 0, meanV: 2, constituents: [],
-    representativeArea: [[[3, 51], [5, 51], [5, 53], [3, 53], [3, 51]]],
+    id: 'FAKE',
+    name: 'Fake station',
+    latitude: 52,
+    longitude: 4,
+    meanU: 0,
+    meanV: 2,
+    constituents: [],
+    representativeArea: [
+      [
+        [3, 51],
+        [5, 51],
+        [5, 53],
+        [3, 53],
+        [3, 51],
+      ],
+    ],
     file: 't.utcef',
   };
-  const data = { dir: 'test', files: ['t.utcef'], currentStations: [station], heightStationCount: 0, unsupportedFeatureCount: 0, warnings: [] };
+  const data = {
+    dir: 'test',
+    files: ['t.utcef'],
+    currentStations: [station],
+    heightStationCount: 0,
+    unsupportedFeatureCount: 0,
+    warnings: [],
+  };
   return { get: () => data, error: null };
 }
 
 test('resolveVector follows a custom sourcePriority over grib/utcef when both cover the position', () => {
   const time = Date.UTC(2026, 6, 4, 12, 0, 0);
-  const state: ApiState = { data: null, error: null, grib: fakeGribState() as any, utcef: fakeUtcefState() as any, sourcePriority: ['grib2', 'utcef', 'harmonic'] };
+  const state: ApiState = {
+    data: null,
+    error: null,
+    grib: fakeGribState() as any,
+    utcef: fakeUtcefState() as any,
+    sourcePriority: ['grib2', 'utcef', 'harmonic'],
+  };
   const gribFirst = resolveVector(state, 52, 4, time);
   assert.equal(gribFirst?.source, 'grib');
 
@@ -109,14 +135,18 @@ test('resolveDatasetStack: persisted first (stale ids dropped), rest appended in
     { id: 'g1', type: 'grib2' as const, files: ['a.grb2', 'b.grb2'] },
   ];
   const stack = resolveDatasetStack(['u1', 'gone'], ['grib2', 'utcef', 'harmonic'], installs);
-  assert.deepEqual(stack.map((e) => e.id), ['u1', 'g1', 'h1']);
+  assert.deepEqual(
+    stack.map((e) => e.id),
+    ['u1', 'g1', 'h1'],
+  );
   assert.deepEqual(stack[1].files, ['a.grb2', 'b.grb2']);
 });
 
 test('resolveVector: a dataset stack entry wins across types, and only probes its own files', () => {
   const time = Date.UTC(2026, 6, 4, 12, 0, 0);
   const state: ApiState = {
-    data: null, error: null,
+    data: null,
+    error: null,
     grib: fakeGribState() as any,
     utcef: fakeUtcefState() as any,
     sourcePriority: ['grib2', 'utcef', 'harmonic'],
@@ -134,15 +164,36 @@ test('resolveVector: a dataset stack entry wins across types, and only probes it
 test('a stacked UTCEF dataset far away does not hijack via its nearest-station fallback', () => {
   const time = Date.UTC(2026, 6, 4, 12, 0, 0);
   const near = {
-    id: 'NEAR', name: 'Near station', latitude: 52, longitude: 4,
-    meanU: 0, meanV: 1, constituents: [],
-    representativeArea: [[[3, 51], [5, 51], [5, 53], [3, 53], [3, 51]]],
+    id: 'NEAR',
+    name: 'Near station',
+    latitude: 52,
+    longitude: 4,
+    meanU: 0,
+    meanV: 1,
+    constituents: [],
+    representativeArea: [
+      [
+        [3, 51],
+        [5, 51],
+        [5, 53],
+        [3, 53],
+        [3, 51],
+      ],
+    ],
     file: 'near.utcef',
   };
   const far = { id: 'FAR', name: 'Far station', latitude: 27, longitude: -75, meanU: 1, meanV: 0, constituents: [], file: 'far.utcef' };
-  const data = { dir: 't', files: ['far.utcef', 'near.utcef'], currentStations: [far, near], heightStationCount: 0, unsupportedFeatureCount: 0, warnings: [] };
+  const data = {
+    dir: 't',
+    files: ['far.utcef', 'near.utcef'],
+    currentStations: [far, near],
+    heightStationCount: 0,
+    unsupportedFeatureCount: 0,
+    warnings: [],
+  };
   const state: ApiState = {
-    data: null, error: null,
+    data: null,
+    error: null,
     utcef: { get: () => data, error: null } as any,
     sourcePriority: ['grib2', 'utcef', 'harmonic'],
     // The far dataset is ranked ABOVE the near one — without the clamped
@@ -162,7 +213,8 @@ test('a stack GRIB dataset whose files are not loaded falls through to the type-
   const time = Date.UTC(2026, 6, 4, 12, 0, 0);
   const g = (fakeGribState() as any).get();
   const state: ApiState = {
-    data: null, error: null,
+    data: null,
+    error: null,
     grib: { get: () => g, error: null } as any,
     sourcePriority: ['grib2', 'utcef', 'harmonic'],
     datasetRank: () => [{ id: 'g', type: 'grib2', files: ['missing.grb2'] }],

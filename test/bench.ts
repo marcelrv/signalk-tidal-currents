@@ -89,7 +89,9 @@ const utcef = createUtcefSource(utcefDir, 0);
 const tLoad = performance.now();
 const gd = grib.get();
 const ud = utcef.get();
-console.log(`loaded ${gd?.series.length} GRIB series, ${ud?.currentStations.length} UTCEF stations in ${ms((performance.now() - tLoad) / 1000)} s`);
+console.log(
+  `loaded ${gd?.series.length} GRIB series, ${ud?.currentStations.length} UTCEF stations in ${ms((performance.now() - tLoad) / 1000)} s`,
+);
 
 const state: ApiState = { data: null, error: null, grib, utcef, preferGrib: true, datasetRank: () => stack };
 const call = makeApi(state);
@@ -102,9 +104,21 @@ interface Case {
 const europe = '-15,35,30,65';
 const harbour = '3.9,51.8,4.3,52.1';
 const cases: Case[] = [
-  { name: '/grid Europe (zoomed out), maxPoints 500', route: '/grid', query: (t) => ({ bbox: europe, time: new Date(t).toISOString(), maxPoints: '500' }) },
-  { name: '/grid harbour (zoomed in), maxPoints 2000', route: '/grid', query: (t) => ({ bbox: harbour, time: new Date(t).toISOString(), maxPoints: '2000' }) },
-  { name: '/grid world, maxPoints 500', route: '/grid', query: (t) => ({ bbox: '-180,-85,180,85', time: new Date(t).toISOString(), maxPoints: '500' }) },
+  {
+    name: '/grid Europe (zoomed out), maxPoints 500',
+    route: '/grid',
+    query: (t) => ({ bbox: europe, time: new Date(t).toISOString(), maxPoints: '500' }),
+  },
+  {
+    name: '/grid harbour (zoomed in), maxPoints 2000',
+    route: '/grid',
+    query: (t) => ({ bbox: harbour, time: new Date(t).toISOString(), maxPoints: '2000' }),
+  },
+  {
+    name: '/grid world, maxPoints 500',
+    route: '/grid',
+    query: (t) => ({ bbox: '-180,-85,180,85', time: new Date(t).toISOString(), maxPoints: '500' }),
+  },
   { name: '/stations?bbox Europe, maxPoints 500', route: '/stations', query: () => ({ bbox: europe, maxPoints: '500' }) },
   { name: '/stations?bbox harbour, maxPoints 2000', route: '/stations', query: () => ({ bbox: harbour, maxPoints: '2000' }) },
 ];
@@ -140,7 +154,9 @@ for (const c of cases) {
   );
 }
 
-console.log('\n| request | points | mean ms | median ms | max ms | RSS delta after sweep 1 (MB) | RSS delta sweep 2 vs 1 (MB) | live-heap delta (MB) | peak RSS delta (MB) |');
+console.log(
+  '\n| request | points | mean ms | median ms | max ms | RSS delta after sweep 1 (MB) | RSS delta sweep 2 vs 1 (MB) | live-heap delta (MB) | peak RSS delta (MB) |',
+);
 console.log('|---|---|---|---|---|---|---|---|---|');
 for (const r of rows) console.log(r);
 console.log(`\nnode ${process.version} ${process.arch}, RSS baseline after load ${ms(rssMb())} MB`);

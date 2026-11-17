@@ -9,13 +9,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { findHarmonicFiles, loadHarmonicsDir, meridianToSeconds, slugify } from '../dist/harmonics.js';
-import {
-  currentSampleAt,
-  currentSpeedAt,
-  nearestCurrentStations,
-  predictReference,
-  stationsInBbox,
-} from '../dist/predict.js';
+import { currentSampleAt, currentSpeedAt, nearestCurrentStations, predictReference, stationsInBbox } from '../dist/predict.js';
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const data = loadHarmonicsDir(FIXTURES);
@@ -110,10 +104,7 @@ test('bbox search returns every current station in view, unsorted by distance', 
   // the two height stations (5.0/53.0 and 5.4/53.4).
   const inBox = stationsInBbox(data, 5.05, 53.05, 5.35, 53.35, 500);
   assert.equal(inBox.length, 3);
-  assert.deepEqual(
-    inBox.map((n) => n.station.name).sort(),
-    ['Test Meridian, Courants', 'Test Ref, Courants', 'Test Sub, Courants'],
-  );
+  assert.deepEqual(inBox.map((n) => n.station.name).sort(), ['Test Meridian, Courants', 'Test Ref, Courants', 'Test Sub, Courants']);
   const sub = inBox.find((n) => n.station.name === 'Test Sub, Courants')!;
   assert.equal(sub.vectorCapable, true);
 

@@ -30,23 +30,39 @@ function tmpDirs() {
 
 function region() {
   return {
-    name: 'Test', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
+    name: 'Test',
+    bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
     boundary_geometry: { type: 'Polygon' as const, coordinates: [] },
   };
 }
 
 function fakeCatalogClient(sources: CatalogSource[]): CatalogClient {
   const document: CatalogDocument = {
-    catalog_schema_version: '1.0.0', version: 1, generated: new Date().toISOString(),
-    source_count: sources.length, sources,
+    catalog_schema_version: '1.0.0',
+    version: 1,
+    generated: new Date().toISOString(),
+    source_count: sources.length,
+    sources,
   };
-  const state: CatalogState = { status: 'cached', document, fetchedAt: new Date().toISOString(), error: null, sourceUrl: 'https://example.org/catalog.json', warnings: [] };
+  const state: CatalogState = {
+    status: 'cached',
+    document,
+    fetchedAt: new Date().toISOString(),
+    error: null,
+    sourceUrl: 'https://example.org/catalog.json',
+    warnings: [],
+  };
   return { get: () => state, refresh: async () => state };
 }
 
 /** A minimal method+path router (supports ":param" single-segment params, the only pattern this API uses) dispatching onto real http req/res objects. */
 function createRealRouter(): { router: ManagerRouterLike; server: http.Server } {
-  interface Entry { method: string; regex: RegExp; keys: string[]; handler: (req: any, res: any) => void }
+  interface Entry {
+    method: string;
+    regex: RegExp;
+    keys: string[];
+    handler: (req: any, res: any) => void;
+  }
   const routes: Entry[] = [];
 
   function toRegex(p: string): { regex: RegExp; keys: string[] } {
@@ -88,7 +104,11 @@ function createRealRouter(): { router: ManagerRouterLike; server: http.Server } 
     req.on('end', () => {
       let body: unknown;
       if (chunks.length) {
-        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* not JSON */ }
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch {
+          /* not JSON */
+        }
       }
       const mres = res as unknown as { status(c: number): unknown; json(b: unknown): void };
       mres.status = (code: number) => {
@@ -110,7 +130,12 @@ function baseMgr(overrides: Partial<ManagerState>): ManagerState {
   const { manifestPath, root } = tmpDirs();
   return {
     catalog: fakeCatalogClient([]),
-    downloads: createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([]), catalogUrl: 'https://example.org/catalog.json' }),
+    downloads: createDownloadEngine({
+      dataDir: root,
+      manifestPath,
+      catalog: fakeCatalogClient([]),
+      catalogUrl: 'https://example.org/catalog.json',
+    }),
     manifestPath,
     dataDir: root,
     getPriority: () => DEFAULT_PRIORITY,
@@ -121,7 +146,9 @@ function baseMgr(overrides: Partial<ManagerState>): ManagerState {
     getVesselPosition: () => null,
     autoDownload: {
       status: () => ({ intervalHours: 0, lastSweep: null, choices: [0, 1, 6, 12, 24], nextCheckAt: null, running: false }),
-      setInterval: () => { throw new Error('not used'); },
+      setInterval: () => {
+        throw new Error('not used');
+      },
       tick: async () => {},
       stop: () => {},
     },
@@ -144,12 +171,24 @@ test('SSE: a quick job yields at least one data frame and the connection self-cl
   try {
     const { root, manifestPath } = tmpDirs();
     const source: CatalogSource = {
-      id: 'quick', source: 'test', type: 'harmonic', name: 'Quick', description: '',
-      contributor: 'Test', url: `http://127.0.0.1:${port1}`, tags: [], region: region(),
+      id: 'quick',
+      source: 'test',
+      type: 'harmonic',
+      name: 'Quick',
+      description: '',
+      contributor: 'Test',
+      url: `http://127.0.0.1:${port1}`,
+      tags: [],
+      region: region(),
       update_check: { method: 'sha256', last_checked: new Date().toISOString() },
       files: [{ filename: 'HARMONIC', url: `http://127.0.0.1:${port1}/f`, size_bytes: 5 }],
     };
-    const downloads = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
+    const downloads = createDownloadEngine({
+      dataDir: root,
+      manifestPath,
+      catalog: fakeCatalogClient([source]),
+      catalogUrl: 'https://example.org/catalog.json',
+    });
     const mgr = baseMgr({ downloads, dataDir: root, manifestPath });
     const { router, server } = createRealRouter();
     registerManagerRoutes(router, mgr);
@@ -185,7 +224,7 @@ test('SSE: an unknown job id returns a normal 404 JSON response, not a stream', 
     const resp = await fetch(`http://127.0.0.1:${port}/downloads/does-not-exist/events`);
     assert.equal(resp.status, 404);
     assert.notEqual(resp.headers.get('content-type'), 'text/event-stream');
-    const body = await resp.json() as { error: unknown };
+    const body = (await resp.json()) as { error: unknown };
     assert.ok(typeof body.error === 'string');
   } finally {
     server.close();
@@ -199,19 +238,34 @@ test('SSE: an aborted client connection does not crash the server (indirect: ser
     const iv = setInterval(() => {
       res.write(Buffer.alloc(10, 65));
       sent += 10;
-      if (sent >= 30) { clearInterval(iv); res.end(); }
+      if (sent >= 30) {
+        clearInterval(iv);
+        res.end();
+      }
     }, 200);
   });
   const port1 = await listen(contentServer);
   try {
     const { root, manifestPath } = tmpDirs();
     const source: CatalogSource = {
-      id: 'slow', source: 'test', type: 'harmonic', name: 'Slow', description: '',
-      contributor: 'Test', url: `http://127.0.0.1:${port1}`, tags: [], region: region(),
+      id: 'slow',
+      source: 'test',
+      type: 'harmonic',
+      name: 'Slow',
+      description: '',
+      contributor: 'Test',
+      url: `http://127.0.0.1:${port1}`,
+      tags: [],
+      region: region(),
       update_check: { method: 'sha256', last_checked: new Date().toISOString() },
       files: [{ filename: 'HARMONIC', url: `http://127.0.0.1:${port1}/f`, size_bytes: 30 }],
     };
-    const downloads = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
+    const downloads = createDownloadEngine({
+      dataDir: root,
+      manifestPath,
+      catalog: fakeCatalogClient([source]),
+      catalogUrl: 'https://example.org/catalog.json',
+    });
     const mgr = baseMgr({ downloads, dataDir: root, manifestPath });
     const { router, server } = createRealRouter();
     registerManagerRoutes(router, mgr);
@@ -246,12 +300,24 @@ test('SSE: global /downloads/events emits a frame for ANY job reaching a termina
   try {
     const { root, manifestPath } = tmpDirs();
     const source: CatalogSource = {
-      id: 'quick2', source: 'test', type: 'harmonic', name: 'Quick2', description: '',
-      contributor: 'Test', url: `http://127.0.0.1:${port1}`, tags: [], region: region(),
+      id: 'quick2',
+      source: 'test',
+      type: 'harmonic',
+      name: 'Quick2',
+      description: '',
+      contributor: 'Test',
+      url: `http://127.0.0.1:${port1}`,
+      tags: [],
+      region: region(),
       update_check: { method: 'sha256', last_checked: new Date().toISOString() },
       files: [{ filename: 'HARMONIC', url: `http://127.0.0.1:${port1}/f`, size_bytes: 5 }],
     };
-    const downloads = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
+    const downloads = createDownloadEngine({
+      dataDir: root,
+      manifestPath,
+      catalog: fakeCatalogClient([source]),
+      catalogUrl: 'https://example.org/catalog.json',
+    });
     const mgr = baseMgr({ downloads, dataDir: root, manifestPath });
     const { router, server } = createRealRouter();
     registerManagerRoutes(router, mgr);
@@ -298,12 +364,24 @@ test('SSE: global /downloads/events emits a frame for ANY job reaching a termina
 test('SSE: /downloads/:id still resolves correctly (the literal /downloads/events route does not shadow it)', async () => {
   const { root, manifestPath } = tmpDirs();
   const source: CatalogSource = {
-    id: 'literal-check', source: 'test', type: 'harmonic', name: 'Literal', description: '',
-    contributor: 'Test', url: 'https://example.org', tags: [], region: region(),
+    id: 'literal-check',
+    source: 'test',
+    type: 'harmonic',
+    name: 'Literal',
+    description: '',
+    contributor: 'Test',
+    url: 'https://example.org',
+    tags: [],
+    region: region(),
     update_check: { method: 'sha256', last_checked: new Date().toISOString() },
     files: [{ filename: 'HARMONIC', url: 'https://example.org/f', size_bytes: 5 }],
   };
-  const downloads = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: 'https://example.org/catalog.json' });
+  const downloads = createDownloadEngine({
+    dataDir: root,
+    manifestPath,
+    catalog: fakeCatalogClient([source]),
+    catalogUrl: 'https://example.org/catalog.json',
+  });
   const mgr = baseMgr({ downloads, dataDir: root, manifestPath });
   const { router, server } = createRealRouter();
   registerManagerRoutes(router, mgr);

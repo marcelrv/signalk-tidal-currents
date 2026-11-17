@@ -41,7 +41,10 @@ export function useGlobalDownloadEvents(): void {
     // each (re)connect catches up on jobs that finished while no feed was open
     // (initial load, the gap when reopening on an `access` change, after a 401/403).
     source.onopen = () => {
-      api.listDownloads().then(reconcileDownloads).catch(() => undefined);
+      api
+        .listDownloads()
+        .then(reconcileDownloads)
+        .catch(() => undefined);
     };
     source.onerror = () => {
       setFellBack(true);
@@ -65,11 +68,14 @@ function usePollingFallback(active: boolean, reconcileDownloads: (jobs: Download
     const id = setInterval(() => {
       // reconcileDownloads, not setDownloadJob per job: historical finished
       // jobs the store never saw in flight must not each trigger a refetch.
-      api.listDownloads().then(reconcileDownloads).catch((e) => {
-        // A refused read (old server without per-route readonly access) won't
-        // fix itself — stop polling; other failures are transient, next tick retries.
-        if (isPermissionError(e)) clearInterval(id);
-      });
+      api
+        .listDownloads()
+        .then(reconcileDownloads)
+        .catch((e) => {
+          // A refused read (old server without per-route readonly access) won't
+          // fix itself — stop polling; other failures are transient, next tick retries.
+          if (isPermissionError(e)) clearInterval(id);
+        });
     }, 3000);
     return () => clearInterval(id);
   }, [active, reconcileDownloads]);

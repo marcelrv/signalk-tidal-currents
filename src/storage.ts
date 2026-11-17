@@ -128,8 +128,13 @@ export function cleanupCandidates(
       // it rather than silently hiding a dataset the catalog no longer knows
       // about (e.g. removed upstream since it was installed).
       candidates.push({
-        id: install.id, catalogSourceId: install.catalogSourceId, name: install.catalogSourceId,
-        type: install.type, sizeBytes: install.size_bytes, distanceNm: null, downloadedAt: install.downloaded_at,
+        id: install.id,
+        catalogSourceId: install.catalogSourceId,
+        name: install.catalogSourceId,
+        type: install.type,
+        sizeBytes: install.size_bytes,
+        distanceNm: null,
+        downloadedAt: install.downloaded_at,
       });
       continue;
     }
@@ -139,8 +144,13 @@ export function cleanupCandidates(
     const distanceNm = distanceKm(vesselPos.lat, vesselPos.lon, clampedLat, clampedLon) * NM_PER_KM;
     if (distanceNm > maxDistanceNm) {
       candidates.push({
-        id: install.id, catalogSourceId: install.catalogSourceId, name: source.name,
-        type: install.type, sizeBytes: install.size_bytes, distanceNm, downloadedAt: install.downloaded_at,
+        id: install.id,
+        catalogSourceId: install.catalogSourceId,
+        name: source.name,
+        type: install.type,
+        sizeBytes: install.size_bytes,
+        distanceNm,
+        downloadedAt: install.downloaded_at,
       });
     }
   }

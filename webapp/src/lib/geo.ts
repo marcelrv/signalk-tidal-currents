@@ -42,8 +42,12 @@ function pointInRing(ring: number[][], lat: number, lon: number): boolean {
   // harmonic dataset: [[-180,-90],[180,-90],[180,90],[-180,90],...]) contains
   // every point — the standard ray-casting check below collapses such a ring
   // to a degenerate line during unwrapping, producing wrong results.
-  let minLon = Infinity, maxLon = -Infinity;
-  for (const [l] of ring) { if (l < minLon) minLon = l; if (l > maxLon) maxLon = l; }
+  let minLon = Infinity,
+    maxLon = -Infinity;
+  for (const [l] of ring) {
+    if (l < minLon) minLon = l;
+    if (l > maxLon) maxLon = l;
+  }
   if (maxLon - minLon >= 360) return true;
 
   const unwrapped = unwrapRingLongitudes(ring);

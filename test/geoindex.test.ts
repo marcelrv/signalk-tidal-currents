@@ -53,7 +53,17 @@ function oldLinear(stations: any[], lat: number, lon: number, maxKm: number, fil
 function syntheticStations(rand: () => number): any[] {
   const out: any[] = [];
   const mk = (i: number, lat: number, lon: number, area?: number[][][]) =>
-    out.push({ id: `S${i}`, name: `S${i}`, latitude: lat, longitude: lon, meanU: 0, meanV: 0, constituents: [], file: `f${i % 3}.utcef`, representativeArea: area });
+    out.push({
+      id: `S${i}`,
+      name: `S${i}`,
+      latitude: lat,
+      longitude: lon,
+      meanU: 0,
+      meanV: 0,
+      constituents: [],
+      file: `f${i % 3}.utcef`,
+      representativeArea: area,
+    });
   let i = 0;
   for (let k = 0; k < 150; k++) {
     // Cluster near 10E/45N, a band by the antimeridian, and some cell-edge stations.
@@ -90,9 +100,14 @@ test('utcefVectorAt via the coverage index matches the linear algorithm', () => 
     const pick = stations[Math.floor(rand() * stations.length)];
     const r = rand();
     // Probe near a station (some exactly on it / on a cell edge), in the antimeridian band, or anywhere.
-    let lat = r < 0.4 ? pick.latitude + (rand() - 0.5) * 1.2 : r < 0.5 ? pick.latitude : r < 0.7 ? -20 + (rand() - 0.5) * 8 : rand() * 140 - 70;
-    let lon = r < 0.4 ? pick.longitude + (rand() - 0.5) * 1.2 : r < 0.5 ? pick.longitude : r < 0.7 ? 180 + (rand() - 0.5) * 8 : rand() * 360 - 180;
-    if (n % 7 === 0) { lat = Math.round(lat * 2) / 2; lon = Math.round(lon * 2) / 2; } // on cell edges
+    let lat =
+      r < 0.4 ? pick.latitude + (rand() - 0.5) * 1.2 : r < 0.5 ? pick.latitude : r < 0.7 ? -20 + (rand() - 0.5) * 8 : rand() * 140 - 70;
+    let lon =
+      r < 0.4 ? pick.longitude + (rand() - 0.5) * 1.2 : r < 0.5 ? pick.longitude : r < 0.7 ? 180 + (rand() - 0.5) * 8 : rand() * 360 - 180;
+    if (n % 7 === 0) {
+      lat = Math.round(lat * 2) / 2;
+      lon = Math.round(lon * 2) / 2;
+    } // on cell edges
     if (lon > 180) lon -= 360;
     if (lon < -180) lon += 360;
     const maxKm = maxKms[n % maxKms.length];
@@ -139,7 +154,6 @@ test('large representative_area polygons: array-order containment across big and
   assert.equal(utcefVectorAt(data, 60, 5, T0, 50)?.station.id, 'L');
 });
 
-
 function polarStation(id: string, lat: number, lon: number) {
   return { id, name: id, latitude: lat, longitude: lon, meanU: 0, meanV: 0, constituents: [], file: 'a.utcef' } as any;
 }
@@ -160,7 +174,12 @@ test('coverage index with a large maxKm matches the linear scan', () => {
   for (let k = 0; k < 40; k++) list.push(polarStation('S' + k, 55 + ((k * 7) % 10), -20 + ((k * 13) % 60)));
   const idx = utcefCoverageIndex(list);
   const data = { currentStations: list } as any;
-  for (const [lat, lon] of [[60, 0], [58.3, 12.7], [64, -15], [10, 100]]) {
+  for (const [lat, lon] of [
+    [60, 0],
+    [58.3, 12.7],
+    [64, -15],
+    [10, 100],
+  ]) {
     for (const maxKm of [300, 2000, 5000]) {
       const lin = utcefVectorAt(data, lat, lon, T0, Infinity);
       const want = lin && lin.distanceKm <= maxKm ? lin.station.id : null;
@@ -169,21 +188,24 @@ test('coverage index with a large maxKm matches the linear scan', () => {
   }
 });
 
-
-test('legacyCoverageIndexFor.stationAt matches stationVectorAt\'s selection (top-10 then capable)', () => {
+test("legacyCoverageIndexFor.stationAt matches stationVectorAt's selection (top-10 then capable)", () => {
   const rand = rng(12345);
   const ref = legacyData.stations.find((s) => s.isCurrent && !s.isSubordinate)!;
   const sub = legacyData.stations.find((s) => s.isCurrent && s.offsets && s.offsets.floodDir !== null)!;
   const mk = (i: number, lat: number, lon: number, capable: boolean) => ({
-    ...(capable ? sub : ref), id: `S${i}`, latitude: lat, longitude: lon,
+    ...(capable ? sub : ref),
+    id: `S${i}`,
+    latitude: lat,
+    longitude: lon,
   });
   const stations: any[] = [];
   // dense cluster of non-capable stations around (53,5) hides capable ones; plus global scatter
-  for (let i = 0; i < 40; i++) stations.push(mk(i, 53 + Math.round((rand() - 0.5) * 20) / 100, 5 + Math.round((rand() - 0.5) * 20) / 100, false));
+  for (let i = 0; i < 40; i++)
+    stations.push(mk(i, 53 + Math.round((rand() - 0.5) * 20) / 100, 5 + Math.round((rand() - 0.5) * 20) / 100, false));
   for (let i = 40; i < 80; i++) stations.push(mk(i, 53 + (rand() - 0.5) * 3, 5 + (rand() - 0.5) * 3, rand() < 0.5));
   for (let i = 80; i < 200; i++) stations.push(mk(i, (rand() - 0.5) * 180, (rand() - 0.5) * 360, rand() < 0.5));
   for (let i = 200; i < 230; i++) stations.push(mk(i, 89 + rand(), (rand() - 0.5) * 360, rand() < 0.5));
-  for (let i = 230; i < 260; i++) stations.push(mk(i, (rand() - 0.5) * 20, 179.5 + rand() * 1 - (rand() < 0.5 ? 0 : 360) , rand() < 0.5));
+  for (let i = 230; i < 260; i++) stations.push(mk(i, (rand() - 0.5) * 20, 179.5 + rand() * 1 - (rand() < 0.5 ? 0 : 360), rand() < 0.5));
   const data = { ...legacyData, stations };
   const idx = legacyCoverageIndexFor(data);
   assert.equal(legacyCoverageIndexFor(data), idx);
@@ -193,7 +215,8 @@ test('legacyCoverageIndexFor.stationAt matches stationVectorAt\'s selection (top
     const lat = k === 0 ? 53 + (rand() - 0.5) * 2 : k === 1 ? 89 + rand() : k === 2 ? (rand() - 0.5) * 20 : (rand() - 0.5) * 170;
     const lon = k === 0 ? 5 + (rand() - 0.5) * 2 : k === 2 ? 179 + rand() * 2 : (rand() - 0.5) * 360;
     for (const maxKm of [5, 50, 300, 5000, Infinity]) {
-      const expected = nearestCurrentStations(data, lat, lon, 10).filter((x) => x.vectorCapable && x.distanceKm <= maxKm)[0]?.station ?? null;
+      const expected =
+        nearestCurrentStations(data, lat, lon, 10).filter((x) => x.vectorCapable && x.distanceKm <= maxKm)[0]?.station ?? null;
       const got = idx.stationAt(lat, lon, maxKm);
       assert.equal(got, expected, `probe ${lat},${lon} maxKm=${maxKm}`);
       if (got) found++;
@@ -201,7 +224,6 @@ test('legacyCoverageIndexFor.stationAt matches stationVectorAt\'s selection (top
   }
   assert.ok(found > 100);
 });
-
 
 test('coverage index matches the linear scan close to the pole', () => {
   const rand = rng(7);
@@ -220,16 +242,27 @@ test('coverage index matches the linear scan close to the pole', () => {
   }
 });
 
-
 test('inBbox gathers exactly the linear filter, in array order (antimeridian, wide and polar boxes)', () => {
   const rand = rng(31337);
   const list: any[] = [];
   for (let k = 0; k < 400; k++) {
-    list.push(polarStation('S' + k, k % 5 === 0 ? 85 + rand() * 5 : (rand() - 0.5) * 170, k % 3 === 0 ? 170 + rand() * 20 - (rand() < 0.5 ? 0 : 360) : (rand() - 0.5) * 360));
+    list.push(
+      polarStation(
+        'S' + k,
+        k % 5 === 0 ? 85 + rand() * 5 : (rand() - 0.5) * 170,
+        k % 3 === 0 ? 170 + rand() * 20 - (rand() < 0.5 ? 0 : 360) : (rand() - 0.5) * 360,
+      ),
+    );
   }
   const data = { currentStations: list } as any;
   const boxes: Array<[number, number, number, number]> = [
-    [170, -10, 190, 10], [-10, -10, 10, 10], [-180, -90, 180, 90], [-540, -20, 540, 20], [175, 80, 185, 90], [100, 30, 130, 60], [-200, -5, -160, 5],
+    [170, -10, 190, 10],
+    [-10, -10, 10, 10],
+    [-180, -90, 180, 90],
+    [-540, -20, 540, 20],
+    [175, 80, 185, 90],
+    [100, 30, 130, 60],
+    [-200, -5, -160, 5],
   ];
   for (let n = 0; n < 40; n++) {
     const w = (rand() - 0.5) * 400;
@@ -240,7 +273,11 @@ test('inBbox gathers exactly the linear filter, in array order (antimeridian, wi
   for (const [w, s, e, n] of boxes) {
     const want = list.filter((st) => st.latitude >= s && st.latitude <= n && lonInSpan(st.longitude, w, e));
     const got = utcefStationsInBbox(data, { west: w, south: s, east: e, north: n });
-    assert.deepEqual(got.map((x: any) => x.id), want.map((x) => x.id), `box ${w},${s},${e},${n}`);
+    assert.deepEqual(
+      got.map((x: any) => x.id),
+      want.map((x) => x.id),
+      `box ${w},${s},${e},${n}`,
+    );
     if (want.length) nonEmpty++;
   }
   assert.ok(nonEmpty > 15);
@@ -249,7 +286,10 @@ test('inBbox gathers exactly the linear filter, in array order (antimeridian, wi
   const lin = legacyData.stations.filter((s) => s.isCurrent && idx.index.items.includes(s));
   const all = stationsInBbox(legacyData, -180, -90, 180, 90, 1000).map((x) => x.station);
   assert.deepEqual(all, lin);
-  assert.deepEqual(stationsInBbox(legacyData, 5.15, 53.15, 5.25, 53.25, 10).map((x) => x.station.name), ['Test Sub, Courants']);
+  assert.deepEqual(
+    stationsInBbox(legacyData, 5.15, 53.15, 5.25, 53.25, 10).map((x) => x.station.name),
+    ['Test Sub, Courants'],
+  );
 });
 
 test('createCellIndex: nearestWithin breaks equal-distance ties by array rank and honours the accept filter', () => {
@@ -259,7 +299,11 @@ test('createCellIndex: nearestWithin breaks equal-distance ties by array rank an
     { id: 'c', lat: 10.0005, lon: 20 },
     { id: 'far', lat: 40, lon: 100 },
   ];
-  const idx = createCellIndex(items, (i) => i.lat, (i) => i.lon);
+  const idx = createCellIndex(
+    items,
+    (i) => i.lat,
+    (i) => i.lon,
+  );
   assert.equal(idx.nearestWithin(10, 20, 5)?.id, 'c');
   assert.equal(idx.nearestWithin(10, 20, 5, (i) => i.id !== 'c')?.id, 'a'); // a before b on the tie
   assert.equal(idx.nearestWithin(10, 20, 0.01), null);
@@ -270,27 +314,54 @@ test('createCellIndex: nearestWithin breaks equal-distance ties by array rank an
 });
 
 test('a representative_area ring that encircles a pole is rejected with a warning (station kept, nearest lookup applies)', () => {
-  const doc = (ring: number[][]) => JSON.stringify({
-    metadata: { schema_version: '1.0.0' },
-    dataset: { features: [{
-      type: 'Feature', id: 'P', geometry: { type: 'Point', coordinates: [10, 88] },
-      properties: {
-        prediction_method: 'harmonic_constituents_currents',
-        representative_area: { type: 'Polygon', coordinates: [ring] },
-        harmonic_constituents: { M2: { u_amplitude: 1, u_phase_g: 0, v_amplitude: 1, v_phase_g: 0 } },
+  const doc = (ring: number[][]) =>
+    JSON.stringify({
+      metadata: { schema_version: '1.0.0' },
+      dataset: {
+        features: [
+          {
+            type: 'Feature',
+            id: 'P',
+            geometry: { type: 'Point', coordinates: [10, 88] },
+            properties: {
+              prediction_method: 'harmonic_constituents_currents',
+              representative_area: { type: 'Polygon', coordinates: [ring] },
+              harmonic_constituents: { M2: { u_amplitude: 1, u_phase_g: 0, v_amplitude: 1, v_phase_g: 0 } },
+            },
+          },
+        ],
       },
-    }] },
-  });
+    });
   // Around the pole: longitudes sweep the full circle at lat 85.
-  const polar = [[-180, 85], [-90, 85], [0, 85], [90, 85], [179.999, 85], [-180, 85]];
+  const polar = [
+    [-180, 85],
+    [-90, 85],
+    [0, 85],
+    [90, 85],
+    [179.999, 85],
+    [-180, 85],
+  ];
   const warnings: string[] = [];
   const parsed = parseUtcef(doc(polar), 'p.utcef', warnings);
   assert.equal(parsed.currentStations.length, 1);
   assert.equal(parsed.currentStations[0].representativeArea, undefined);
   assert.equal(parsed.currentStations[0].areaBounds, null);
-  assert.ok(warnings.some((w) => /pole/.test(w)), warnings.join('|'));
+  assert.ok(
+    warnings.some((w) => /pole/.test(w)),
+    warnings.join('|'),
+  );
   // An ordinary antimeridian-crossing ring is still accepted and unwrapped.
-  const ok = parseUtcef(doc([[179, 10], [-179, 10], [-179, 12], [179, 12], [179, 10]]), 'p.utcef', []);
+  const ok = parseUtcef(
+    doc([
+      [179, 10],
+      [-179, 10],
+      [-179, 12],
+      [179, 12],
+      [179, 10],
+    ]),
+    'p.utcef',
+    [],
+  );
   const b = ok.currentStations[0].areaBounds!;
   assert.ok(b.east > 180 && b.west === 179);
 });
@@ -300,11 +371,18 @@ test('inBboxRanks: a bbox just under 360° wide scans each wrapped cell once (no
   const items: Array<{ lat: number; lon: number }> = [];
   for (let k = 0; k < 10000; k++) items.push({ lat: 50 + (k % 50) * 0.1, lon: -180 + (k % 3600) * 0.1 });
   items.push({ lat: 52, lon: 179.55 }, { lat: 53, lon: 179.5 }, { lat: 54, lon: -179.8 });
-  const idx = createCellIndex(items, (s) => s.lat, (s) => s.lon);
+  const idx = createCellIndex(
+    items,
+    (s) => s.lat,
+    (s) => s.lon,
+  );
   const [west, south, east, north] = [-180.3, 50, 179.6, 55];
   const ranks = Array.from(idx.inBboxRanks(west, south, east, north, false)); // unordered, as /grid calls it
   assert.equal(new Set(ranks).size, ranks.length, 'ranks are unique');
   const expected = items.flatMap((s, r) => (s.lat >= south && s.lat <= north && lonInSpan(s.lon, west, east) ? [r] : []));
-  assert.deepEqual([...ranks].sort((x, y) => x - y), expected);
+  assert.deepEqual(
+    [...ranks].sort((x, y) => x - y),
+    expected,
+  );
   assert.ok(ranks.includes(items.length - 3) && ranks.includes(items.length - 2), 'the wrapped cell at 179.5° is included');
 });

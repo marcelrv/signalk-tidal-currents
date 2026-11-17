@@ -76,7 +76,11 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
 
   return (
     <div className="flex flex-col gap-2">
-      {error && <p role="alert" className="text-xs text-danger">Couldn't save the order: {error}</p>}
+      {error && (
+        <p role="alert" className="text-xs text-danger">
+          Couldn't save the order: {error}
+        </p>
+      )}
       {stack.length > 1 && !readOnly && (
         <button
           type="button"
@@ -111,26 +115,26 @@ export function PriorityStack({ onSelected }: { onSelected?: () => void }) {
               </button>
               <DeleteDatasetButton id={dataset.id} name={name} sizeBytes={dataset.sizeBytes} />
               {!readOnly && (
-              <div className="flex shrink-0 flex-col">
-                <button
-                  type="button"
-                  aria-label={`Move ${name} up`}
-                  disabled={i === 0}
-                  onClick={() => move(i, -1)}
-                  className="flex min-h-6 min-w-11 items-center justify-center rounded-lg py-1 text-muted hover:bg-surface-2 disabled:opacity-25"
-                >
-                  <Icon name="arrowUp" className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Move ${name} down`}
-                  disabled={i === stack.length - 1}
-                  onClick={() => move(i, 1)}
-                  className="flex min-h-6 min-w-11 items-center justify-center rounded-lg py-1 text-muted hover:bg-surface-2 disabled:opacity-25"
-                >
-                  <Icon name="arrowDown" className="h-4 w-4" />
-                </button>
-              </div>
+                <div className="flex shrink-0 flex-col">
+                  <button
+                    type="button"
+                    aria-label={`Move ${name} up`}
+                    disabled={i === 0}
+                    onClick={() => move(i, -1)}
+                    className="flex min-h-6 min-w-11 items-center justify-center rounded-lg py-1 text-muted hover:bg-surface-2 disabled:opacity-25"
+                  >
+                    <Icon name="arrowUp" className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Move ${name} down`}
+                    disabled={i === stack.length - 1}
+                    onClick={() => move(i, 1)}
+                    className="flex min-h-6 min-w-11 items-center justify-center rounded-lg py-1 text-muted hover:bg-surface-2 disabled:opacity-25"
+                  >
+                    <Icon name="arrowDown" className="h-4 w-4" />
+                  </button>
+                </div>
               )}
             </li>
           );

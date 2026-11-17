@@ -95,16 +95,16 @@ export function App() {
             <LiveSourceChip />
           </div>
           {!readOnly && (
-          <button
-            type="button"
-            onClick={openWizard}
-            aria-label="Download data for your area"
-            title="Download data for your area"
-            className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full bg-surface-2 px-3.5 text-sm font-medium text-accent"
-          >
-            <Icon name="download" className="h-4 w-4" />
-            <span className="hidden sm:inline">Near You</span>
-          </button>
+            <button
+              type="button"
+              onClick={openWizard}
+              aria-label="Download data for your area"
+              title="Download data for your area"
+              className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full bg-surface-2 px-3.5 text-sm font-medium text-accent"
+            >
+              <Icon name="download" className="h-4 w-4" />
+              <span className="hidden sm:inline">Near You</span>
+            </button>
           )}
           <button
             type="button"
@@ -135,13 +135,18 @@ export function App() {
           </div>
           <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-3 py-3">
             {showReadOnlyBanner && (
-              <div role="status" className="mb-3 flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-muted">
+              <div
+                role="status"
+                className="mb-3 flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-muted"
+              >
                 <Icon name="alert" className="h-4 w-4 shrink-0" />
                 <span className="min-w-0 flex-1">
                   {readsDenied
                     ? 'This server doesn’t allow read-only access to the manager (enable read-only access; needs signalk-server ≥ 2.35). '
                     : 'Read-only view — browse the catalog and installed data. '}
-                  <a href="/admin/#/login" className="font-semibold text-accent underline">Log in as an administrator</a>{' '}
+                  <a href="/admin/#/login" className="font-semibold text-accent underline">
+                    Log in as an administrator
+                  </a>{' '}
                   to download or manage datasets.
                 </span>
               </div>

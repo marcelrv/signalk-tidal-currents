@@ -40,10 +40,7 @@ export function SourceListRow({
   const sizeBytes = estimatedSizeBytes(row, dataset);
 
   return (
-    <li
-      className={`flex items-center gap-1 rounded-xl px-1 py-0.5 ${selected ? 'bg-accent/10' : ''}`}
-      aria-current={selected || undefined}
-    >
+    <li className={`flex items-center gap-1 rounded-xl px-1 py-0.5 ${selected ? 'bg-accent/10' : ''}`} aria-current={selected || undefined}>
       <button
         type="button"
         onClick={() => {

@@ -24,11 +24,7 @@ export interface InstallStatus {
  * already knows the resolved directory and this function has no filesystem
  * access of its own — keeps it pure and cheap to call from a sweep loop.
  */
-export function computeInstallStatus(
-  install: ManifestInstall,
-  source: CatalogSource | undefined,
-  filesExist: boolean,
-): InstallStatus {
+export function computeInstallStatus(install: ManifestInstall, source: CatalogSource | undefined, filesExist: boolean): InstallStatus {
   let status: InstallStatus['status'] = filesExist ? 'active' : 'error';
   if (!filesExist || !source) return { status };
 

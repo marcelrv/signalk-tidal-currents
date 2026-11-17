@@ -175,9 +175,7 @@ function parseGrid(sec: Uint8Array): { grid: Grib2Grid; scan: number } {
   const basicAngle = u32(sec, 38);
   const subdivisions = u32(sec, 42);
   const unit =
-    basicAngle === 0 || basicAngle === 0xffffffff || subdivisions === 0 || subdivisions === 0xffffffff
-      ? 1e-6
-      : basicAngle / subdivisions;
+    basicAngle === 0 || basicAngle === 0xffffffff || subdivisions === 0 || subdivisions === 0xffffffff ? 1e-6 : basicAngle / subdivisions;
   const la1 = s32sm(sec, 46) * unit;
   const lo1 = s32sm(sec, 50) * unit;
   const resFlags = sec[54];
@@ -254,8 +252,7 @@ function parseDataRepr(sec: Uint8Array): DataRepr {
   const template = u16(sec, 9);
   if (template !== 0 && template !== 2 && template !== 3 && template !== 40) {
     throw new Error(
-      `data representation template 5.${template} not supported ` +
-        '(only 5.0 simple, 5.2/5.3 complex packing, and 5.40 JPEG2000)',
+      `data representation template 5.${template} not supported ` + '(only 5.0 simple, 5.2/5.3 complex packing, and 5.40 JPEG2000)',
     );
   }
   const repr: DataRepr = {
@@ -366,8 +363,7 @@ function unpackComplex(data: Uint8Array, repr: DataRepr): Array<number | null> {
     // With primary missing value management, an all-ones pattern marks a
     // missing point (group-wide via the reference when width is 0).
     const missingPattern = width > 0 ? (1 << width) - 1 : -1;
-    const groupAllMissing =
-      repr.missingMgmt === 1 && width === 0 && repr.nbits > 0 && refs[g] === (1 << repr.nbits) - 1;
+    const groupAllMissing = repr.missingMgmt === 1 && width === 0 && repr.nbits > 0 && refs[g] === (1 << repr.nbits) - 1;
     for (let n = 0; n < lengths[g] && k < repr.numDataPoints; n++, k++) {
       if (width === 0) {
         out[k] = groupAllMissing ? null : refs[g];
@@ -392,11 +388,7 @@ function unpackComplex(data: Uint8Array, repr: DataRepr): Array<number | null> {
       if (idx.length > 0) out[idx[0]] = firstVals[0];
       if (idx.length > 1) out[idx[1]] = firstVals[1];
       for (let n = 2; n < idx.length; n++) {
-        out[idx[n]] =
-          (out[idx[n]] as number) +
-          minsd +
-          2 * (out[idx[n - 1]] as number) -
-          (out[idx[n - 2]] as number);
+        out[idx[n]] = (out[idx[n]] as number) + minsd + 2 * (out[idx[n - 1]] as number) - (out[idx[n - 2]] as number);
       }
     }
   }
@@ -420,12 +412,7 @@ function unpackJpeg2000(data: Uint8Array, _repr: DataRepr): Array<number | null>
  * Decode section 7 into grid-ordered physical values (in scan order),
  * expanding through the bitmap. NaN = missing.
  */
-function decodeValues(
-  dataSec: Uint8Array,
-  repr: DataRepr,
-  bitmap: Uint8Array | null,
-  gridPoints: number,
-): Float64Array {
+function decodeValues(dataSec: Uint8Array, repr: DataRepr, bitmap: Uint8Array | null, gridPoints: number): Float64Array {
   const packed = dataSec.subarray(5);
   let xs: Array<number | null>;
   if (repr.template === 0) xs = unpackSimple(packed, repr);
@@ -504,12 +491,7 @@ export function parseGrib2(buf: Uint8Array): Grib2ParseResult {
   return { fields, skipped };
 }
 
-function parseMessage(
-  msg: Uint8Array,
-  discipline: number,
-  fields: Grib2Field[],
-  skipped: string[],
-): void {
+function parseMessage(msg: Uint8Array, discipline: number, fields: Grib2Field[], skipped: string[]): void {
   let off = 16;
   let centre = 0;
   let refTime = 0;
@@ -662,16 +644,28 @@ export function sampleGrid(grid: Grib2Grid, values: Float64Array, lat: number, l
   let wsum = 0;
   let v = values[j0 * grid.ni + i0];
   let w = (1 - wx) * (1 - wy);
-  if (!Number.isNaN(v) && w > 0) { sum += v * w; wsum += w; }
+  if (!Number.isNaN(v) && w > 0) {
+    sum += v * w;
+    wsum += w;
+  }
   v = values[j0 * grid.ni + i1];
   w = wx * (1 - wy);
-  if (!Number.isNaN(v) && w > 0) { sum += v * w; wsum += w; }
+  if (!Number.isNaN(v) && w > 0) {
+    sum += v * w;
+    wsum += w;
+  }
   v = values[j1 * grid.ni + i0];
   w = (1 - wx) * wy;
-  if (!Number.isNaN(v) && w > 0) { sum += v * w; wsum += w; }
+  if (!Number.isNaN(v) && w > 0) {
+    sum += v * w;
+    wsum += w;
+  }
   v = values[j1 * grid.ni + i1];
   w = wx * wy;
-  if (!Number.isNaN(v) && w > 0) { sum += v * w; wsum += w; }
+  if (!Number.isNaN(v) && w > 0) {
+    sum += v * w;
+    wsum += w;
+  }
   if (wsum <= 0) return null;
   return sum / wsum;
 }

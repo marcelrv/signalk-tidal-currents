@@ -27,17 +27,39 @@ function tmpDirs() {
 
 function fakeCatalogClient(sources: CatalogSource[]): CatalogClient {
   const document: CatalogDocument = {
-    catalog_schema_version: '1.0.0', version: 1, generated: new Date().toISOString(),
-    source_count: sources.length, sources,
+    catalog_schema_version: '1.0.0',
+    version: 1,
+    generated: new Date().toISOString(),
+    source_count: sources.length,
+    sources,
   };
-  const state: CatalogState = { status: 'cached', document, fetchedAt: new Date().toISOString(), error: null, sourceUrl: 'https://example.org/tide-current-index.json', warnings: [] };
+  const state: CatalogState = {
+    status: 'cached',
+    document,
+    fetchedAt: new Date().toISOString(),
+    error: null,
+    sourceUrl: 'https://example.org/tide-current-index.json',
+    warnings: [],
+  };
   return { get: () => state, refresh: async () => state };
 }
 
 function region() {
   return {
-    name: 'Test', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
-    boundary_geometry: { type: 'Polygon' as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]] },
+    name: 'Test',
+    bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
+    boundary_geometry: {
+      type: 'Polygon' as const,
+      coordinates: [
+        [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+    },
   };
 }
 
@@ -68,16 +90,31 @@ test('static file with correct sha256 downloads, verifies, updates manifest', as
   const content = Buffer.from('hello utcef world'.repeat(100));
   const sha256 = crypto.createHash('sha256').update(content).digest('hex');
   await withServer(
-    (req, res) => { res.writeHead(200, { 'Content-Length': String(content.length) }); res.end(content); },
+    (req, res) => {
+      res.writeHead(200, { 'Content-Length': String(content.length) });
+      res.end(content);
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'test-utcef', source: 'test', type: 'utcef', name: 'Test', description: '',
-        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        id: 'test-utcef',
+        source: 'test',
+        type: 'utcef',
+        name: 'Test',
+        description: '',
+        contributor: 'Test',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [{ filename: 'netherlands.utcef', url: `${baseUrl}/netherlands.utcef`, sha256, size_bytes: content.length }],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
       const job = engine.start('test-utcef');
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
       const final = engine.get(job.id)!;
@@ -96,20 +133,46 @@ test('a re-download keeps the per-dataset auto-download opt-out of the install i
   const content = Buffer.from('fresh data');
   const sha256 = crypto.createHash('sha256').update(content).digest('hex');
   await withServer(
-    (req, res) => { res.writeHead(200, { 'Content-Length': String(content.length) }); res.end(content); },
+    (req, res) => {
+      res.writeHead(200, { 'Content-Length': String(content.length) });
+      res.end(content);
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
-      writeManifestAtomic(manifestPath, { manifest_version: 1, installs: [{
-        id: 'optout', catalogSourceId: 'optout', type: 'utcef', files: ['utcef/x.utcef'], sha256: 'old',
-        size_bytes: 1, downloaded_at: new Date().toISOString(), autoUpdate: false,
-      }] });
+      writeManifestAtomic(manifestPath, {
+        manifest_version: 1,
+        installs: [
+          {
+            id: 'optout',
+            catalogSourceId: 'optout',
+            type: 'utcef',
+            files: ['utcef/x.utcef'],
+            sha256: 'old',
+            size_bytes: 1,
+            downloaded_at: new Date().toISOString(),
+            autoUpdate: false,
+          },
+        ],
+      });
       const source: CatalogSource = {
-        id: 'optout', source: 'test', type: 'utcef', name: 'Test', description: '',
-        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        id: 'optout',
+        source: 'test',
+        type: 'utcef',
+        name: 'Test',
+        description: '',
+        contributor: 'Test',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [{ filename: 'x.utcef', url: `${baseUrl}/x.utcef`, sha256, size_bytes: content.length }],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/c.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/c.json`,
+      });
       const job = engine.start('optout');
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
       assert.equal(engine.get(job.id)!.state, 'done', engine.get(job.id)!.error);
@@ -123,16 +186,31 @@ test('a re-download keeps the per-dataset auto-download opt-out of the install i
 test('wrong sha256 fails the job, writes nothing to the manifest, cleans up', async () => {
   const content = Buffer.from('corrupted content');
   await withServer(
-    (req, res) => { res.writeHead(200); res.end(content); },
+    (req, res) => {
+      res.writeHead(200);
+      res.end(content);
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'bad-hash', source: 'test', type: 'grib2', name: 'Test', description: '',
-        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        id: 'bad-hash',
+        source: 'test',
+        type: 'grib2',
+        name: 'Test',
+        description: '',
+        contributor: 'Test',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [{ filename: 'f.grb2', url: `${baseUrl}/f.grb2`, sha256: 'deadbeef'.repeat(8), size_bytes: content.length }],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
       const job = engine.start('bad-hash');
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
       const final = engine.get(job.id)!;
@@ -149,17 +227,30 @@ test('missing url and sha256 falls back to a catalog-derived base URL and skips 
   await withServer(
     (req, res) => {
       assert.equal(req.url, '/netherlands.utcef'); // proves the base-URL fallback was used
-      res.writeHead(200); res.end(content);
+      res.writeHead(200);
+      res.end(content);
     },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'no-url', source: 'test', type: 'utcef', name: 'Test', description: '',
-        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        id: 'no-url',
+        source: 'test',
+        type: 'utcef',
+        name: 'Test',
+        description: '',
+        contributor: 'Test',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [{ filename: 'netherlands.utcef', size_bytes: content.length }],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
       const job = engine.start('no-url');
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
       const final = engine.get(job.id)!;
@@ -178,18 +269,33 @@ test('job.bytes increases monotonically during a slow/chunked response', async (
       const iv = setInterval(() => {
         res.write(Buffer.alloc(10, 65));
         sent += 10;
-        if (sent >= 30) { clearInterval(iv); res.end(); }
+        if (sent >= 30) {
+          clearInterval(iv);
+          res.end();
+        }
       }, 20);
     },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'slow', source: 'test', type: 'harmonic', name: 'Test', description: '',
-        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        id: 'slow',
+        source: 'test',
+        type: 'harmonic',
+        name: 'Test',
+        description: '',
+        contributor: 'Test',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [{ filename: 'HARMONIC', url: `${baseUrl}/slow`, size_bytes: 30 }],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
       const job = engine.start('slow');
       const samples: number[] = [];
       const totalSamples: (number | null)[] = [];
@@ -214,23 +320,46 @@ test('job.bytes increases monotonically during a slow/chunked response', async (
 test('template file: exact {YYYYMMDD}/{HH}/{hour:03d} substitution, all forecast hours land, one manifest entry', async () => {
   const requestedPaths: string[] = [];
   await withServer(
-    (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('grib-bytes')); },
+    (req, res) => {
+      requestedPaths.push(req.url ?? '');
+      res.writeHead(200);
+      res.end(Buffer.from('grib-bytes'));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const now = new Date();
       const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)).toISOString();
       const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
       const source: CatalogSource = {
-        id: 'grib-template', source: 'noaa', type: 'grib2', name: 'Forecast', description: '',
-        contributor: 'NOAA', url: baseUrl, tags: [], region: region(),
+        id: 'grib-template',
+        source: 'noaa',
+        type: 'grib2',
+        name: 'Forecast',
+        description: '',
+        contributor: 'NOAA',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 24, latest_cycle: cycleIso },
-        files: [{
-          region_id: 'nw-europe', name: 'NW Europe', description: '', boundary_geometry: region().boundary_geometry,
-          type: 'forecast', url_template: `${baseUrl}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
-          forecast_hours: [24, 48], cycle_hours: ['00'],
-        }],
+        files: [
+          {
+            region_id: 'nw-europe',
+            name: 'NW Europe',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'forecast',
+            url_template: `${baseUrl}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+            forecast_hours: [24, 48],
+            cycle_hours: ['00'],
+          },
+        ],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
       const job = engine.start('grib-template');
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error');
       const final = engine.get(job.id)!;
@@ -259,22 +388,42 @@ test('template file: exact {YYYYMMDD}/{HH}/{hour:03d} substitution, all forecast
 
 test('template downloads of two different regions land in separate subfolders, never colliding', async () => {
   await withServer(
-    (req, res) => { res.writeHead(200); res.end(Buffer.from('grib-bytes')); },
+    (req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.from('grib-bytes'));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const cycleIso = '2026-07-03T00:00:00Z';
       const mkTemplate = (regionId: string) => ({
-        region_id: regionId, name: regionId, description: '', boundary_geometry: region().boundary_geometry,
-        type: 'forecast' as const, url_template: `${baseUrl}/${regionId}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
-        forecast_hours: [24], cycle_hours: ['00'],
+        region_id: regionId,
+        name: regionId,
+        description: '',
+        boundary_geometry: region().boundary_geometry,
+        type: 'forecast' as const,
+        url_template: `${baseUrl}/${regionId}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+        forecast_hours: [24],
+        cycle_hours: ['00'],
       });
       const source: CatalogSource = {
-        id: 'noaa-multi', source: 'noaa', type: 'grib2', name: 'NOAA Multi-Region', description: '',
-        contributor: 'NOAA', url: baseUrl, tags: [], region: region(),
+        id: 'noaa-multi',
+        source: 'noaa',
+        type: 'grib2',
+        name: 'NOAA Multi-Region',
+        description: '',
+        contributor: 'NOAA',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 24, latest_cycle: cycleIso },
         files: [mkTemplate('west_atl'), mkTemplate('west_conus')],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       const east = engine.start('noaa-multi', { region_id: 'west_atl' });
       await waitFor(() => engine.get(east.id)!.state === 'done' || engine.get(east.id)!.state === 'error');
@@ -301,24 +450,45 @@ test('template downloads of two different regions land in separate subfolders, n
 test('multi-region template source: region_id selector picks the RIGHT region, not just the first one', async () => {
   const requestedPaths: string[] = [];
   await withServer(
-    (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('grib-bytes')); },
+    (req, res) => {
+      requestedPaths.push(req.url ?? '');
+      res.writeHead(200);
+      res.end(Buffer.from('grib-bytes'));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const now = new Date();
       const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)).toISOString();
       const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
       const mkTemplate = (regionId: string) => ({
-        region_id: regionId, name: regionId, description: '', boundary_geometry: region().boundary_geometry,
-        type: 'forecast' as const, url_template: `${baseUrl}/${regionId}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
-        forecast_hours: [24], cycle_hours: ['00'],
+        region_id: regionId,
+        name: regionId,
+        description: '',
+        boundary_geometry: region().boundary_geometry,
+        type: 'forecast' as const,
+        url_template: `${baseUrl}/${regionId}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+        forecast_hours: [24],
+        cycle_hours: ['00'],
       });
       const source: CatalogSource = {
-        id: 'noaa-multi', source: 'noaa', type: 'grib2', name: 'NOAA Multi-Region', description: '',
-        contributor: 'NOAA', url: baseUrl, tags: [], region: region(),
+        id: 'noaa-multi',
+        source: 'noaa',
+        type: 'grib2',
+        name: 'NOAA Multi-Region',
+        description: '',
+        contributor: 'NOAA',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 24, latest_cycle: cycleIso },
         files: [mkTemplate('gulf-of-mexico'), mkTemplate('caribbean'), mkTemplate('west-coast')],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       // Without a selector, a genuinely ambiguous multi-region source must
       // still be rejected eagerly (not silently default to the first region).
@@ -340,30 +510,56 @@ test('multi-region template source: region_id selector picks the RIGHT region, n
 test('a region with BOTH a forecast and a nowcast file (real NOAA shape): region_id alone is ambiguous, type disambiguates, both installs coexist', async () => {
   const requestedPaths: string[] = [];
   await withServer(
-    (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('x')); },
+    (req, res) => {
+      requestedPaths.push(req.url ?? '');
+      res.writeHead(200);
+      res.end(Buffer.from('x'));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const now = new Date();
       const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)).toISOString();
       const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
       const source: CatalogSource = {
-        id: 'noaa_rtofs', source: 'noaa', type: 'grib2', name: 'NOAA RTOFS', description: '',
-        contributor: 'NOAA', url: baseUrl, tags: [], region: region(),
+        id: 'noaa_rtofs',
+        source: 'noaa',
+        type: 'grib2',
+        name: 'NOAA RTOFS',
+        description: '',
+        contributor: 'NOAA',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 24, latest_cycle: cycleIso },
         files: [
           {
-            region_id: 'west_atl', name: 'Western Atlantic', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'forecast', url_template: `${baseUrl}/forecast/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
-            forecast_hours: [24], cycle_hours: ['00'],
+            region_id: 'west_atl',
+            name: 'Western Atlantic',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'forecast',
+            url_template: `${baseUrl}/forecast/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+            forecast_hours: [24],
+            cycle_hours: ['00'],
           },
           {
-            region_id: 'west_atl', name: 'Western Atlantic', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'nowcast', url_template: `${baseUrl}/nowcast/{YYYYMMDD}/{HH}/n{hour:03d}.grb2`,
-            forecast_hours: [24], cycle_hours: ['00'],
+            region_id: 'west_atl',
+            name: 'Western Atlantic',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'nowcast',
+            url_template: `${baseUrl}/nowcast/{YYYYMMDD}/{HH}/n{hour:03d}.grb2`,
+            forecast_hours: [24],
+            cycle_hours: ['00'],
           },
         ],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       // region_id alone still resolves to 2 files — must be rejected, not
       // silently default to whichever came first in the catalog's array.
@@ -390,7 +586,11 @@ test('a region with BOTH a forecast and a nowcast file (real NOAA shape): region
 test('a region with THREE forecast files sharing region_id + type, distinguished by variant: variant disambiguates, all three installs coexist', async () => {
   const requestedPaths: string[] = [];
   await withServer(
-    (req, res) => { requestedPaths.push(req.url ?? ''); res.writeHead(200); res.end(Buffer.from('x')); },
+    (req, res) => {
+      requestedPaths.push(req.url ?? '');
+      res.writeHead(200);
+      res.end(Buffer.from('x'));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       // chooseCycle extracts the hour directly from latest_cycle without
@@ -400,28 +600,58 @@ test('a region with THREE forecast files sharing region_id + type, distinguished
       const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0)).toISOString();
       const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
       const source: CatalogSource = {
-        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
-        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        id: 'bsh_currents',
+        source: 'bsh',
+        type: 'grib2',
+        name: 'BSH Currents',
+        description: '',
+        contributor: 'BSH',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 12, latest_cycle: cycleIso },
         files: [
           {
-            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'forecast', variant: '+24h', url_template: `${baseUrl}/24h/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
-            forecast_hours: [24], cycle_hours: ['00', '12'],
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'forecast',
+            variant: '+24h',
+            url_template: `${baseUrl}/24h/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+            forecast_hours: [24],
+            cycle_hours: ['00', '12'],
           },
           {
-            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'forecast', variant: '+48h', url_template: `${baseUrl}/48h/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
-            forecast_hours: [48], cycle_hours: ['12'],
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'forecast',
+            variant: '+48h',
+            url_template: `${baseUrl}/48h/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+            forecast_hours: [48],
+            cycle_hours: ['12'],
           },
           {
-            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'forecast', variant: '+72h', url_template: `${baseUrl}/72h/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
-            forecast_hours: [72], cycle_hours: ['12'],
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'forecast',
+            variant: '+72h',
+            url_template: `${baseUrl}/72h/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+            forecast_hours: [72],
+            cycle_hours: ['12'],
           },
         ],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       // region_id + type alone still resolves to 3 files — must be rejected
       assert.throws(() => engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast' }), /multiple variants/);
@@ -455,19 +685,34 @@ test('a region with THREE forecast files sharing region_id + type, distinguished
 
 test('multi-file static source (e.g. a HARMONIC + .IDX pair): no selector required, both files download', async () => {
   await withServer(
-    (req, res) => { res.writeHead(200); res.end(Buffer.from('x')); },
+    (req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.from('x'));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'harmonic-pair', source: 'opencpn', type: 'harmonic', name: 'OpenCPN XTide Harmonics', description: '',
-        contributor: 'OpenCPN', url: baseUrl, tags: [], region: region(),
+        id: 'harmonic-pair',
+        source: 'opencpn',
+        type: 'harmonic',
+        name: 'OpenCPN XTide Harmonics',
+        description: '',
+        contributor: 'OpenCPN',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [
           { filename: 'HARMONICS_NO_US', url: `${baseUrl}/HARMONICS_NO_US`, size_bytes: 1 },
           { filename: 'HARMONICS_NO_US.IDX', url: `${baseUrl}/HARMONICS_NO_US.IDX`, size_bytes: 1 },
         ],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
       // The bug: this used to throw "2 files — a filename or region_id
       // selector is required" even though runJob downloads all static files
       // in a source together regardless of any selector.
@@ -488,18 +733,34 @@ test('retry after a failed download leaves no stale .part blocking the next atte
   await withServer(
     (req, res) => {
       attempt++;
-      if (attempt === 1) { res.destroy(); return; } // simulate a broken first attempt
-      res.writeHead(200); res.end(Buffer.from('ok on retry'));
+      if (attempt === 1) {
+        res.destroy();
+        return;
+      } // simulate a broken first attempt
+      res.writeHead(200);
+      res.end(Buffer.from('ok on retry'));
     },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'retry-me', source: 'test', type: 'harmonic', name: 'Test', description: '',
-        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        id: 'retry-me',
+        source: 'test',
+        type: 'harmonic',
+        name: 'Test',
+        description: '',
+        contributor: 'Test',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [{ filename: 'HARMONIC', url: `${baseUrl}/flaky`, size_bytes: 11 }],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
       const first = engine.start('retry-me');
       await waitFor(() => engine.get(first.id)!.state === 'done' || engine.get(first.id)!.state === 'error');
       assert.equal(engine.get(first.id)!.state, 'error');
@@ -515,16 +776,32 @@ test('retry after a failed download leaves no stale .part blocking the next atte
 
 test('subfolder routing: harmonic/grib2/utcef land in their own subfolder under the single Data Directory', async () => {
   await withServer(
-    (req, res) => { res.writeHead(200); res.end(Buffer.from('x')); },
+    (req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.from('x'));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const mk = (id: string, type: 'harmonic' | 'grib2' | 'utcef', filename: string): CatalogSource => ({
-        id, source: 'test', type, name: id, description: '', contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        id,
+        source: 'test',
+        type,
+        name: id,
+        description: '',
+        contributor: 'Test',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [{ filename, url: `${baseUrl}/${filename}`, size_bytes: 1 }],
       });
       const sources = [mk('h', 'harmonic', 'HARMONIC'), mk('g', 'grib2', 'f.grb2'), mk('u', 'utcef', 'x.utcef')];
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient(sources), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient(sources),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
       const jobs: DownloadJob[] = [engine.start('h'), engine.start('g'), engine.start('u')];
       await waitFor(() => jobs.every((j) => ['done', 'error'].includes(engine.get(j.id)!.state)));
       for (const j of jobs) assert.equal(engine.get(j.id)!.state, 'done', engine.get(j.id)!.error);
@@ -548,18 +825,33 @@ test('onUpdate() streams progress with monotonic bytes, terminal state last, dou
       const iv = setInterval(() => {
         res.write(Buffer.alloc(10, 65));
         sent += 10;
-        if (sent >= 30) { clearInterval(iv); res.end(); }
+        if (sent >= 30) {
+          clearInterval(iv);
+          res.end();
+        }
       }, 250);
     },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'watched', source: 'test', type: 'harmonic', name: 'Test', description: '',
-        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        id: 'watched',
+        source: 'test',
+        type: 'harmonic',
+        name: 'Test',
+        description: '',
+        contributor: 'Test',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [{ filename: 'HARMONIC', url: `${baseUrl}/slow`, size_bytes: 30 }],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       const job = engine.start('watched');
       const seen: DownloadJob[] = [];
@@ -582,16 +874,31 @@ test('onUpdate() streams progress with monotonic bytes, terminal state last, dou
 test('onAnyDone() fires for a job the caller never subscribed to via onUpdate(), only on terminal state', async () => {
   const content = Buffer.from('fires-without-onupdate');
   await withServer(
-    (req, res) => { res.writeHead(200, { 'Content-Length': String(content.length) }); res.end(content); },
+    (req, res) => {
+      res.writeHead(200, { 'Content-Length': String(content.length) });
+      res.end(content);
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'unwatched', source: 'test', type: 'harmonic', name: 'Test', description: '',
-        contributor: 'Test', url: baseUrl, tags: [], region: region(),
+        id: 'unwatched',
+        source: 'test',
+        type: 'harmonic',
+        name: 'Test',
+        description: '',
+        contributor: 'Test',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'sha256', last_checked: new Date().toISOString() },
         files: [{ filename: 'HARMONIC', url: `${baseUrl}/f`, size_bytes: content.length }],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
       const done: DownloadJob[] = [];
       engine.onAnyDone((j) => done.push(j));
 
@@ -612,28 +919,57 @@ test('hasInFlight() distinguishes selectors of the SAME source by region/type/va
       let sent = 0;
       const iv = setInterval(() => {
         sent += 10;
-        if (sent >= 30) { clearInterval(iv); res.end(Buffer.alloc(10, 65)); return; }
+        if (sent >= 30) {
+          clearInterval(iv);
+          res.end(Buffer.alloc(10, 65));
+          return;
+        }
         res.write(Buffer.alloc(10, 65));
       }, 200);
     },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
-        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        id: 'bsh_currents',
+        source: 'bsh',
+        type: 'grib2',
+        name: 'BSH Currents',
+        description: '',
+        contributor: 'BSH',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'expiry', last_checked: new Date().toISOString() },
         files: [
           {
-            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'nowcast', url_template: `${baseUrl}/nowcast.grb2`, forecast_hours: [0], cycle_hours: ['00'],
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'nowcast',
+            url_template: `${baseUrl}/nowcast.grb2`,
+            forecast_hours: [0],
+            cycle_hours: ['00'],
           },
           {
-            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'forecast', variant: '+24h', url_template: `${baseUrl}/24h.grb2`, forecast_hours: [24], cycle_hours: ['00'],
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'forecast',
+            variant: '+24h',
+            url_template: `${baseUrl}/24h.grb2`,
+            forecast_hours: [24],
+            cycle_hours: ['00'],
           },
         ],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       const job = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
       await waitFor(() => engine.get(job.id)!.state === 'active');
@@ -668,17 +1004,35 @@ test('a template file whose chosen cycle 404s falls back to the next-older cycle
       const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0)).toISOString();
       const ymd = cycleIso.slice(0, 10).replace(/-/g, '');
       const source: CatalogSource = {
-        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
-        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        id: 'bsh_currents',
+        source: 'bsh',
+        type: 'grib2',
+        name: 'BSH Currents',
+        description: '',
+        contributor: 'BSH',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 12, latest_cycle: cycleIso },
         files: [
           {
-            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'nowcast', url_template: `${baseUrl}/{HH}.grb2`, forecast_hours: [0], cycle_hours: ['00', '12'],
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'nowcast',
+            url_template: `${baseUrl}/{HH}.grb2`,
+            forecast_hours: [0],
+            cycle_hours: ['00', '12'],
           },
         ],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       const job = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error', 5000);
@@ -689,7 +1043,10 @@ test('a template file whose chosen cycle 404s falls back to the next-older cycle
       const manifest = readManifest(manifestPath);
       assert.equal(manifest.installs.length, 1);
       // The install's recorded cycle must reflect the cycle that ACTUALLY succeeded (00Z), not the originally-chosen one (12Z).
-      assert.equal(manifest.installs[0].cycle, new Date(`${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}T00:00:00Z`).toISOString());
+      assert.equal(
+        manifest.installs[0].cycle,
+        new Date(`${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}T00:00:00Z`).toISOString(),
+      );
     },
   );
 });
@@ -714,8 +1071,15 @@ test('when EVERY latest_cycle-anchored candidate 404s, a fallback anchored on th
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
-        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        id: 'bsh_currents',
+        source: 'bsh',
+        type: 'grib2',
+        name: 'BSH Currents',
+        description: '',
+        contributor: 'BSH',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         // Pinned to a date decades in the past with no max_age_hours (so
         // staleness never forces a fallback to `now` on its own) — every
         // latest_cycle-anchored candidate is guaranteed to land on a date
@@ -723,13 +1087,24 @@ test('when EVERY latest_cycle-anchored candidate 404s, a fallback anchored on th
         update_check: { method: 'expiry', last_checked: new Date().toISOString(), latest_cycle: '1970-01-01T00:00:00Z' },
         files: [
           {
-            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'forecast', variant: '+24h', url_template: `${baseUrl}/{YYYYMMDD}/{HH}.grb2`,
-            forecast_hours: [24], cycle_hours: ['00'],
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'forecast',
+            variant: '+24h',
+            url_template: `${baseUrl}/{YYYYMMDD}/{HH}.grb2`,
+            forecast_hours: [24],
+            cycle_hours: ['00'],
           },
         ],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       const job = engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast', variant: '+24h' });
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error', 5000);
@@ -739,7 +1114,10 @@ test('when EVERY latest_cycle-anchored candidate 404s, a fallback anchored on th
       // 00Z cycles), then the fallback anchored on the real current day succeeds.
       assert.equal(requestedPaths.length, 4, requestedPaths.join(', '));
       assert.equal(requestedPaths[3], successPath);
-      assert.ok(requestedPaths.slice(0, 3).every((p) => p.startsWith('/19')), 'the primary candidates must all be anchored on the pinned 1970 latest_cycle, not today');
+      assert.ok(
+        requestedPaths.slice(0, 3).every((p) => p.startsWith('/19')),
+        'the primary candidates must all be anchored on the pinned 1970 latest_cycle, not today',
+      );
 
       const manifest = readManifest(manifestPath);
       assert.equal(manifest.installs.length, 1);
@@ -761,17 +1139,35 @@ test('a template file download failure that is NOT "file not found" (e.g. HTTP 5
       const now = new Date();
       const cycleIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0)).toISOString();
       const source: CatalogSource = {
-        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
-        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        id: 'bsh_currents',
+        source: 'bsh',
+        type: 'grib2',
+        name: 'BSH Currents',
+        description: '',
+        contributor: 'BSH',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 12, latest_cycle: cycleIso },
         files: [
           {
-            region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-            type: 'nowcast', url_template: `${baseUrl}/{HH}.grb2`, forecast_hours: [0], cycle_hours: ['00', '12'],
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'nowcast',
+            url_template: `${baseUrl}/{HH}.grb2`,
+            forecast_hours: [0],
+            cycle_hours: ['00', '12'],
           },
         ],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       const job = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
       await waitFor(() => engine.get(job.id)!.state === 'done' || engine.get(job.id)!.state === 'error', 5000);
@@ -785,24 +1181,45 @@ test('a template file download failure that is NOT "file not found" (e.g. HTTP 5
 
 test('two variants of the same region+type that happen to share a forecast hour no longer collide on disk (variant is now part of the filename)', async () => {
   await withServer(
-    (req, res) => { res.writeHead(200); res.end(Buffer.from(req.url ?? '')); },
+    (req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.from(req.url ?? ''));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const cycleIso = '2026-07-03T00:00:00Z';
       const mkVariant = (variant: string) => ({
-        region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-        type: 'forecast' as const, url_template: `${baseUrl}/${variant}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
+        region_id: 'north_sea',
+        name: 'North Sea',
+        description: '',
+        boundary_geometry: region().boundary_geometry,
+        type: 'forecast' as const,
+        url_template: `${baseUrl}/${variant}/{YYYYMMDD}/{HH}/f{hour:03d}.grb2`,
         // Same forecast_hours on purpose — this is the scenario the old
         // filename (region+type only) couldn't distinguish.
-        forecast_hours: [24], cycle_hours: ['00'], variant,
+        forecast_hours: [24],
+        cycle_hours: ['00'],
+        variant,
       });
       const source: CatalogSource = {
-        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
-        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        id: 'bsh_currents',
+        source: 'bsh',
+        type: 'grib2',
+        name: 'BSH Currents',
+        description: '',
+        contributor: 'BSH',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 24, latest_cycle: cycleIso },
         files: [mkVariant('am'), mkVariant('pm')],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       const am = engine.start('bsh_currents', { region_id: 'north_sea', type: 'forecast', variant: 'am' });
       await waitFor(() => engine.get(am.id)!.state === 'done' || engine.get(am.id)!.state === 'error');
@@ -825,25 +1242,61 @@ test('two variants of the same region+type that happen to share a forecast hour 
 
 test('a successful re-download of the SAME region/type/variant at a NEW cycle deletes the file it superseded (no orphan left behind)', async () => {
   await withServer(
-    (req, res) => { res.writeHead(200); res.end(Buffer.from(req.url ?? '')); },
+    (req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.from(req.url ?? ''));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
-        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
+        id: 'bsh_currents',
+        source: 'bsh',
+        type: 'grib2',
+        name: 'BSH Currents',
+        description: '',
+        contributor: 'BSH',
+        url: baseUrl,
+        tags: [],
+        region: region(),
         // A huge max_age_hours pins `latest_cycle` as the deterministic choice
         // (the "stale snapshot, use now instead" branch never kicks in).
-        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 999999, latest_cycle: '2026-07-01T00:00:00Z' },
-        files: [{
-          region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-          type: 'nowcast', url_template: `${baseUrl}/{YYYYMMDD}/{HH}.grb2`, forecast_hours: [0], cycle_hours: ['00'],
-        }],
+        update_check: {
+          method: 'expiry',
+          last_checked: new Date().toISOString(),
+          max_age_hours: 999999,
+          latest_cycle: '2026-07-01T00:00:00Z',
+        },
+        files: [
+          {
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'nowcast',
+            url_template: `${baseUrl}/{YYYYMMDD}/{HH}.grb2`,
+            forecast_hours: [0],
+            cycle_hours: ['00'],
+          },
+        ],
       };
       // A real CatalogClient (not fakeCatalogClient's frozen snapshot) so the
       // second download can resolve a genuinely different cycle by mutating
       // the SAME source object's update_check between the two engine.start() calls.
-      const document: CatalogDocument = { catalog_schema_version: '1.0.0', version: 1, generated: new Date().toISOString(), source_count: 1, sources: [source] };
-      const state: CatalogState = { status: 'cached', document, fetchedAt: new Date().toISOString(), error: null, sourceUrl: 'https://x', warnings: [] };
+      const document: CatalogDocument = {
+        catalog_schema_version: '1.0.0',
+        version: 1,
+        generated: new Date().toISOString(),
+        source_count: 1,
+        sources: [source],
+      };
+      const state: CatalogState = {
+        status: 'cached',
+        document,
+        fetchedAt: new Date().toISOString(),
+        error: null,
+        sourceUrl: 'https://x',
+        warnings: [],
+      };
       const catalog: CatalogClient = { get: () => state, refresh: async () => state };
 
       const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog, catalogUrl: `${baseUrl}/tide-current-index.json` });
@@ -872,19 +1325,47 @@ test('a successful re-download of the SAME region/type/variant at a NEW cycle de
 
 test('re-requesting the SAME cycle (no new data yet) does not delete the file it just (re)wrote', async () => {
   await withServer(
-    (req, res) => { res.writeHead(200); res.end(Buffer.from('same-cycle-data')); },
+    (req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.from('same-cycle-data'));
+    },
     async (baseUrl) => {
       const { root, manifestPath } = tmpDirs();
       const source: CatalogSource = {
-        id: 'bsh_currents', source: 'bsh', type: 'grib2', name: 'BSH Currents', description: '',
-        contributor: 'BSH', url: baseUrl, tags: [], region: region(),
-        update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: 999999, latest_cycle: '2026-07-01T00:00:00Z' },
-        files: [{
-          region_id: 'north_sea', name: 'North Sea', description: '', boundary_geometry: region().boundary_geometry,
-          type: 'nowcast', url_template: `${baseUrl}/{YYYYMMDD}/{HH}.grb2`, forecast_hours: [0], cycle_hours: ['00'],
-        }],
+        id: 'bsh_currents',
+        source: 'bsh',
+        type: 'grib2',
+        name: 'BSH Currents',
+        description: '',
+        contributor: 'BSH',
+        url: baseUrl,
+        tags: [],
+        region: region(),
+        update_check: {
+          method: 'expiry',
+          last_checked: new Date().toISOString(),
+          max_age_hours: 999999,
+          latest_cycle: '2026-07-01T00:00:00Z',
+        },
+        files: [
+          {
+            region_id: 'north_sea',
+            name: 'North Sea',
+            description: '',
+            boundary_geometry: region().boundary_geometry,
+            type: 'nowcast',
+            url_template: `${baseUrl}/{YYYYMMDD}/{HH}.grb2`,
+            forecast_hours: [0],
+            cycle_hours: ['00'],
+          },
+        ],
       };
-      const engine = createDownloadEngine({ dataDir: root, manifestPath, catalog: fakeCatalogClient([source]), catalogUrl: `${baseUrl}/tide-current-index.json` });
+      const engine = createDownloadEngine({
+        dataDir: root,
+        manifestPath,
+        catalog: fakeCatalogClient([source]),
+        catalogUrl: `${baseUrl}/tide-current-index.json`,
+      });
 
       const job1 = engine.start('bsh_currents', { region_id: 'north_sea', type: 'nowcast' });
       await waitFor(() => engine.get(job1.id)!.state === 'done' || engine.get(job1.id)!.state === 'error');

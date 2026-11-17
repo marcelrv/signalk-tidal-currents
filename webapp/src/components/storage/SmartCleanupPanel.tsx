@@ -63,16 +63,16 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
   return (
     <Modal title="Smart Cleanup" onClose={onClose}>
       {loadError ? (
-        <p role="alert" className="text-sm text-danger">Couldn't load cleanup candidates: {loadError}</p>
+        <p role="alert" className="text-sm text-danger">
+          Couldn't load cleanup candidates: {loadError}
+        </p>
       ) : !vesselPosition ? (
         <p className="text-muted">Enable a vessel position fix to use Smart Cleanup.</p>
       ) : candidates.length === 0 ? (
         <p className="text-muted">Nothing to clean up — everything installed is within {maxDistanceNm} nm.</p>
       ) : (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-muted">
-            Datasets farther than {maxDistanceNm} nm from the vessel — safe to remove for now:
-          </p>
+          <p className="text-sm text-muted">Datasets farther than {maxDistanceNm} nm from the vessel — safe to remove for now:</p>
           <div className="flex items-center justify-between gap-3">
             <span className="text-sm text-muted">
               {selectedCandidates.length} of {candidates.length} selected
@@ -90,9 +90,17 @@ export function SmartCleanupPanel({ onClose }: { onClose: () => void }) {
             {candidates.map((c) => (
               <li key={c.id}>
                 <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-border p-3">
-                  <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} disabled={deleting} className="h-5 w-5" />
+                  <input
+                    type="checkbox"
+                    checked={selected.has(c.id)}
+                    onChange={() => toggle(c.id)}
+                    disabled={deleting}
+                    className="h-5 w-5"
+                  />
                   <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
-                  <span className="text-sm text-muted">{c.distanceNm !== null ? `${Math.round(c.distanceNm)} nm` : 'unknown location'}</span>
+                  <span className="text-sm text-muted">
+                    {c.distanceNm !== null ? `${Math.round(c.distanceNm)} nm` : 'unknown location'}
+                  </span>
                   <span className="text-sm text-muted">{formatBytes(c.sizeBytes)}</span>
                 </label>
               </li>

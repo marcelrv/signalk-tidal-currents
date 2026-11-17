@@ -75,7 +75,9 @@ export async function runAutoUpdateSweep(deps: AutoUpdateDeps, isCancelled: () =
     // Variant-aware: a nowcast job in flight for `bsh_currents` must not
     // block its sibling forecast+24h/+48h variants of the SAME source, which
     // are separate files with their own stale status.
-    if (deps.downloads.hasInFlight(install.catalogSourceId, { region_id: install.regionId, type: install.fileType, variant: install.variant })) {
+    if (
+      deps.downloads.hasInFlight(install.catalogSourceId, { region_id: install.regionId, type: install.fileType, variant: install.variant })
+    ) {
       result.skippedInFlight.push(install.id);
       continue;
     }

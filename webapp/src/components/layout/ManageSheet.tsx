@@ -40,14 +40,14 @@ export function ManageSheet({ onClose }: { onClose: () => void }) {
         <section aria-label="Storage" className="flex flex-col gap-2.5">
           <StorageGauge />
           {!readOnly && (
-          <button
-            type="button"
-            onClick={() => setCleanupOpen(true)}
-            className="flex min-h-11 items-center gap-2 self-start rounded-full bg-surface-2 px-4 text-sm font-medium text-accent"
-          >
-            <Icon name="trash" className="h-4 w-4" />
-            Smart cleanup…
-          </button>
+            <button
+              type="button"
+              onClick={() => setCleanupOpen(true)}
+              className="flex min-h-11 items-center gap-2 self-start rounded-full bg-surface-2 px-4 text-sm font-medium text-accent"
+            >
+              <Icon name="trash" className="h-4 w-4" />
+              Smart cleanup…
+            </button>
           )}
         </section>
 

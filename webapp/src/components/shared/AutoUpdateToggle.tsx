@@ -23,7 +23,10 @@ export function AutoUpdateToggle({ dataset }: { dataset: DatasetEntry }) {
   };
 
   return (
-    <label className="flex min-h-11 items-center gap-1.5 text-xs text-muted" title={readOnly ? READ_ONLY_HINT : 'Include this dataset when auto-download runs'}>
+    <label
+      className="flex min-h-11 items-center gap-1.5 text-xs text-muted"
+      title={readOnly ? READ_ONLY_HINT : 'Include this dataset when auto-download runs'}
+    >
       <input
         type="checkbox"
         checked={dataset.autoUpdate}
@@ -32,7 +35,11 @@ export function AutoUpdateToggle({ dataset }: { dataset: DatasetEntry }) {
         className="h-4 w-4"
       />
       Auto-download
-      {error && <span role="alert" className="text-danger" title={error}>· not saved</span>}
+      {error && (
+        <span role="alert" className="text-danger" title={error}>
+          · not saved
+        </span>
+      )}
     </label>
   );
 }

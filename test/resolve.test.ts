@@ -39,30 +39,59 @@ test('resolveVector honours a dataset stack mixing grib2, utcef and harmonic ent
 });
 
 test('orderedLayers is cached per stack snapshot: same list and same file Sets across calls', () => {
-  const stack = [{ id: 'g', type: 'grib2' as const, files: ['a.grb2'] }, { id: 'u', type: 'utcef' as const, files: ['b.utcef'] }];
+  const stack = [
+    { id: 'g', type: 'grib2' as const, files: ['a.grb2'] },
+    { id: 'u', type: 'utcef' as const, files: ['b.utcef'] },
+  ];
   const state: ApiState = { data: null, error: null, preferGrib: true, datasetRank: () => stack };
   const l1 = orderedLayers(state, 50);
   const l2 = orderedLayers(state, 50);
   assert.equal(l1, l2);
   assert.equal(l1[0].files, l2[0].files);
-  assert.deepEqual(l1.map((l: Layer) => [l.type, l.stack, l.utcefMaxKm]), [
-    ['grib2', true, 50], ['utcef', true, 50], ['grib2', false, 50], ['utcef', false, 50], ['harmonic', false, 50],
-  ]);
+  assert.deepEqual(
+    l1.map((l: Layer) => [l.type, l.stack, l.utcefMaxKm]),
+    [
+      ['grib2', true, 50],
+      ['utcef', true, 50],
+      ['grib2', false, 50],
+      ['utcef', false, 50],
+      ['harmonic', false, 50],
+    ],
+  );
   // The stack clamp applies only to stack layers.
-  assert.deepEqual(orderedLayers(state, 500).filter((l: Layer) => l.type === 'utcef').map((l: Layer) => l.utcefMaxKm), [50, 500]);
+  assert.deepEqual(
+    orderedLayers(state, 500)
+      .filter((l: Layer) => l.type === 'utcef')
+      .map((l: Layer) => l.utcefMaxKm),
+    [50, 500],
+  );
   // No datasetRank at all is cached too.
   const bare: ApiState = { data: null, error: null, preferGrib: false };
   assert.equal(orderedLayers(bare, 50), orderedLayers(bare, 50));
-  assert.deepEqual(orderedLayers(bare, 50).map((l: Layer) => l.type), ['utcef', 'harmonic', 'grib2']);
+  assert.deepEqual(
+    orderedLayers(bare, 50).map((l: Layer) => l.type),
+    ['utcef', 'harmonic', 'grib2'],
+  );
 });
 
 test('claimAt and resolveAt share one loop: same winner everywhere, claimAt samples nothing', () => {
   const rand = rng(99);
-  const grib = createGribSource(gribDirOf({
-    'a.grb2': uvFields(52.9, 4.9, 0.1, 7, { u: Array.from({ length: 49 }, (_, k) => (k % 5 === 2 ? NaN : 1)) }),
-    'b.grb2': uvFields(53.3, 5.3, 0.05, 9, { u: 2 }),
-  }), 0);
-  const utcef = createUtcefSource(writeUtcefDir({ 'u.utcef': [['A', 53.0, 5.0, rect(4.9, 52.9, 5.15, 53.1)], ['B', 53.4, 5.6]] }), 0);
+  const grib = createGribSource(
+    gribDirOf({
+      'a.grb2': uvFields(52.9, 4.9, 0.1, 7, { u: Array.from({ length: 49 }, (_, k) => (k % 5 === 2 ? NaN : 1)) }),
+      'b.grb2': uvFields(53.3, 5.3, 0.05, 9, { u: 2 }),
+    }),
+    0,
+  );
+  const utcef = createUtcefSource(
+    writeUtcefDir({
+      'u.utcef': [
+        ['A', 53.0, 5.0, rect(4.9, 52.9, 5.15, 53.1)],
+        ['B', 53.4, 5.6],
+      ],
+    }),
+    0,
+  );
   for (const preferGrib of [true, false]) {
     const state: ApiState = { data: legacyData, error: null, grib, utcef, preferGrib };
     const ctx = createResolveCtx(state);
@@ -90,12 +119,25 @@ test('claimAt and resolveAt share one loop: same winner everywhere, claimAt samp
 });
 
 test('/timeline equals /vector at every step, across the GRIB horizon and source changes', () => {
-  const grib = createGribSource(gribDirOf({ 'g.grb2': [0, 6].flatMap((h) => uvFields(52.9, 4.9, 0.1, 7, { u: 1 + h / 6, forecastHours: h })) }), 0);
+  const grib = createGribSource(
+    gribDirOf({ 'g.grb2': [0, 6].flatMap((h) => uvFields(52.9, 4.9, 0.1, 7, { u: 1 + h / 6, forecastHours: h })) }),
+    0,
+  );
   const utcef = createUtcefSource(writeUtcefDir({ 'u.utcef': [['U', 53.2, 5.2]] }), 0);
-  for (const [lat, lon] of [[53.2, 5.2], [53.2, 5.6], [53.4, 5.5]]) {
+  for (const [lat, lon] of [
+    [53.2, 5.2],
+    [53.2, 5.6],
+    [53.4, 5.5],
+  ]) {
     const state: ApiState = { data: legacyData, error: null, grib, utcef, preferGrib: true };
     const call = makeApi(state);
-    const tl = call('/timeline', { latitude: String(lat), longitude: String(lon), start: gridTime, end: new Date(T0 + 24 * HOUR).toISOString(), step: '60' });
+    const tl = call('/timeline', {
+      latitude: String(lat),
+      longitude: String(lon),
+      start: gridTime,
+      end: new Date(T0 + 24 * HOUR).toISOString(),
+      step: '60',
+    });
     assert.ok(tl.timeline.length > 0);
     const seen = new Set<string>();
     for (const s of tl.timeline) {
@@ -110,8 +152,21 @@ test('/timeline equals /vector at every step, across the GRIB horizon and source
 });
 
 test('/timeline UTCEF fallback honours representative_area like /vector', () => {
-  const area = [[[4.95, 52.95], [5.1, 52.95], [5.1, 53.1], [4.95, 53.1], [4.95, 52.95]]];
-  const dir = writeUtcefDir({ 'a.utcef': [['A', 53.0, 5.0], ['B', 53.3, 5.3, area]] });
+  const area = [
+    [
+      [4.95, 52.95],
+      [5.1, 52.95],
+      [5.1, 53.1],
+      [4.95, 53.1],
+      [4.95, 52.95],
+    ],
+  ];
+  const dir = writeUtcefDir({
+    'a.utcef': [
+      ['A', 53.0, 5.0],
+      ['B', 53.3, 5.3, area],
+    ],
+  });
   const call = makeApi({ data: null, error: null, grib: null, utcef: createUtcefSource(dir, 0), preferGrib: true });
   const q = { latitude: '53.02', longitude: '5.02', time: gridTime, hours: '2', step: '60' };
   assert.equal(call('/vector', q).station.id, 'B');
@@ -131,11 +186,21 @@ test('a context built with a bbox drops layers that cannot reach it; legacy:fals
   const view = { west: 4.5, south: 52.5, east: 5.8, north: 53.8 };
   const near = createResolveCtx(state, 50, { bbox: view });
   assert.ok(all.layers.length > near.layers.length);
-  assert.deepEqual(near.layers.filter((l) => l.stack).map((l) => [...l.files!]), [['near.grb2']]);
+  assert.deepEqual(
+    near.layers.filter((l) => l.stack).map((l) => [...l.files!]),
+    [['near.grb2']],
+  );
   // Type-rank layers reach the view (they hold the near data too).
-  assert.deepEqual(near.layers.filter((l) => !l.stack).map((l) => l.type), ['grib2', 'utcef', 'harmonic']);
+  assert.deepEqual(
+    near.layers.filter((l) => !l.stack).map((l) => l.type),
+    ['grib2', 'utcef', 'harmonic'],
+  );
   // Resolution inside the view is unchanged by the pre-filter.
-  for (const [lat, lon] of [[53.2, 5.2], [53.0, 5.0], [53.5, 5.6]]) {
+  for (const [lat, lon] of [
+    [53.2, 5.2],
+    [53.0, 5.0],
+    [53.5, 5.6],
+  ]) {
     assert.deepEqual(resolveAt(near, lat, lon, T0)?.sample, resolveAt(all, lat, lon, T0)?.sample);
   }
   // Probes: a hit in the first near layer costs one probe; far layers are never touched.

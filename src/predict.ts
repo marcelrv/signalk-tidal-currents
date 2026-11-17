@@ -18,13 +18,7 @@
  */
 
 import { createCellIndex, distanceKm } from './geoindex.js';
-import {
-  ConstituentTable,
-  findStationHarmonics,
-  HarmonicsData,
-  HarmonicStation,
-  IdxStation,
-} from './harmonics.js';
+import { ConstituentTable, findStationHarmonics, HarmonicsData, HarmonicStation, IdxStation } from './harmonics.js';
 
 export { distanceKm, lonHalfWidthDeg, lonInSpan } from './geoindex.js';
 
@@ -36,19 +30,15 @@ const DEG2RAD = Math.PI / 180;
 const warnedOutOfRangeYears = new Set<number>();
 
 export interface CurrentSample {
-  time: string;        // ISO
-  speedKn: number;     // signed along-axis speed; + = flood
+  time: string; // ISO
+  speedKn: number; // signed along-axis speed; + = flood
   direction: number | null; // degrees true (flood/ebb axis), null if unknown
-  u: number | null;    // m/s east component, null if direction unknown
-  v: number | null;    // m/s north component
+  u: number | null; // m/s east component, null if direction unknown
+  v: number | null; // m/s north component
 }
 
 /** Signed harmonic sum for a reference record at a UTC time. */
-export function predictReference(
-  station: HarmonicStation,
-  tbl: ConstituentTable,
-  timeMs: number,
-): number {
+export function predictReference(station: HarmonicStation, tbl: ConstituentTable, timeMs: number): number {
   // Phases are referenced to the station meridian: evaluate the argument in
   // meridian-local time, relative to the start of that (local) year.
   const local = new Date(timeMs + station.meridianSeconds * 1000);
@@ -72,8 +62,7 @@ export function predictReference(
   for (let i = 0; i < tbl.speeds.length; i++) {
     const amp = station.amplitude[i];
     if (amp === 0) continue;
-    const arg =
-      tbl.speeds[i] * hours + tbl.equilibrium[i][yearIdx] - station.epoch[i];
+    const arg = tbl.speeds[i] * hours + tbl.equilibrium[i][yearIdx] - station.epoch[i];
     sum += tbl.nodeFactor[i][yearIdx] * amp * Math.cos(arg * DEG2RAD);
   }
   return sum;
@@ -83,11 +72,7 @@ export function predictReference(
  * Signed current speed (knots) at a station (reference or subordinate).
  * Returns null when the station cannot be resolved to harmonic data.
  */
-export function currentSpeedAt(
-  data: HarmonicsData,
-  station: IdxStation,
-  timeMs: number,
-): number | null {
+export function currentSpeedAt(data: HarmonicsData, station: IdxStation, timeMs: number): number | null {
   if (!station.isSubordinate) {
     const rec = findStationHarmonics(data.records, station.name);
     if (!rec) return null;
@@ -102,12 +87,8 @@ export function currentSpeedAt(
   // flood- and ebb-shifted times and pick the phase-consistent branch. Near
   // slack both branches disagree; take the one with the smaller magnitude so
   // the transition stays continuous-ish.
-  const flood =
-    predictReference(rec, data.constituents, timeMs - off.floodOffsetMinutes * 60_000) *
-      off.floodMultiplier + off.floodAdd;
-  const ebb =
-    predictReference(rec, data.constituents, timeMs - off.ebbOffsetMinutes * 60_000) *
-      off.ebbMultiplier + off.ebbAdd;
+  const flood = predictReference(rec, data.constituents, timeMs - off.floodOffsetMinutes * 60_000) * off.floodMultiplier + off.floodAdd;
+  const ebb = predictReference(rec, data.constituents, timeMs - off.ebbOffsetMinutes * 60_000) * off.ebbMultiplier + off.ebbAdd;
   if (flood > 0 && ebb >= 0) return flood;
   if (ebb < 0 && flood <= 0) return ebb;
   // Disagreement (slack window): choose the weaker signal.
@@ -115,11 +96,7 @@ export function currentSpeedAt(
 }
 
 /** Full set/drift sample; direction requires flood/ebb axes (subordinates). */
-export function currentSampleAt(
-  data: HarmonicsData,
-  station: IdxStation,
-  timeMs: number,
-): CurrentSample | null {
+export function currentSampleAt(data: HarmonicsData, station: IdxStation, timeMs: number): CurrentSample | null {
   const speedKn = currentSpeedAt(data, station, timeMs);
   if (speedKn === null) return null;
 
@@ -138,13 +115,7 @@ export function currentSampleAt(
   };
 }
 
-export function timeline(
-  data: HarmonicsData,
-  station: IdxStation,
-  startMs: number,
-  endMs: number,
-  stepMs: number,
-): CurrentSample[] {
+export function timeline(data: HarmonicsData, station: IdxStation, startMs: number, endMs: number, stepMs: number): CurrentSample[] {
   const out: CurrentSample[] = [];
   for (let t = startMs; t <= endMs; t += stepMs) {
     const s = currentSampleAt(data, station, t);
@@ -236,7 +207,12 @@ export function stationsInBbox(
  */
 export function legacyCoverageIndex(data: HarmonicsData, cellDeg = 0.5) {
   const stations = data.stations.filter((s) => s.isCurrent && isStationResolvable(data, s));
-  const index = createCellIndex(stations, (s) => s.latitude, (s) => s.longitude, cellDeg);
+  const index = createCellIndex(
+    stations,
+    (s) => s.latitude,
+    (s) => s.longitude,
+    cellDeg,
+  );
   const capableStations = stations.filter(isVectorCapable);
   return {
     index,

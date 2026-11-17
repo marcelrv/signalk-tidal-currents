@@ -7,7 +7,14 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { MAX_PUBLIC_SSE_CLIENTS, PUBLIC_CATALOG_ERROR, PUBLIC_DOWNLOAD_ERROR, registerManagerRoutes, ManagerRouterLike, ManagerState } from '../dist/managerApi.js';
+import {
+  MAX_PUBLIC_SSE_CLIENTS,
+  PUBLIC_CATALOG_ERROR,
+  PUBLIC_DOWNLOAD_ERROR,
+  registerManagerRoutes,
+  ManagerRouterLike,
+  ManagerState,
+} from '../dist/managerApi.js';
 import { writeManifestAtomic, upsertInstall, InstallManifest } from '../dist/manifest.js';
 import { DEFAULT_PRIORITY } from '../dist/priority.js';
 import { CatalogClient, CatalogState } from '../dist/catalog.js';
@@ -28,7 +35,11 @@ function makeHarness() {
     put: (p, h) => handlers.set(`PUT ${p}`, h),
     delete: (p, h) => handlers.set(`DELETE ${p}`, h),
   };
-  function call(method: string, routePath: string, opts: { params?: Record<string, string>; body?: unknown; skPrincipal?: { permissions: string } } = {}): Promise<FakeRes> {
+  function call(
+    method: string,
+    routePath: string,
+    opts: { params?: Record<string, string>; body?: unknown; skPrincipal?: { permissions: string } } = {},
+  ): Promise<FakeRes> {
     const h = handlers.get(`${method} ${routePath}`);
     if (!h) throw new Error(`no handler registered for ${method} ${routePath}`);
     const result: FakeRes = { statusCode: 200, body: undefined };
@@ -36,8 +47,14 @@ function makeHarness() {
     // response itself, as a real client would.
     return new Promise<FakeRes>((resolve) => {
       const res = {
-        status(code: number) { result.statusCode = code; return res; },
-        json(body: unknown) { result.body = body; resolve(result); },
+        status(code: number) {
+          result.statusCode = code;
+          return res;
+        },
+        json(body: unknown) {
+          result.body = body;
+          resolve(result);
+        },
       };
       h({ params: opts.params ?? {}, query: {}, body: opts.body, skPrincipal: opts.skPrincipal }, res);
     });
@@ -56,7 +73,14 @@ function fakeCatalogClient(sources: CatalogSource[] = [], opts: { refreshFails?:
     ? { catalog_schema_version: '1.0.0', version: 1, generated: new Date().toISOString(), source_count: sources.length, sources }
     : null;
   const state: CatalogState = document
-    ? { status: 'cached', document, fetchedAt: new Date().toISOString(), error: null, sourceUrl: 'https://example.org/catalog.json', warnings: [] }
+    ? {
+        status: 'cached',
+        document,
+        fetchedAt: new Date().toISOString(),
+        error: null,
+        sourceUrl: 'https://example.org/catalog.json',
+        warnings: [],
+      }
     : { status: 'empty', document: null, fetchedAt: null, error: null, sourceUrl: 'https://example.org/catalog.json', warnings: [] };
   return {
     get: () => state,
@@ -94,14 +118,20 @@ function baseMgr(overrides: Partial<ManagerState> = {}): { mgr: ManagerState; da
     manifestPath,
     dataDir: root,
     getPriority: () => priority,
-    setPriority: (order) => { priority = order; },
+    setPriority: (order) => {
+      priority = order;
+    },
     getDatasetStack: () => datasetStack,
-    setDatasetStack: (ids) => { datasetStack = ids; },
+    setDatasetStack: (ids) => {
+      datasetStack = ids;
+    },
     apiState: { data: null, error: null },
     getVesselPosition: () => null,
     autoDownload: {
       status: () => ({ intervalHours: 0, lastSweep: null, choices: [0, 1, 6, 12, 24], nextCheckAt: null, running: false }),
-      setInterval: () => { throw new Error('not used'); },
+      setInterval: () => {
+        throw new Error('not used');
+      },
       tick: async () => {},
       stop: () => {},
     },
@@ -122,16 +152,42 @@ test('GET /catalog returns the current catalog state shape', async () => {
 test('public read routes go on the `reads` router; mutations and admin-only reads stay on the main router', () => {
   const { mgr } = baseMgr();
   const recordingRouter = (out: string[]): ManagerRouterLike => ({
-    get: (p) => { out.push(`GET ${p}`); },
-    post: (p) => { out.push(`POST ${p}`); },
-    put: (p) => { out.push(`PUT ${p}`); },
-    delete: (p) => { out.push(`DELETE ${p}`); },
+    get: (p) => {
+      out.push(`GET ${p}`);
+    },
+    post: (p) => {
+      out.push(`POST ${p}`);
+    },
+    put: (p) => {
+      out.push(`PUT ${p}`);
+    },
+    delete: (p) => {
+      out.push(`DELETE ${p}`);
+    },
   });
   const admin: string[] = [];
   const pub: string[] = [];
   registerManagerRoutes(recordingRouter(admin), mgr, recordingRouter(pub));
-  assert.deepEqual(pub.sort(), ['GET /catalog', 'GET /datasets', 'GET /downloads', 'GET /downloads/:id', 'GET /downloads/:id/events', 'GET /downloads/events', 'GET /priority', 'GET /settings/auto-download', 'GET /storage']);
-  assert.deepEqual(admin.sort(), ['DELETE /datasets/:id', 'GET /cleanup-candidates', 'POST /catalog/refresh', 'POST /downloads', 'PUT /datasets/:id/auto-update', 'PUT /priority', 'PUT /settings/auto-download']);
+  assert.deepEqual(pub.sort(), [
+    'GET /catalog',
+    'GET /datasets',
+    'GET /downloads',
+    'GET /downloads/:id',
+    'GET /downloads/:id/events',
+    'GET /downloads/events',
+    'GET /priority',
+    'GET /settings/auto-download',
+    'GET /storage',
+  ]);
+  assert.deepEqual(admin.sort(), [
+    'DELETE /datasets/:id',
+    'GET /cleanup-candidates',
+    'POST /catalog/refresh',
+    'POST /downloads',
+    'PUT /datasets/:id/auto-update',
+    'PUT /priority',
+    'PUT /settings/auto-download',
+  ]);
 });
 
 test('GET /storage: non-admins share one cached scan; admins scan fresh and refresh it', async () => {
@@ -159,9 +215,21 @@ test('GET /storage hides the absolute data directory from non-admins only', asyn
 
 test('POST /catalog/refresh returns 502 with the cached copy on failure', async () => {
   const source: CatalogSource = {
-    id: 's', source: 'test', type: 'grib2', name: 'S', description: '', contributor: 'C', url: 'https://x',
-    tags: [], region: { name: 'r', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 }, boundary_geometry: { type: 'Polygon', coordinates: [] } },
-    update_check: { method: 'sha256', last_checked: new Date().toISOString() }, files: [],
+    id: 's',
+    source: 'test',
+    type: 'grib2',
+    name: 'S',
+    description: '',
+    contributor: 'C',
+    url: 'https://x',
+    tags: [],
+    region: {
+      name: 'r',
+      bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
+      boundary_geometry: { type: 'Polygon', coordinates: [] },
+    },
+    update_check: { method: 'sha256', last_checked: new Date().toISOString() },
+    files: [],
   };
   const { mgr } = baseMgr({ catalog: fakeCatalogClient([source], { refreshFails: true }) });
   const { router, call } = makeHarness();
@@ -175,17 +243,40 @@ test('POST /catalog/refresh returns 502 with the cached copy on failure', async 
 test('GET /datasets merges manifest installs, orphan files, and UTCEF license metadata', async () => {
   const { mgr, dataDir, manifestPath } = baseMgr({
     apiState: {
-      data: null, error: null,
-      utcef: { get: () => ({ dir: path.join(dataDir, 'utcef'), files: ['nl.utcef'], currentStations: [], heightStationCount: 0, unsupportedFeatureCount: 0, warnings: [], license: 'CC-BY-4.0', licenseUrl: 'https://x/license', citationRequired: 'cite me', copyright: '(c) test' } as any), error: null },
+      data: null,
+      error: null,
+      utcef: {
+        get: () =>
+          ({
+            dir: path.join(dataDir, 'utcef'),
+            files: ['nl.utcef'],
+            currentStations: [],
+            heightStationCount: 0,
+            unsupportedFeatureCount: 0,
+            warnings: [],
+            license: 'CC-BY-4.0',
+            licenseUrl: 'https://x/license',
+            citationRequired: 'cite me',
+            copyright: '(c) test',
+          }) as any,
+        error: null,
+      },
     } as any,
   });
   fs.writeFileSync(path.join(dataDir, 'utcef', 'nl.utcef'), 'dummy');
   fs.writeFileSync(path.join(dataDir, 'harmonic', 'HARMONIC'), 'legacy'); // orphan — not in manifest
   const manifest: InstallManifest = { manifest_version: 1, installs: [] };
-  writeManifestAtomic(manifestPath, upsertInstall(manifest, {
-    id: 'nl-utcef', catalogSourceId: 'nl-utcef', type: 'utcef', files: ['utcef/nl.utcef'],
-    size_bytes: 5, downloaded_at: new Date().toISOString(),
-  }));
+  writeManifestAtomic(
+    manifestPath,
+    upsertInstall(manifest, {
+      id: 'nl-utcef',
+      catalogSourceId: 'nl-utcef',
+      type: 'utcef',
+      files: ['utcef/nl.utcef'],
+      size_bytes: 5,
+      downloaded_at: new Date().toISOString(),
+    }),
+  );
 
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
@@ -226,21 +317,49 @@ test('GET /datasets exposes expiry countdown fields for an expiry-method install
   const ageHours = 21.6; // 10% of maxAgeHours remaining
   const cycleMs = Date.now() - ageHours * 3600_000;
   const source: CatalogSource = {
-    id: 'grib-forecast', source: 'noaa', type: 'grib2', name: 'Forecast', description: '',
-    contributor: 'NOAA', url: 'https://x', tags: [],
-    region: { name: 'r', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 }, boundary_geometry: { type: 'Polygon', coordinates: [] } },
+    id: 'grib-forecast',
+    source: 'noaa',
+    type: 'grib2',
+    name: 'Forecast',
+    description: '',
+    contributor: 'NOAA',
+    url: 'https://x',
+    tags: [],
+    region: {
+      name: 'r',
+      bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
+      boundary_geometry: { type: 'Polygon', coordinates: [] },
+    },
     update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: maxAgeHours },
     files: [],
   };
   mgr.catalog = {
-    get: () => ({ status: 'cached', document: { catalog_schema_version: '1.0.0', version: 1, generated: '', source_count: 1, sources: [source] }, fetchedAt: new Date().toISOString(), error: null, sourceUrl: '', warnings: [] }),
+    get: () => ({
+      status: 'cached',
+      document: { catalog_schema_version: '1.0.0', version: 1, generated: '', source_count: 1, sources: [source] },
+      fetchedAt: new Date().toISOString(),
+      error: null,
+      sourceUrl: '',
+      warnings: [],
+    }),
     refresh: async () => mgr.catalog.get(),
   };
   fs.writeFileSync(path.join(dataDir, 'grib', 'f.grb2'), 'x');
-  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'grib-forecast', catalogSourceId: 'grib-forecast', type: 'grib2', files: ['grib/f.grb2'],
-    size_bytes: 1, downloaded_at: new Date().toISOString(), cycle: new Date(cycleMs).toISOString(),
-  }));
+  writeManifestAtomic(
+    manifestPath,
+    upsertInstall(
+      { manifest_version: 1, installs: [] },
+      {
+        id: 'grib-forecast',
+        catalogSourceId: 'grib-forecast',
+        type: 'grib2',
+        files: ['grib/f.grb2'],
+        size_bytes: 1,
+        downloaded_at: new Date().toISOString(),
+        cycle: new Date(cycleMs).toISOString(),
+      },
+    ),
+  );
 
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
@@ -259,21 +378,49 @@ test('GET /datasets reports a negative remainingHours once past max_age_hours, s
   const maxAgeHours = 24;
   const cycleMs = Date.now() - 30 * 3600_000; // 6h past expiry
   const source: CatalogSource = {
-    id: 'grib-forecast', source: 'noaa', type: 'grib2', name: 'Forecast', description: '',
-    contributor: 'NOAA', url: 'https://x', tags: [],
-    region: { name: 'r', bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 }, boundary_geometry: { type: 'Polygon', coordinates: [] } },
+    id: 'grib-forecast',
+    source: 'noaa',
+    type: 'grib2',
+    name: 'Forecast',
+    description: '',
+    contributor: 'NOAA',
+    url: 'https://x',
+    tags: [],
+    region: {
+      name: 'r',
+      bounding_box: { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
+      boundary_geometry: { type: 'Polygon', coordinates: [] },
+    },
     update_check: { method: 'expiry', last_checked: new Date().toISOString(), max_age_hours: maxAgeHours },
     files: [],
   };
   mgr.catalog = {
-    get: () => ({ status: 'cached', document: { catalog_schema_version: '1.0.0', version: 1, generated: '', source_count: 1, sources: [source] }, fetchedAt: new Date().toISOString(), error: null, sourceUrl: '', warnings: [] }),
+    get: () => ({
+      status: 'cached',
+      document: { catalog_schema_version: '1.0.0', version: 1, generated: '', source_count: 1, sources: [source] },
+      fetchedAt: new Date().toISOString(),
+      error: null,
+      sourceUrl: '',
+      warnings: [],
+    }),
     refresh: async () => mgr.catalog.get(),
   };
   fs.writeFileSync(path.join(dataDir, 'grib', 'f.grb2'), 'x');
-  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'grib-forecast', catalogSourceId: 'grib-forecast', type: 'grib2', files: ['grib/f.grb2'],
-    size_bytes: 1, downloaded_at: new Date().toISOString(), cycle: new Date(cycleMs).toISOString(),
-  }));
+  writeManifestAtomic(
+    manifestPath,
+    upsertInstall(
+      { manifest_version: 1, installs: [] },
+      {
+        id: 'grib-forecast',
+        catalogSourceId: 'grib-forecast',
+        type: 'grib2',
+        files: ['grib/f.grb2'],
+        size_bytes: 1,
+        downloaded_at: new Date().toISOString(),
+        cycle: new Date(cycleMs).toISOString(),
+      },
+    ),
+  );
 
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
@@ -303,10 +450,20 @@ test('DELETE /datasets/:id on an orphan file already removed outside the plugin 
 test('DELETE /datasets/:id deletes a real install and its files, updates the manifest', async () => {
   const { mgr, dataDir, manifestPath } = baseMgr();
   fs.writeFileSync(path.join(dataDir, 'grib', 'f.grb2'), 'x');
-  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'grib-install', catalogSourceId: 'grib-install', type: 'grib2', files: ['grib/f.grb2'],
-    size_bytes: 1, downloaded_at: new Date().toISOString(),
-  }));
+  writeManifestAtomic(
+    manifestPath,
+    upsertInstall(
+      { manifest_version: 1, installs: [] },
+      {
+        id: 'grib-install',
+        catalogSourceId: 'grib-install',
+        type: 'grib2',
+        files: ['grib/f.grb2'],
+        size_bytes: 1,
+        downloaded_at: new Date().toISOString(),
+      },
+    ),
+  );
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
   const res = await call('DELETE', '/datasets/:id', { params: { id: 'grib-install' } });
@@ -324,9 +481,20 @@ test('DELETE /datasets/:id returns 404 for an unknown id', async () => {
 
 test('GET /datasets reports a never-toggled install as included in auto-download', async () => {
   const { mgr, manifestPath } = baseMgr();
-  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'plain', catalogSourceId: 'plain', type: 'grib2', files: [], size_bytes: 1, downloaded_at: new Date().toISOString(),
-  }));
+  writeManifestAtomic(
+    manifestPath,
+    upsertInstall(
+      { manifest_version: 1, installs: [] },
+      {
+        id: 'plain',
+        catalogSourceId: 'plain',
+        type: 'grib2',
+        files: [],
+        size_bytes: 1,
+        downloaded_at: new Date().toISOString(),
+      },
+    ),
+  );
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
   const entry = ((await call('GET', '/datasets', {})).body as any[]).find((d) => d.id === 'plain');
@@ -335,12 +503,26 @@ test('GET /datasets reports a never-toggled install as included in auto-download
 
 test('PUT /datasets/:id/auto-update with enabled:false opts the install out', async () => {
   const { mgr, manifestPath } = baseMgr();
-  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'grib-install', catalogSourceId: 'grib-install', type: 'grib2', files: [], size_bytes: 1, downloaded_at: new Date().toISOString(),
-  }));
+  writeManifestAtomic(
+    manifestPath,
+    upsertInstall(
+      { manifest_version: 1, installs: [] },
+      {
+        id: 'grib-install',
+        catalogSourceId: 'grib-install',
+        type: 'grib2',
+        files: [],
+        size_bytes: 1,
+        downloaded_at: new Date().toISOString(),
+      },
+    ),
+  );
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
-  assert.equal((await call('PUT', '/datasets/:id/auto-update', { params: { id: 'grib-install' }, body: { enabled: false } })).statusCode, 200);
+  assert.equal(
+    (await call('PUT', '/datasets/:id/auto-update', { params: { id: 'grib-install' }, body: { enabled: false } })).statusCode,
+    200,
+  );
   const entry = ((await call('GET', '/datasets', {})).body as any[]).find((d) => d.id === 'grib-install');
   assert.equal(entry.autoUpdate, false);
 });
@@ -360,7 +542,10 @@ test('PUT /settings/auto-download validates the interval and forwards a valid on
   const { mgr } = baseMgr();
   mgr.autoDownload = {
     ...mgr.autoDownload,
-    setInterval: (h) => { set.push(h); return { intervalHours: h, lastSweep: null, choices: [0, 1, 6, 12, 24], nextCheckAt: null, running: true }; },
+    setInterval: (h) => {
+      set.push(h);
+      return { intervalHours: h, lastSweep: null, choices: [0, 1, 6, 12, 24], nextCheckAt: null, running: true };
+    },
   };
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
@@ -382,10 +567,20 @@ test('PUT /settings/auto-download returns 503 before the plugin has started', as
 
 test('PUT /datasets/:id/auto-update enables the flag, persists across a re-read', async () => {
   const { mgr, manifestPath } = baseMgr();
-  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] }, {
-    id: 'grib-install', catalogSourceId: 'grib-install', type: 'grib2', files: [],
-    size_bytes: 1, downloaded_at: new Date().toISOString(),
-  }));
+  writeManifestAtomic(
+    manifestPath,
+    upsertInstall(
+      { manifest_version: 1, installs: [] },
+      {
+        id: 'grib-install',
+        catalogSourceId: 'grib-install',
+        type: 'grib2',
+        files: [],
+        size_bytes: 1,
+        downloaded_at: new Date().toISOString(),
+      },
+    ),
+  );
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
   const res = await call('PUT', '/datasets/:id/auto-update', { params: { id: 'grib-install' }, body: { enabled: true } });
@@ -437,10 +632,18 @@ test('PUT /priority validates the order, 400 on an invalid permutation', async (
 test('GET/PUT /priority dataset stack: persisted order first, unranked installs appended in type order', async () => {
   const { mgr, manifestPath } = baseMgr();
   let manifest: InstallManifest = { manifest_version: 1, installs: [] };
-  for (const [id, type] of [['a-grib', 'grib2'], ['b-utcef', 'utcef'], ['c-utcef', 'utcef']] as const) {
+  for (const [id, type] of [
+    ['a-grib', 'grib2'],
+    ['b-utcef', 'utcef'],
+    ['c-utcef', 'utcef'],
+  ] as const) {
     manifest = upsertInstall(manifest, {
-      id, catalogSourceId: id, type, files: [`${id}.dat`],
-      size_bytes: 1, downloaded_at: new Date().toISOString(),
+      id,
+      catalogSourceId: id,
+      type,
+      files: [`${id}.dat`],
+      size_bytes: 1,
+      downloaded_at: new Date().toISOString(),
     });
   }
   writeManifestAtomic(manifestPath, manifest);
@@ -470,21 +673,61 @@ test('non-admins get generic error texts (no paths, no catalog URL) on every job
     ...fakeDownloadEngine(),
     list: () => [job],
     get: () => ({ ...job, state: 'active', error: undefined }),
-    onUpdate: (_id, cb) => { jobUpdate.push(cb); return () => {}; },
-    onAnyDone: (cb) => { anyDone.push(cb); return () => {}; },
+    onUpdate: (_id, cb) => {
+      jobUpdate.push(cb);
+      return () => {};
+    },
+    onAnyDone: (cb) => {
+      anyDone.push(cb);
+      return () => {};
+    },
   };
-  mgr.catalog = { get: () => ({ status: 'cached', document: null, fetchedAt: null, error: 'fetch failed: https://intranet.example/c.json?token=abc', sourceUrl: 'https://intranet.example/c.json?token=abc', warnings: [] }), refresh: async () => mgr.catalog.get() } as CatalogClient;
+  mgr.catalog = {
+    get: () => ({
+      status: 'cached',
+      document: null,
+      fetchedAt: null,
+      error: 'fetch failed: https://intranet.example/c.json?token=abc',
+      sourceUrl: 'https://intranet.example/c.json?token=abc',
+      warnings: [],
+    }),
+    refresh: async () => mgr.catalog.get(),
+  } as CatalogClient;
   const handlers = new Map<string, (req: any, res: any) => void>();
   registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
   const call = (p: string, principal?: { permissions: string }) => {
     let body: any;
-    handlers.get(p)!({ params: { id: 'j' }, query: {}, skPrincipal: principal }, { status() { return this; }, json(b: unknown) { body = b; } });
+    handlers.get(p)!(
+      { params: { id: 'j' }, query: {}, skPrincipal: principal },
+      {
+        status() {
+          return this;
+        },
+        json(b: unknown) {
+          body = b;
+        },
+      },
+    );
     return body;
   };
   const closers: (() => void)[] = [];
   const sse = (p: string, principal: { permissions: string }) => {
     const frames: any[] = [];
-    const res = { status() { return res; }, json() {}, writeHead() {}, write(c: string) { if (c.startsWith('data: ')) frames.push(JSON.parse(c.slice(6))); return true; }, end() {}, on(_e: string, cb: () => void) { closers.push(cb); } };
+    const res = {
+      status() {
+        return res;
+      },
+      json() {},
+      writeHead() {},
+      write(c: string) {
+        if (c.startsWith('data: ')) frames.push(JSON.parse(c.slice(6)));
+        return true;
+      },
+      end() {},
+      on(_e: string, cb: () => void) {
+        closers.push(cb);
+      },
+    };
     handlers.get(p)!({ params: { id: 'j' }, query: {}, skPrincipal: principal }, res);
     return frames;
   };
@@ -520,7 +763,15 @@ test('non-admins get generic error texts (no paths, no catalog URL) on every job
 test('non-admin shared reads (/datasets, /storage, /priority) are invalidated by every change made through the plugin', async () => {
   const { mgr, dataDir, manifestPath } = baseMgr();
   let fireDone: ((j: DownloadJob) => void) | null = null;
-  mgr.downloads = { ...fakeDownloadEngine(), onAnyDone: (cb) => { fireDone = cb; return () => { fireDone = null; }; } };
+  mgr.downloads = {
+    ...fakeDownloadEngine(),
+    onAnyDone: (cb) => {
+      fireDone = cb;
+      return () => {
+        fireDone = null;
+      };
+    },
+  };
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr); // before any engine-specific hook exists, like registerWithRouter before start()
   const anon = { skPrincipal: { permissions: 'readonly' } };
@@ -538,7 +789,13 @@ test('non-admin shared reads (/datasets, /storage, /priority) are invalidated by
 
   // 2. start()/restart swaps the engine: the old hook is dropped, the new one is used.
   let fireDone2: ((j: DownloadJob) => void) | null = null;
-  mgr.downloads = { ...fakeDownloadEngine(), onAnyDone: (cb) => { fireDone2 = cb; return () => {}; } };
+  mgr.downloads = {
+    ...fakeDownloadEngine(),
+    onAnyDone: (cb) => {
+      fireDone2 = cb;
+      return () => {};
+    },
+  };
   fs.writeFileSync(path.join(dataDir, 'grib', 'b.grb2'), Buffer.alloc(8));
   assert.equal(await count(), 2, 'a new engine invalidates by itself');
   assert.equal(fireDone, null, 'hook on the replaced engine was removed');
@@ -552,23 +809,41 @@ test('non-admin shared reads (/datasets, /storage, /priority) are invalidated by
   assert.equal(del.statusCode, 200);
   assert.equal(await count(), 2, 'DELETE invalidates');
 
-  writeManifestAtomic(manifestPath, upsertInstall({ manifest_version: 1, installs: [] } as InstallManifest, {
-    id: 'inst-1', catalogSourceId: 'src', type: 'grib2', files: ['grib/a.grb2'], downloaded_at: new Date().toISOString(), size_bytes: 64,
-  } as any));
+  writeManifestAtomic(
+    manifestPath,
+    upsertInstall(
+      { manifest_version: 1, installs: [] } as InstallManifest,
+      {
+        id: 'inst-1',
+        catalogSourceId: 'src',
+        type: 'grib2',
+        files: ['grib/a.grb2'],
+        downloaded_at: new Date().toISOString(),
+        size_bytes: 64,
+      } as any,
+    ),
+  );
   fireDone2!({ id: 'm', catalogSourceId: 'src', state: 'done', bytes: 64, totalBytes: 64 });
-  const pri = async () => ((await call('GET', '/priority', anon)).body as any);
+  const pri = async () => (await call('GET', '/priority', anon)).body as any;
   assert.deepEqual((await pri()).datasets, ['inst-1']);
   const datasetsNow = (await call('GET', '/datasets', anon)).body as any[];
   assert.equal(datasetsNow.find((d) => d.id === 'inst-1').autoUpdate, true);
   assert.equal((await call('PUT', '/datasets/:id/auto-update', { params: { id: 'inst-1' }, body: { enabled: false } })).statusCode, 200);
-  assert.equal(((await call('GET', '/datasets', anon)).body as any[]).find((d) => d.id === 'inst-1').autoUpdate, false, 'auto-update invalidates');
+  assert.equal(
+    ((await call('GET', '/datasets', anon)).body as any[]).find((d) => d.id === 'inst-1').autoUpdate,
+    false,
+    'auto-update invalidates',
+  );
 
   assert.equal((await call('PUT', '/priority', { body: { order: ['harmonic', 'utcef', 'grib2'] } })).statusCode, 200);
   assert.deepEqual((await pri()).order, ['harmonic', 'utcef', 'grib2'], 'PUT /priority invalidates');
 
   // 4. A catalog that re-synced (new fetchedAt) invalidates too.
   let fetchedAt = '2026-01-01T00:00:00Z';
-  mgr.catalog = { get: () => ({ status: 'cached', document: null, fetchedAt, error: null, sourceUrl: '', warnings: [] }), refresh: async () => mgr.catalog.get() } as CatalogClient;
+  mgr.catalog = {
+    get: () => ({ status: 'cached', document: null, fetchedAt, error: null, sourceUrl: '', warnings: [] }),
+    refresh: async () => mgr.catalog.get(),
+  } as CatalogClient;
   await count();
   fs.writeFileSync(path.join(dataDir, 'grib', 'd.grb2'), Buffer.alloc(8));
   const n = await count();
@@ -579,7 +854,10 @@ test('non-admin shared reads (/datasets, /storage, /priority) are invalidated by
 test('a failing read is a 500 (generic text for non-admins, verbatim for admins) and is not cached', async () => {
   const { mgr } = baseMgr();
   let fail = true;
-  mgr.getPriority = () => { if (fail) throw new Error('boom /secret/path'); return [...DEFAULT_PRIORITY]; };
+  mgr.getPriority = () => {
+    if (fail) throw new Error('boom /secret/path');
+    return [...DEFAULT_PRIORITY];
+  };
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr);
   const anon = { skPrincipal: { permissions: 'readonly' } };
@@ -594,29 +872,40 @@ test('a failing read is a 500 (generic text for non-admins, verbatim for admins)
   assert.equal(r2.statusCode, 200, 'the failure was not cached');
 });
 
-for (const route of ['/downloads/events', '/downloads/:id/events']) test(`SSE ${route} caps concurrent non-admin viewers (503 beyond MAX_PUBLIC_SSE_CLIENTS); admins are never capped`, () => {
-  const { mgr } = baseMgr();
-  const jobId = mgr.downloads.start('s', {}).id; // the per-job feed 404s an unknown job before admission
-  const handlers = new Map<string, (req: any, res: any) => void>();
-  registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
-  const closers: (() => void)[] = [];
-  const open = (principal: { permissions: string }) => {
-    let status = 200;
-    const res = {
-      status(c: number) { status = c; return res; }, json() {},
-      writeHead() {}, write() { return true; }, end() {},
-      on(_e: string, cb: () => void) { closers.push(cb); },
+for (const route of ['/downloads/events', '/downloads/:id/events'])
+  test(`SSE ${route} caps concurrent non-admin viewers (503 beyond MAX_PUBLIC_SSE_CLIENTS); admins are never capped`, () => {
+    const { mgr } = baseMgr();
+    const jobId = mgr.downloads.start('s', {}).id; // the per-job feed 404s an unknown job before admission
+    const handlers = new Map<string, (req: any, res: any) => void>();
+    registerManagerRoutes({ get: (p, h) => handlers.set(p, h), post: () => {}, put: () => {}, delete: () => {} }, mgr);
+    const closers: (() => void)[] = [];
+    const open = (principal: { permissions: string }) => {
+      let status = 200;
+      const res = {
+        status(c: number) {
+          status = c;
+          return res;
+        },
+        json() {},
+        writeHead() {},
+        write() {
+          return true;
+        },
+        end() {},
+        on(_e: string, cb: () => void) {
+          closers.push(cb);
+        },
+      };
+      handlers.get(route)!({ params: { id: jobId }, query: {}, skPrincipal: principal }, res);
+      return status;
     };
-    handlers.get(route)!({ params: { id: jobId }, query: {}, skPrincipal: principal }, res);
-    return status;
-  };
-  for (let i = 0; i < MAX_PUBLIC_SSE_CLIENTS; i++) assert.equal(open({ permissions: 'readonly' }), 200);
-  assert.equal(open({ permissions: 'readonly' }), 503);
-  assert.equal(open({ permissions: 'admin' }), 200);
-  closers[0](); // one viewer disconnects → a slot frees up
-  assert.equal(open({ permissions: 'readonly' }), 200);
-  closers.forEach((c) => c());
-});
+    for (let i = 0; i < MAX_PUBLIC_SSE_CLIENTS; i++) assert.equal(open({ permissions: 'readonly' }), 200);
+    assert.equal(open({ permissions: 'readonly' }), 503);
+    assert.equal(open({ permissions: 'admin' }), 200);
+    closers[0](); // one viewer disconnects → a slot frees up
+    assert.equal(open({ permissions: 'readonly' }), 200);
+    closers.forEach((c) => c());
+  });
 
 test('GET /datasets: non-admins share one cached scan; admins scan fresh and refresh it', async () => {
   const { mgr, dataDir } = baseMgr();
@@ -633,12 +922,25 @@ test('GET /datasets: non-admins share one cached scan; admins scan fresh and ref
 
 test('securityEnabled: a missing principal is NOT admin (fails closed)', async () => {
   const { mgr } = baseMgr();
-  mgr.catalog = { get: () => ({ status: 'cached', document: null, fetchedAt: null, error: null, sourceUrl: 'https://intranet.example/c.json', warnings: [] }), refresh: async () => mgr.catalog.get() } as CatalogClient;
+  mgr.catalog = {
+    get: () => ({
+      status: 'cached',
+      document: null,
+      fetchedAt: null,
+      error: null,
+      sourceUrl: 'https://intranet.example/c.json',
+      warnings: [],
+    }),
+    refresh: async () => mgr.catalog.get(),
+  } as CatalogClient;
   const { router, call } = makeHarness();
   registerManagerRoutes(router, mgr, router, { securityEnabled: () => true });
   assert.equal(((await call('GET', '/catalog')).body as any).sourceUrl, '');
   assert.ok(!('path' in ((await call('GET', '/storage')).body as any)));
-  assert.equal(((await call('GET', '/catalog', { skPrincipal: { permissions: 'admin' } })).body as any).sourceUrl, 'https://intranet.example/c.json');
+  assert.equal(
+    ((await call('GET', '/catalog', { skPrincipal: { permissions: 'admin' } })).body as any).sourceUrl,
+    'https://intranet.example/c.json',
+  );
 });
 
 test('SSE /downloads/:id/events on a terminal job closes at once and frees its public slot', () => {
@@ -650,8 +952,18 @@ test('SSE /downloads/:id/events on a terminal job closes at once and frees its p
     let status = 200;
     let ended = false;
     const res = {
-      status(c: number) { status = c; return res; }, json() {},
-      writeHead() {}, write() { return true; }, end() { ended = true; },
+      status(c: number) {
+        status = c;
+        return res;
+      },
+      json() {},
+      writeHead() {},
+      write() {
+        return true;
+      },
+      end() {
+        ended = true;
+      },
       on() {},
     };
     handlers.get('/downloads/:id/events')!({ params: { id: 'j' }, query: {}, skPrincipal: { permissions: 'readonly' } }, res);

@@ -32,37 +32,41 @@ export function PriorityList() {
 
   return (
     <>
-    {error && <p role="alert" className="mb-1.5 text-xs text-danger">Couldn't save the order: {error}</p>}
-    <ol className="flex flex-col gap-1.5">
-      {priority.map((type, i) => (
-        <li key={type} className="flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-1">
-          <span className="w-5 shrink-0 text-center text-xs font-semibold text-muted tabular-nums">{i + 1}</span>
-          <span className="flex-1 text-sm font-medium">{LABEL[type]}</span>
-          {!readOnly && (
-          <>
-          <button
-            type="button"
-            aria-label={`Move ${LABEL[type]} up`}
-            disabled={i === 0}
-            onClick={() => move(i, -1)}
-            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 disabled:opacity-25"
-          >
-            <Icon name="arrowUp" className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            aria-label={`Move ${LABEL[type]} down`}
-            disabled={i === priority.length - 1}
-            onClick={() => move(i, 1)}
-            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 disabled:opacity-25"
-          >
-            <Icon name="arrowDown" className="h-4 w-4" />
-          </button>
-          </>
-          )}
-        </li>
-      ))}
-    </ol>
+      {error && (
+        <p role="alert" className="mb-1.5 text-xs text-danger">
+          Couldn't save the order: {error}
+        </p>
+      )}
+      <ol className="flex flex-col gap-1.5">
+        {priority.map((type, i) => (
+          <li key={type} className="flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-1">
+            <span className="w-5 shrink-0 text-center text-xs font-semibold text-muted tabular-nums">{i + 1}</span>
+            <span className="flex-1 text-sm font-medium">{LABEL[type]}</span>
+            {!readOnly && (
+              <>
+                <button
+                  type="button"
+                  aria-label={`Move ${LABEL[type]} up`}
+                  disabled={i === 0}
+                  onClick={() => move(i, -1)}
+                  className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 disabled:opacity-25"
+                >
+                  <Icon name="arrowUp" className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Move ${LABEL[type]} down`}
+                  disabled={i === priority.length - 1}
+                  onClick={() => move(i, 1)}
+                  className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 disabled:opacity-25"
+                >
+                  <Icon name="arrowDown" className="h-4 w-4" />
+                </button>
+              </>
+            )}
+          </li>
+        ))}
+      </ol>
     </>
   );
 }
