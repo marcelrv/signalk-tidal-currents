@@ -402,11 +402,18 @@ export function registerManagerRoutes(router: ManagerRouterLike, mgr: ManagerSta
         res.status(400).json({ error: 'refused: path outside the managed directory' });
         return;
       }
+      // Idempotent: a file already removed outside the plugin (the list the
+      // UI shows can predate that) has reached the requested state — answer
+      // ok so the caller refreshes instead of retrying a delete that can
+      // never succeed. Other failures (permissions, a directory) are real.
       try {
         fs.unlinkSync(target);
-      } catch {
-        res.status(404).json({ error: `file not found: ${filename}` });
-        return;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+          invalidatePublic();
+          res.status(500).json({ error: `could not delete ${filename}: ${(e as NodeJS.ErrnoException).code ?? 'error'}` });
+          return;
+        }
       }
       invalidatePublic();
       res.json({ ok: true });

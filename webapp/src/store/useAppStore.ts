@@ -244,10 +244,15 @@ export const useAppStore = create<AppState>((set, get) => {
     }
   },
   deleteDataset: async (id) => {
-    await write(() => api.deleteDataset(id));
     // Deleting frees disk and drops the install out of the priority stack —
     // refresh everything that displays either, not just the dataset list.
-    await Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
+    // Refresh on failure too: a failed delete usually means the list was
+    // stale, and keeping the stale row invites retrying the same delete.
+    try {
+      await write(() => api.deleteDataset(id));
+    } finally {
+      await Promise.all([get().fetchDatasets(), get().fetchStorage(), get().fetchPriority()]);
+    }
   },
   setAutoUpdate: async (id, enabled) => {
     await write(() => api.setAutoUpdate(id, enabled));

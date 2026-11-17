@@ -292,6 +292,14 @@ test('DELETE /datasets/:id refuses an orphan id with a path-traversal filename',
   assert.equal(res.statusCode, 400);
 });
 
+test('DELETE /datasets/:id on an orphan file already removed outside the plugin succeeds (idempotent)', async () => {
+  const { mgr } = baseMgr();
+  const { router, call } = makeHarness();
+  registerManagerRoutes(router, mgr);
+  const res = await call('DELETE', '/datasets/:id', { params: { id: 'orphan:utcef:utcef/gone.utcef' } });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+});
+
 test('DELETE /datasets/:id deletes a real install and its files, updates the manifest', async () => {
   const { mgr, dataDir, manifestPath } = baseMgr();
   fs.writeFileSync(path.join(dataDir, 'grib', 'f.grb2'), 'x');
