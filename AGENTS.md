@@ -11,8 +11,16 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
 - npm scripts must stay **cross-platform** (CI runs them on Windows/macOS
   too): no `rm -rf`, `cp -r`, shell globs or quoting tricks — use
   `node -e "require('fs')…"` one-liners instead.
-- `npm run lint` (ESLint, plugin + webapp; bug-catching rules only, no
-  formatting) must pass before committing.
+- `npm run lint` (ESLint, plugin + webapp) stays **bug-catching rules
+  only** — never add formatting/style rules to it; formatting is
+  Prettier's job.
+- Formatting: Prettier (pinned exact version, one root `.prettierrc.json`
+  shared by the webapp: `singleQuote`, `printWidth: 140`; exclusions in
+  `.prettierignore`, incl. the vendored `src/jpx/`). `npm run format`
+  rewrites, `npm run format:check` must pass before committing (CI's lint
+  job runs it). Its file patterns are quoted so Prettier, not the shell,
+  expands them. Reformat-only commits go into `.git-blame-ignore-revs`
+  (`git config blame.ignoreRevsFile .git-blame-ignore-revs`).
 
 ## CI
 
