@@ -203,6 +203,16 @@ generic "download failed" / "catalog sync failed").
 | `GET /vector?latitude=&longitude=&time=` | Set/drift vector at a position (GRIB → UTCEF → station, configurable) |
 | `GET /grid?bbox=w,s,e,n&time=&maxPoints=&stations=` | Current vectors over a viewport for a flow-field overlay — GRIB lattice samples and UTCEF stations, each point answered by the same resolver as `/vector` (each point has a `source` field), at most `maxPoints`. `stations=1` opts legacy harmonic stations in too (`source: "station"`) so `/grid` agrees with `/vector` when they outrank GRIB; by default they are skipped (use `/stations?bbox=`) |
 
+**Count parameters** (`limit`, `maxPoints`): omitted or not a number → the
+default (`/stations` nearest: 10, `/stations?bbox=`: 500, `/grid`: 400);
+`0` → the endpoint's maximum (nearest: 50, viewport queries: 5000), never
+truly unlimited; larger values are capped at that maximum; a negative value
+is a 400 error.
+
+**Station endpoints without data**: while neither harmonic nor UTCEF station
+data is loaded, `/stations`, `/stations/{id}` and `/stations/{id}/timeline`
+answer `503`; `404` means only that the station id is unknown.
+
 **Stations vs positions**: harmonic and UTCEF data are station-based; GRIB
 data is gridded and has no stations, so GRIB-backed lookups are purely
 positional (`/vector`, `/timeline`, `/grid`). `/grid` also includes UTCEF
@@ -328,6 +338,52 @@ Note on `speedKn`: for **station** samples it is signed along the
 flood/ebb axis (+ = flood); for **GRIB** samples there is no flood/ebb
 axis, so it is simply the current's magnitude (`direction`/`u`/`v` carry
 the vector either way).
+
+## In-process API for other plugins (`currentsApi`)
+
+Plugins running in the same Signal K server can ask for station
+predictions without an HTTP call back to their own server (which would need
+the right port, TLS setting and a token when security is on). The plugin
+publishes a handle through Signal K's PropertyValues mechanism
+(`app.emitPropertyValue` / `app.onPropertyValues`, see `propertyvalues.d.ts`
+in `@signalk/server-api`) under the well-known name **`currentsApi`**:
+
+```js
+app.onPropertyValues('currentsApi', (history) => {
+  const handle = history.filter(Boolean).pop()?.value;
+  if (handle?.version === 1) useCurrents(handle);
+});
+```
+
+**Version 1 contract**
+
+```ts
+interface CurrentsApiV1 {
+  version: 1;
+  providerId: 'signalk-tidal-currents';
+  findStations(latitude: number, longitude: number, limit?: number): Promise<CurrentStationDto[]>;
+  getTimeline(stationId: string, startIso: string, endIso: string, stepMinutes?: number): Promise<CurrentTimelineDto>;
+}
+```
+
+- `findStations` returns exactly the JSON of
+  `GET /stations?latitude=&longitude=&limit=` (incl. `vectorCapable`), and
+  `getTimeline` exactly that of `GET /stations/{id}/timeline?start=&end=&step=`.
+  Both run the same code as those routes, with the same defaults and limits
+  (`findStations` limit: omitted → 10, `0` → the maximum 50, negative → 400).
+- Where the route would answer with an error, the promise rejects with an
+  `Error` carrying `status` (400/404/503) and `body` (the route's JSON body);
+  `message` is the body's `error` text. 404 means only "unknown station id":
+  without station data every call answers 503, whatever the arguments. (A
+  500 would mean an internal bug: the route answered nothing.)
+- The handle is emitted **once** per server run (the server keeps a bounded
+  history per property name) and stays valid across a plugin config save.
+  While the plugin is stopped or has no station data, every call rejects
+  with status 503 — treat that as "no currents", never as a fatal error.
+  Disabling the plugin emits nothing further; the handle simply rejects.
+- Like any PropertyValue, it may arrive before or after your plugin starts
+  (there is no load order): keep the `onPropertyValues` callback reactive.
+- A future incompatible change gets a new `version`; check it before use.
 
 ## Plugin configuration
 

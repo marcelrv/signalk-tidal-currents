@@ -50,11 +50,11 @@ import {
 
 // Minimal express-compatible typings (the router instance is supplied by the
 // Signal K server; this plugin has no runtime dependency on express).
-interface Req {
+export interface Req {
   params: Record<string, string>;
   query: Record<string, unknown>;
 }
-interface Res {
+export interface Res {
   json(body: unknown): void;
   status(code: number): Res;
 }
@@ -184,6 +184,25 @@ function parseWindow(
 }
 
 /**
+ * A count parameter (`limit` / `maxPoints`): missing or unparseable → `def`,
+ * `0` → `max` ("as many as the endpoint allows" — never truly unlimited, the
+ * cap bounds the scan and the payload), `1..` → capped at `max`, negative →
+ * 400 (a caller bug, not something to guess around). Returns null when it
+ * answered with the 400.
+ */
+function parseLimit(name: string, raw: unknown, def: number, max: number, res: Res): number | null {
+  const n = parseInt(String(raw), 10);
+  if (Number.isNaN(n)) return def;
+  // Sign from the full number: parseInt('-0.5') is -0, which would pass a
+  // `< 0` test and then read as 0 = the maximum.
+  if (n < 0 || parseFloat(String(raw)) < 0) {
+    res.status(400).json({ error: `${name} must be >= 0 (0 = the maximum, ${max})` });
+    return null;
+  }
+  return n === 0 ? max : Math.min(max, n);
+}
+
+/**
  * Cell sizes (degrees) for stable spatial thinning, fine → coarse. Cell
  * boundaries are aligned to the global origin (multiples of the size from
  * lon/lat 0), NOT to the query bbox — so which stations survive thinning
@@ -295,6 +314,122 @@ export function thinByCellLadder<T extends GeoItem>(items: T[], maxPoints: numbe
   return Array.from(keep, (k) => items[k]);
 }
 
+/**
+ * GET /stations — shared by the HTTP routes and the in-process `currentsApi`
+ * handle (src/currentsApi.ts), so both answer with the very same JSON.
+ */
+/**
+ * Station endpoints need a station-type source, harmonics or UTCEF. Without
+ * one, every station route answers 503 ("no data") — never 404, which would
+ * claim the requested station id is wrong. Returns true when it answered.
+ */
+function rejectWithoutStationData(state: ApiState, res: Res): boolean {
+  const u = state.utcef?.get() ?? null;
+  if (state.data || (u && u.currentStations.length > 0)) return false;
+  res.status(503).json({ error: state.error ?? 'no station data loaded (harmonics or UTCEF)' });
+  return true;
+}
+
+export function handleStations(state: ApiState, req: Req, res: Res): void {
+  if (rejectWithoutStationData(state, res)) return;
+  const u = state.utcef?.get() ?? null;
+
+  // bbox mode: stations in a map viewport, not just the nearest few to a
+  // single reference point. `maxPoints` (aliased by the legacy `limit`)
+  // caps how many are returned — a zoomed-out client asks for a low value
+  // and gets a spatially-even THINNED subset (stable across pan/zoom, see
+  // thinByCellLadder), a zoomed-in client asks for more (or covers a small
+  // enough area that everything fits) and gets full detail. This replaces
+  // the old behaviour of truncating to the first 500 in array order, which
+  // returned an arbitrary spatially-clustered subset and reshuffled as the
+  // viewport moved.
+  if (req.query.bbox !== undefined) {
+    const bbox = parseBbox(req, res);
+    if (!bbox) return;
+    const maxPoints = parseLimit(
+      req.query.maxPoints !== undefined ? 'maxPoints' : 'limit',
+      req.query.maxPoints ?? req.query.limit,
+      500,
+      5000,
+      res,
+    );
+    if (maxPoints === null) return;
+
+    // Gather everything in the viewport first (capped), then thin the
+    // MERGED set so harmonic + UTCEF together honour one budget.
+    // `info` is built lazily — only for the stations that survive thinning.
+    const gathered: Array<{ lat: number; lon: number; info: () => unknown }> = [];
+    if (state.data) {
+      for (const n of stationsInBbox(state.data, bbox.west, bbox.south, bbox.east, bbox.north, STATION_GATHER_CAP)) {
+        gathered.push({ lat: n.station.latitude, lon: n.station.longitude, info: () => stationInfo(n.station, { vectorCapable: n.vectorCapable }) });
+      }
+    }
+    if (u) {
+      for (const s of utcefStationsInBbox(u, bbox)) {
+        gathered.push({ lat: s.latitude, lon: s.longitude, info: () => utcefStationInfo(s) });
+      }
+    }
+    res.json(thinByCellLadder(gathered, maxPoints).map((g) => g.info()));
+    return;
+  }
+
+  const pos = parsePosition(req, res);
+  if (!pos) return;
+  const limit = parseLimit('limit', req.query.limit, 10, 50, res);
+  if (limit === null) return;
+  const legacy = state.data
+    ? nearestCurrentStations(state.data, pos.lat, pos.lon, limit).map((n) => ({
+        distanceKm: n.distanceKm,
+        info: stationInfo(n.station, { distanceKm: n.distanceKm, vectorCapable: n.vectorCapable }),
+      }))
+    : [];
+  const utcefNear = u
+    ? nearestUtcefStations(u, pos.lat, pos.lon, limit).map((n) => ({
+        distanceKm: n.distanceKm,
+        info: utcefStationInfo(n.station, { distanceKm: n.distanceKm }),
+      }))
+    : [];
+  const result = [...legacy, ...utcefNear]
+    .sort((a, b) => a.distanceKm - b.distanceKm)
+    .slice(0, limit)
+    .map((n) => n.info);
+  res.json(result);
+}
+
+/** GET /stations/:id/timeline — shared like handleStations. */
+export function handleStationTimeline(state: ApiState, req: Req, res: Res): void {
+  if (rejectWithoutStationData(state, res)) return;
+  const win = parseWindow(req, res);
+  if (!win) return;
+
+  const s = state.data?.stations.find((st) => st.id === req.params.id);
+  if (s) {
+    const samples = timeline(state.data!, s, win.start, win.end, win.stepMs);
+    res.json({
+      station: stationInfo(s),
+      units: { speedKn: 'knots (signed, + = flood)', u: 'm/s east', v: 'm/s north' },
+      estimated: s.isSubordinate,
+      timeline: samples,
+    });
+    return;
+  }
+
+  const us = state.utcef?.get()?.currentStations.find((st) => st.id === req.params.id);
+  if (us) {
+    const samples: CurrentSample[] = [];
+    for (let t = win.start; t <= win.end; t += win.stepMs) samples.push(utcefSampleAt(us, t));
+    res.json({
+      station: utcefStationInfo(us),
+      units: { speedKn: 'knots (magnitude)', u: 'm/s east', v: 'm/s north' },
+      estimated: false,
+      timeline: samples,
+    });
+    return;
+  }
+
+  res.status(404).json({ error: `unknown station: ${req.params.id}` });
+}
+
 export function registerRoutes(router: RouterLike, state: ApiState): void {
   const gribData = () => state.grib?.get() ?? null;
   const utcefData = () => state.utcef?.get() ?? null;
@@ -338,73 +473,10 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     });
   });
 
-  router.get('/stations', (req, res) => {
-    const u = utcefData();
-    const haveUtcef = !!(u && u.currentStations.length > 0);
-    // Station endpoints need a station-type source; either harmonics or UTCEF.
-    if (!state.data && !haveUtcef) {
-      res.status(503).json({ error: state.error ?? 'no station data loaded (harmonics or UTCEF)' });
-      return;
-    }
-
-    // bbox mode: stations in a map viewport, not just the nearest few to a
-    // single reference point. `maxPoints` (aliased by the legacy `limit`)
-    // caps how many are returned — a zoomed-out client asks for a low value
-    // and gets a spatially-even THINNED subset (stable across pan/zoom, see
-    // thinByCellLadder), a zoomed-in client asks for more (or covers a small
-    // enough area that everything fits) and gets full detail. This replaces
-    // the old behaviour of truncating to the first 500 in array order, which
-    // returned an arbitrary spatially-clustered subset and reshuffled as the
-    // viewport moved.
-    if (req.query.bbox !== undefined) {
-      const bbox = parseBbox(req, res);
-      if (!bbox) return;
-      const maxPoints = Math.min(
-        5000,
-        Math.max(1, parseInt(String(req.query.maxPoints ?? req.query.limit), 10) || 500),
-      );
-
-      // Gather everything in the viewport first (capped), then thin the
-      // MERGED set so harmonic + UTCEF together honour one budget.
-      // `info` is built lazily — only for the stations that survive thinning.
-      const gathered: Array<{ lat: number; lon: number; info: () => unknown }> = [];
-      if (state.data) {
-        for (const n of stationsInBbox(state.data, bbox.west, bbox.south, bbox.east, bbox.north, STATION_GATHER_CAP)) {
-          gathered.push({ lat: n.station.latitude, lon: n.station.longitude, info: () => stationInfo(n.station, { vectorCapable: n.vectorCapable }) });
-        }
-      }
-      if (u) {
-        for (const s of utcefStationsInBbox(u, bbox)) {
-          gathered.push({ lat: s.latitude, lon: s.longitude, info: () => utcefStationInfo(s) });
-        }
-      }
-      res.json(thinByCellLadder(gathered, maxPoints).map((g) => g.info()));
-      return;
-    }
-
-    const pos = parsePosition(req, res);
-    if (!pos) return;
-    const limit = Math.min(50, parseInt(String(req.query.limit), 10) || 10);
-    const legacy = state.data
-      ? nearestCurrentStations(state.data, pos.lat, pos.lon, limit).map((n) => ({
-          distanceKm: n.distanceKm,
-          info: stationInfo(n.station, { distanceKm: n.distanceKm, vectorCapable: n.vectorCapable }),
-        }))
-      : [];
-    const utcefNear = u
-      ? nearestUtcefStations(u, pos.lat, pos.lon, limit).map((n) => ({
-          distanceKm: n.distanceKm,
-          info: utcefStationInfo(n.station, { distanceKm: n.distanceKm }),
-        }))
-      : [];
-    const result = [...legacy, ...utcefNear]
-      .sort((a, b) => a.distanceKm - b.distanceKm)
-      .slice(0, limit)
-      .map((n) => n.info);
-    res.json(result);
-  });
+  router.get('/stations', (req, res) => handleStations(state, req, res));
 
   router.get('/stations/:id', (req, res) => {
+    if (rejectWithoutStationData(state, res)) return;
     const s = state.data?.stations.find((st) => st.id === req.params.id);
     if (s) {
       res.json(stationInfo(s, { offsets: s.offsets }));
@@ -418,37 +490,7 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     res.status(404).json({ error: `unknown station: ${req.params.id}` });
   });
 
-  router.get('/stations/:id/timeline', (req, res) => {
-    const win = parseWindow(req, res);
-    if (!win) return;
-
-    const s = state.data?.stations.find((st) => st.id === req.params.id);
-    if (s) {
-      const samples = timeline(state.data!, s, win.start, win.end, win.stepMs);
-      res.json({
-        station: stationInfo(s),
-        units: { speedKn: 'knots (signed, + = flood)', u: 'm/s east', v: 'm/s north' },
-        estimated: s.isSubordinate,
-        timeline: samples,
-      });
-      return;
-    }
-
-    const us = utcefData()?.currentStations.find((st) => st.id === req.params.id);
-    if (us) {
-      const samples: CurrentSample[] = [];
-      for (let t = win.start; t <= win.end; t += win.stepMs) samples.push(utcefSampleAt(us, t));
-      res.json({
-        station: utcefStationInfo(us),
-        units: { speedKn: 'knots (magnitude)', u: 'm/s east', v: 'm/s north' },
-        estimated: false,
-        timeline: samples,
-      });
-      return;
-    }
-
-    res.status(404).json({ error: `unknown station: ${req.params.id}` });
-  });
+  router.get('/stations/:id/timeline', (req, res) => handleStationTimeline(state, req, res));
 
   // Position-based timeline — the natural access pattern for gridded GRIB
   // data (no station in the request). Every sample goes through the same
@@ -541,7 +583,8 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
       res.status(400).json({ error: 'invalid time — expected ISO 8601' });
       return;
     }
-    const maxPoints = Math.min(5000, Math.max(1, parseInt(String(req.query.maxPoints), 10) || 400));
+    const maxPoints = parseLimit('maxPoints', req.query.maxPoints, 400, 5000, res);
+    if (maxPoints === null) return;
     const ctx = createResolveCtx(state, REST_FALLBACK_MAX_KM, { bbox, legacy: includeStations });
     res.json({
       time: new Date(time).toISOString(),

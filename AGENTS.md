@@ -177,18 +177,44 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   included); the download engine carries it over on re-download. A missing
   settings file migrates the old opt-in model once: any `autoUpdate: true` →
   interval 1 h, every other install marked `false`.
+- `src/currentsApi.ts` — the in-process handle other plugins get through
+  PropertyValues as the well-known property **`currentsApi`** (contract
+  version 1, documented in README "In-process API for other plugins";
+  signalk-routeiq consumes it). `{ version: 1, providerId, findStations(lat,
+  lon, limit?), getTimeline(id, startIso, endIso, stepMinutes?) }`; both
+  methods call the route handlers `handleStations` / `handleStationTimeline`
+  (exported from `api.ts`, also behind `GET /stations` and
+  `GET /stations/:id/timeline`) against a capturing response, so the results
+  are the HTTP JSON by construction — never give them a separate code path.
+  `invoke` passes each body through a JSON round-trip (undefined keys dropped,
+  NaN → null, no references into plugin state): keep it, it IS the parity. A
+  route error status rejects with `CurrentsApiError {status, body}`; a
+  handler that returns without answering rejects with 500 (`invoke` guard —
+  the handlers must answer synchronously). ONE
+  frozen handle per plugin instance, reading `state` live and gated on the
+  `running` flag (set as the LAST step of `start()`, so a start() that throws
+  halfway never serves; cleared first thing in `stop()`), emitted
+  ONCE right after `running` is set (an `onPropertyValues` callback runs
+  synchronously and may call at once) (`currentsApiEmitted`, first `start()`): the server caps PropertyValues
+  at 1000 values per name, so never emit on a data reload or a restart. Bump
+  `CURRENTS_API_VERSION` (and document it) only for a change that would break
+  a consumer; adding a method or a JSON field is not one.
 - `src/api.ts` — REST routes, express-free (`RouterLike` shim). Mounted at
   `/plugins/signalk-tidal-currents` (via `registerWithRouter`) **and**
   `/signalk/v2/api/currents` (via an app.get prefix shim in `start()`).
   `resolveVector()`, `/vector`, `/timeline` (one `resolveAt` per sample, so
   windows past the GRIB horizon degrade to the other sources) and `/grid` all
   go through `resolve.ts`. Station endpoints (`/stations`,
-  `/stations/:id[/timeline]`) serve **both** harmonics and UTCEF stations.
+  `/stations/:id[/timeline]`) serve **both** harmonics and UTCEF stations,
+  and all three answer 503 (never 404) while neither is loaded
+  (`rejectWithoutStationData`, checked before any parameter).
   `speedKn` is signed for legacy station samples, a magnitude for UTCEF and
   GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
   `?latitude=&longitude=` form) returns the current stations inside a
   viewport (gathered through the cell index), thinned to `maxPoints` (default
-  500, max 5000; legacy alias `limit`) via `thinByCellLadder()` — a stable
+  500, max 5000; legacy alias `limit`) via `thinByCellLadder()`. All count
+  params (`limit`/`maxPoints`, incl. `/grid`) go through `parseLimit`:
+  missing/NaN → default, `0` → the cap, negative → 400. Thinning is a stable
   spatial cell ladder (`CELL_LADDER_DEG`, fine→coarse) keeping ONE
   representative (nearest the cell centre) per occupied cell at the finest
   level whose occupancy fits. Cells are aligned to the **global origin**, not

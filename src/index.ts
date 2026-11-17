@@ -25,6 +25,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { registerRoutes, resolveVector, resolvedStationName, ApiState, RouterLike } from './api.js';
+import { CURRENTS_API_PROPERTY, createCurrentsApi } from './currentsApi.js';
 import { AUTO_DOWNLOAD_CHOICES, AutoDownloadController, createAutoDownloadScheduler } from './autoDownload.js';
 import { createCatalogClient } from './catalog.js';
 import { createDownloadEngine } from './downloads.js';
@@ -111,6 +112,13 @@ function pluginConstructor(app: any) {
   const state: ApiState = { data: null, error: 'not started' };
   let mountedV2 = false;
   let deltaPublished = false;
+  // In-process API for other plugins (src/currentsApi.ts). One stable handle
+  // per plugin instance that reads `state` live and rejects while stopped, so
+  // it is emitted ONCE (the server caps PropertyValues at 1000 per name) and
+  // stays valid across config saves.
+  let running = false;
+  const currentsApi = createCurrentsApi(state, () => running);
+  let currentsApiEmitted = false;
 
   // A stable object reference (like `state` above), mutated in place by
   // start() rather than reassigned — registerWithRouter/the v2 mount shim
@@ -500,9 +508,23 @@ function pluginConstructor(app: any) {
         publish();
         timer = setInterval(publish, Math.max(10, config.updateSeconds) * 1000);
       }
+
+      // Last, so the handle never serves a start() that threw halfway (the
+      // server then shows the plugin as failed). The emit follows `running`:
+      // an onPropertyValues callback runs synchronously and may call at once.
+      running = true;
+      if (!currentsApiEmitted && typeof app.emitPropertyValue === 'function') {
+        try {
+          app.emitPropertyValue(CURRENTS_API_PROPERTY, currentsApi);
+          currentsApiEmitted = true;
+        } catch (e) {
+          console.warn(`[${PLUGIN_ID}] could not emit ${CURRENTS_API_PROPERTY}: ${e}`);
+        }
+      }
     },
 
     stop() {
+      running = false;
       if (timer) {
         clearInterval(timer);
         timer = null;
