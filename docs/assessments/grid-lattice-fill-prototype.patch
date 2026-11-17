@@ -1,0 +1,128 @@
+diff --git a/src/api.ts b/src/api.ts
+index 81fcaf9..ea1d9af 100644
+--- a/src/api.ts
++++ b/src/api.ts
+@@ -701,6 +701,9 @@ const multiplesIn = (min: number, max: number, stride: number): number => {
+  * The lattice never exceeds maxPoints (candidates are thinned first if k = 0
+  * still overflows), so the total is <= maxPoints by construction.
+  */
++/** PROTOTYPE switch for measurement only. */
++export const gridFillMode: { mode: 'baseline' | 'ladder' | 'ladder-guarded' | 'quincunx'; lastCandidates: number; lastResolved: number; lastSaturated: boolean } = { mode: 'baseline', lastCandidates: 0, lastResolved: 0, lastSaturated: false };
++
+ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints: number): GridPoint[] {
+   // 1. Station winners. Whether a station wins its OWN position is almost
+   // static (resolve.ts ownWinFor: one byte per station, filled once by the very
+@@ -766,7 +769,27 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
+     for (const p of plans) n += multiplesIn(p.win.iMin, p.win.iMax, strideAt(p, k)) * multiplesIn(p.win.jMin, p.win.jMax, strideAt(p, k));
+     return n;
+   };
++  // Half level k + 1/2 (PROTOTYPE quincunx): multiples of h = s/2 with (i/h + j/h) even.
++  const quinCount = (k: number): number => {
++    let n = 0;
++    for (const p of plans) {
++      const s = strideAt(p, k);
++      if (s < 2) {
++        n += multiplesIn(p.win.iMin, p.win.iMax, 1) * multiplesIn(p.win.jMin, p.win.jMax, 1);
++        continue;
++      }
++      const h = s / 2;
++      const a0 = Math.ceil(p.win.iMin / h), a1 = Math.floor(p.win.iMax / h);
++      const b0 = Math.ceil(p.win.jMin / h), b1 = Math.floor(p.win.jMax / h);
++      const ev = (x0: number, x1: number) => (x1 < x0 ? 0 : Math.floor(x1 / 2) - Math.ceil(x0 / 2) + 1);
++      const ea = ev(a0, a1), oa = Math.max(0, a1 - a0 + 1) - ea;
++      const eb = ev(b0, b1), ob = Math.max(0, b1 - b0 + 1) - eb;
++      n += ea * eb + oa * ob;
++    }
++    return n;
++  };
+   let level = 0;
++  let half = false;
+   const maxLevel = plans.reduce((m, p) => Math.max(m, Math.log2(p.base)), 0);
+   for (let k = maxLevel; k >= 1; k--) {
+     if (candidateCount(k) + wCount <= maxPoints) {
+@@ -774,33 +797,67 @@ export function gridPoints(ctx: ResolveCtx, bbox: Bbox, time: number, maxPoints:
+       break;
+     }
+   }
+-
+-  // 3. The chosen level's candidates, resolved once.
+-  interface Cand {
+-    lat: number;
+-    lon: number;
+-    grid: GridSeries['grid'];
++  const mode = gridFillMode.mode;
++  if (mode === 'quincunx' && level < maxLevel && quinCount(level) + wCount <= maxPoints && quinCount(level) > candidateCount(level)) half = true;
++  // PROTOTYPE ladder: one level denser, thinned to the rest of the budget.
++  let ladder = false;
++  if ((mode === 'ladder' || mode === 'ladder-guarded') && level < maxLevel && candidateCount(level) + wCount <= maxPoints) {
++    level += 1;
++    ladder = true;
+   }
+-  let cands: Cand[] = [];
+-  for (const p of plans) {
+-    const s = strideAt(p, level);
++
++  // 3. The chosen level's candidates, resolved once. Positions in typed arrays.
++  const total = half ? quinCount(level) : candidateCount(level);
++  const cLat = new Float64Array(total);
++  const cLon = new Float64Array(total);
++  const cPlan = new Uint16Array(total);
++  let cN = 0;
++  plans.forEach((p, pi) => {
++    let s = strideAt(p, level);
++    let q = false;
++    if (half && s >= 2) {
++      s /= 2;
++      q = true;
++    }
+     const { grid, win } = p;
+     for (let j = Math.ceil(win.jMin / s) * s; j <= win.jMax; j += s) {
+       const lat = round4(grid.lat0 + j * grid.dj);
+       for (let i = Math.ceil(win.iMin / s) * s; i <= win.iMax; i += s) {
+-        const lon = round4(((grid.lon0 + i * grid.di + 180) % 360 + 360) % 360 - 180);
+-        cands.push({ lat, lon, grid });
++        if (q && ((i / s + j / s) & 1) !== 0) continue;
++        cLat[cN] = lat;
++        cLon[cN] = round4(((grid.lon0 + i * grid.di + 180) % 360 + 360) % 360 - 180);
++        cPlan[cN] = pi;
++        cN++;
+       }
+     }
+-  }
+-  // Level 0 can still overflow (several overlapping grids, rounding at their
+-  // edges): thin the candidate POSITIONS (stable spatial ladder) so the
+-  // resolver is never asked about more than maxPoints positions.
+-  if (cands.length > maxPoints) cands = thinByCellLadder(cands, maxPoints);
+-
++  });
++  gridFillMode.lastCandidates = cN;
++  gridFillMode.lastSaturated = plans.every((p) => strideAt(p, level) === 1 || (ladder && strideAt(p, level - 1) === 1));
++  let order: ArrayLike<number> | null = null;
++  if (ladder) {
++    const t = thinIndicesByCellLadder(cLat, cLon, cN, Math.max(0, maxPoints - wCount));
++    if (mode === 'ladder-guarded' && t && t.length <= candidateCount(level - 1)) {
++      // thinning came out no denser than the plain level: keep the plain level (its nodes, nested)
++      level -= 1;
++      const keepIdx: number[] = [];
++      for (let k = 0; k < cN; k++) {
++        const p = plans[cPlan[k]];
++        const s = strideAt(p, level);
++        const grid = p.grid;
++        const i = Math.round((((cLon[k] - grid.lon0) % 360) + 360) % 360 / grid.di);
++        const j = Math.round((cLat[k] - grid.lat0) / grid.dj);
++        if (i % s === 0 && j % s === 0) keepIdx.push(k);
++      }
++      order = keepIdx;
++    } else order = t;
++  } else if (cN > maxPoints) order = thinIndicesByCellLadder(cLat, cLon, cN, maxPoints);
++  gridFillMode.lastResolved = order ? order.length : cN;
+   const points: GridPoint[] = [];
+   const taken = new Set<number>();
+-  for (const c of cands) {
++  const nRes = order ? order.length : cN;
++  for (let o = 0; o < nRes; o++) {
++    const ci = order ? order[o] : o;
++    const c = { lat: cLat[ci], lon: cLon[ci], grid: plans[cPlan[ci]].grid };
+     const r = resolveAt(ctx, c.lat, c.lon, time, (claim) => claim.source !== 'grib' || claim.series.grid === c.grid);
+     if (!r) continue;
+     // A station answer at a lattice node is only legitimate at sea: where this
