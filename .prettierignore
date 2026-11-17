@@ -1,0 +1,14 @@
+# Build output / generated
+dist/
+dist-test/
+public/
+webapp/dist/
+node_modules/
+webapp/node_modules/
+
+# Test data (downloaded cache, synthetic fixtures kept byte-exact)
+test/data-opencpn/
+test/fixtures/
+
+# Vendored, kept close to upstream (see src/jpx/README.md)
+src/jpx/
