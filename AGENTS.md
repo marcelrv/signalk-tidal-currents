@@ -184,10 +184,14 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   (exported from `api.ts`, also behind `GET /stations` and
   `GET /stations/:id/timeline`) against a capturing response, so the results
   are the HTTP JSON by construction — never give them a separate code path. A
-  route error status rejects with `CurrentsApiError {status, body}`. ONE
+  route error status rejects with `CurrentsApiError {status, body}`; a
+  handler that returns without answering rejects with 500 (`invoke` guard —
+  the handlers must answer synchronously). ONE
   frozen handle per plugin instance, reading `state` live and gated on the
-  `running` flag (set in `start()`, cleared first thing in `stop()`), emitted
-  ONCE (`currentsApiEmitted`, first `start()`): the server caps PropertyValues
+  `running` flag (set as the LAST step of `start()`, so a start() that throws
+  halfway never serves; cleared first thing in `stop()`), emitted
+  ONCE right after `running` is set (an `onPropertyValues` callback runs
+  synchronously and may call at once) (`currentsApiEmitted`, first `start()`): the server caps PropertyValues
   at 1000 values per name, so never emit on a data reload or a restart. Bump
   `CURRENTS_API_VERSION` (and document it) only for a change that would break
   a consumer; adding a method or a JSON field is not one.
@@ -197,7 +201,9 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   `resolveVector()`, `/vector`, `/timeline` (one `resolveAt` per sample, so
   windows past the GRIB horizon degrade to the other sources) and `/grid` all
   go through `resolve.ts`. Station endpoints (`/stations`,
-  `/stations/:id[/timeline]`) serve **both** harmonics and UTCEF stations.
+  `/stations/:id[/timeline]`) serve **both** harmonics and UTCEF stations,
+  and all three answer 503 (never 404) while neither is loaded
+  (`rejectWithoutStationData`, checked before any parameter).
   `speedKn` is signed for legacy station samples, a magnitude for UTCEF and
   GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
   `?latitude=&longitude=` form) returns the current stations inside a

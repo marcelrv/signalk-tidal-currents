@@ -209,6 +209,10 @@ default (`/stations` nearest: 10, `/stations?bbox=`: 500, `/grid`: 400);
 truly unlimited; larger values are capped at that maximum; a negative value
 is a 400 error.
 
+**Station endpoints without data**: while neither harmonic nor UTCEF station
+data is loaded, `/stations`, `/stations/{id}` and `/stations/{id}/timeline`
+answer `503`; `404` means only that the station id is unknown.
+
 **Stations vs positions**: harmonic and UTCEF data are station-based; GRIB
 data is gridded and has no stations, so GRIB-backed lookups are purely
 positional (`/vector`, `/timeline`, `/grid`). `/grid` also includes UTCEF
@@ -369,7 +373,9 @@ interface CurrentsApiV1 {
   (`findStations` limit: omitted → 10, `0` → the maximum 50, negative → 400).
 - Where the route would answer with an error, the promise rejects with an
   `Error` carrying `status` (400/404/503) and `body` (the route's JSON body);
-  `message` is the body's `error` text.
+  `message` is the body's `error` text. 404 means only "unknown station id":
+  without station data every call answers 503, whatever the arguments. (A
+  500 would mean an internal bug: the route answered nothing.)
 - The handle is emitted **once** per server run (the server keeps a bounded
   history per property name) and stays valid across a plugin config save.
   While the plugin is stopped or has no station data, every call rejects
