@@ -193,7 +193,9 @@ function parseWindow(
 function parseLimit(name: string, raw: unknown, def: number, max: number, res: Res): number | null {
   const n = parseInt(String(raw), 10);
   if (Number.isNaN(n)) return def;
-  if (n < 0) {
+  // Sign from the full number: parseInt('-0.5') is -0, which would pass a
+  // `< 0` test and then read as 0 = the maximum.
+  if (n < 0 || parseFloat(String(raw)) < 0) {
     res.status(400).json({ error: `${name} must be >= 0 (0 = the maximum, ${max})` });
     return null;
   }

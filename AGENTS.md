@@ -183,7 +183,9 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   methods call the route handlers `handleStations` / `handleStationTimeline`
   (exported from `api.ts`, also behind `GET /stations` and
   `GET /stations/:id/timeline`) against a capturing response, so the results
-  are the HTTP JSON by construction — never give them a separate code path. A
+  are the HTTP JSON by construction — never give them a separate code path.
+  `invoke` passes each body through a JSON round-trip (undefined keys dropped,
+  NaN → null, no references into plugin state): keep it, it IS the parity. A
   route error status rejects with `CurrentsApiError {status, body}`; a
   handler that returns without answering rejects with 500 (`invoke` guard —
   the handlers must answer synchronously). ONE

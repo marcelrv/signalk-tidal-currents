@@ -42,7 +42,8 @@ function httpApi(state: ApiState) {
         return res;
       },
       json(body: unknown) {
-        captured = { code, body };
+        // What an HTTP client receives: the body after JSON serialization.
+        captured = { code, body: body === undefined ? undefined : JSON.parse(JSON.stringify(body)) };
       },
     };
     routes.get(routePath)!({ query, params }, res);
@@ -90,7 +91,12 @@ test('currentsApi.findStations: equals GET /stations?latitude=&longitude=&limit=
   assert.deepEqual(got, want.body);
   assert.ok(got.length > 0);
   assert.ok(got.some((s) => s.source === 'utcef') && got.some((s) => s.source === undefined), 'both UTCEF and legacy stations');
-  for (const s of got) assert.equal(typeof s.vectorCapable, 'boolean', `${s.id} vectorCapable`);
+  for (const s of got) {
+    assert.equal(typeof s.vectorCapable, 'boolean', `${s.id} vectorCapable`);
+    // JSON drops undefined-valued keys (e.g. referenceName of a reference
+    // station); the in-process result must not keep them either.
+    for (const [k, v] of Object.entries(s)) assert.notEqual(v, undefined, `${s.id}.${k} is an own undefined key`);
+  }
 
   // Default limit = the route's default when `limit` is omitted.
   assert.deepEqual(await api.findStations(53.2, 5.2), http('/stations', { latitude: '53.2', longitude: '5.2' }).body);
@@ -154,6 +160,8 @@ test('limit / maxPoints: missing → default, 0 → the maximum, negative → 40
   assert.equal((await api.findStations(53.2, 5.2, 0)).length, 50, '0 → the cap, 50');
   assert.equal((await api.findStations(53.2, 5.2, 500)).length, 50, 'capped at 50');
   // -1 used to reach slice(0, -1) and return every station but one.
+  // parseInt('-0.5') is -0: still negative, not 0 = the maximum.
+  assert.equal((await rejection(api.findStations(53.2, 5.2, -0.5))).status, 400);
   const neg = await rejection(api.findStations(53.2, 5.2, -1));
   assert.equal(neg.status, 400);
   assert.deepEqual(neg.body, http('/stations', { ...near, limit: '-1' }).body);
@@ -167,6 +175,8 @@ test('limit / maxPoints: missing → default, 0 → the maximum, negative → 40
   const time = '2026-01-10T00:00:00Z';
   assert.equal(http('/grid', { bbox, time, maxPoints: '0' }).code, 200, '/grid: 0 → the cap');
   assert.equal(http('/grid', { bbox, time, maxPoints: '0' }).body.points.length, 60);
+  assert.equal(http('/grid', { bbox, time, maxPoints: '-0.5' }).code, 400);
+  assert.equal(http('/stations', { bbox, maxPoints: '-0.5' }).code, 400);
   const gneg = http('/grid', { bbox, time, maxPoints: '-1' });
   assert.equal(gneg.code, 400);
   assert.match(gneg.body.error, /^maxPoints must be >= 0/);

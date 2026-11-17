@@ -86,8 +86,12 @@ export function invoke(
       },
       json(body) {
         answered = true;
-        if (status >= 400) reject(new CurrentsApiError(status, body));
-        else resolve(body);
+        // Through JSON, like the HTTP response: undefined-valued keys vanish,
+        // NaN becomes null, and the caller never holds references into the
+        // plugin's own state.
+        const wire: unknown = body === undefined ? undefined : JSON.parse(JSON.stringify(body));
+        if (status >= 400) reject(new CurrentsApiError(status, wire));
+        else resolve(wire);
       },
     };
     try {
