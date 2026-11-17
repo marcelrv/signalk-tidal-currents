@@ -795,3 +795,27 @@ test('past the GRIB time slack the resolver falls through to UTCEF instead of ho
   assert.equal(at(T0 + 3 * HOUR), 'utcef', 'an hour past the last slot');
   assert.equal(at(T0 - HOUR), 'utcef', 'an hour before the first slot');
 });
+
+test('no GRIB grid reaches the bbox: /grid returns only the in-view UTCEF stations, at their own positions', () => {
+  // The GRIB source is loaded, but its grid lies far outside the view: no lattice, station points only.
+  const grib = createGribSource(gribDirOf({ 'far.grb2': uvFields(10, -30, 0.1, 20, { u: 1 }) }), 0);
+  const stations: UtcefStationSpec[] = [];
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) stations.push([`N${i}-${j}`, 50 + i * 0.2, 2 + j * 0.2]);
+  const own = new Map(stations.map(([id, lat, lon]) => [id, [lat, lon]]));
+  const utcef = createUtcefSource(writeUtcefDir({ 'n.utcef': stations }), 0);
+  for (const preferGrib of [true, false]) {
+    const state: ApiState = { data: null, error: null, grib, utcef, preferGrib };
+    for (const mp of [5000, 50, 7, 1]) {
+      const label = `preferGrib=${preferGrib} maxPoints=${mp}`;
+      const pts = gridOf(state, '1.9,49.9,4,52', mp);
+      assert.ok(pts.length > 0 && pts.length <= mp, `${label}: ${pts.length} points`);
+      if (mp >= stations.length) assert.equal(pts.length, stations.length, `${label}: every in-view station`);
+      for (const p of pts) {
+        assert.equal(p.source, 'utcef', `${label}: no lattice point`);
+        assert.deepEqual([p.latitude, p.longitude], own.get(p.stationId!), `${label}: ${p.stationId} at its own position`);
+      }
+      assert.equal(new Set(pts.map((p) => p.stationId)).size, pts.length, `${label}: no duplicates`);
+      assertParity(state, pts, T0, label);
+    }
+  }
+});
