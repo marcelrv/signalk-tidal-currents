@@ -209,7 +209,10 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   and all three answer 503 (never 404) while neither is loaded
   (`rejectWithoutStationData`, checked before any parameter).
   `speedKn` is signed for legacy station samples, a magnitude for UTCEF and
-  GRIB samples. `/stations?bbox=w,s,e,n` (vs. the nearest-N
+  GRIB samples. Every resolved answer is tagged `source` (`grib` | `utcef` |
+  `station`): `/vector` top-level, `/timeline` per sample, `/grid` per point —
+  so a client can explain the step at the GRIB edge (`last + slack`), where a
+  forced field hands over to an astronomical-only one. `/stations?bbox=w,s,e,n` (vs. the nearest-N
   `?latitude=&longitude=` form) returns the current stations inside a
   viewport (gathered through the cell index), thinned to `maxPoints` (default
   500, max 5000; legacy alias `limit`) via `thinByCellLadder()`. All count
@@ -257,6 +260,9 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
      fill level is the densest `max(1, base / 2^k)` with candidates + winners
      ≤ `maxPoints` (index arithmetic, one resolve pass, no trial passes).
      Total ≤ `maxPoints` by construction. No content-dependent heuristics.
+     With no GRIB grid reaching the bbox there is no lattice: `/grid` returns
+     only the in-view station winners (UTCEF; legacy with `stations=1`), each
+     at its own position.
 - `src/index.ts` — plugin entry. Publishes `environment.current` deltas
   (v1 data model) via `resolveVector` (GRIB not distance-limited;
   stations within `maxStationDistanceKm`). Both **named and default
