@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.0 — 2026-11-17
+
+### Added
+
+- In-process `currentsApi` for other plugins (e.g. signalk-routeiq): station
+  lookups and timelines without an HTTP round-trip.
+
+### Fixed
+
+- Station endpoints answer 503 (not 404) while no station data is loaded.
+- `limit`/`maxPoints`: `0` means the maximum, negative values are rejected.
+- Deleting an already-removed unmanaged file no longer loops.
+- Failed saves in the manager now show an error.
+
 ## 0.5.0 — 2026-11-08
 
 ### Added
