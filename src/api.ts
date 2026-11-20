@@ -30,7 +30,6 @@ import { CurrentSample, isVectorCapable, nearestCurrentStations, stationsInBbox,
 import {
   OWN_LOSES,
   OWN_TIME_DEPENDENT,
-  REST_FALLBACK_MAX_KM,
   ResolveCtx,
   ResolvedVector,
   claimAt,
@@ -38,6 +37,7 @@ import {
   ownWinFor,
   resolveAt,
   sampleClaimAt,
+  stationReachKm,
 } from './resolve.js';
 import { UtcefCurrentStation, UtcefSource, nearestUtcefStations, utcefSampleAt, utcefStationsInBbox, utcefSummary } from './utcef.js';
 
@@ -75,17 +75,24 @@ export interface ApiState {
    * type-rank fallback pass.
    */
   datasetRank?: () => DatasetRankEntry[];
+  /**
+   * Nearest-station reach (km) of the REST/grid resolvers and the published
+   * deltas — the plugin's `maxStationDistanceKm`, capped at
+   * REST_FALLBACK_MAX_KM (see stationReachKm). Unset = REST_FALLBACK_MAX_KM.
+   */
+  maxStationKm?: number;
 }
 
-export { REST_FALLBACK_MAX_KM, UTCEF_DATASET_FALLBACK_MAX_KM, resolvedStationName } from './resolve.js';
+export { REST_FALLBACK_MAX_KM, UTCEF_DATASET_FALLBACK_MAX_KM, resolvedStationName, stationReachKm } from './resolve.js';
 export type { ResolvedVector } from './resolve.js';
 
 /**
  * Vector at a position/time from the best available source: a one-point
  * resolver context + resolveAt (src/resolve.ts — the single place that
  * decides who answers). `maxStationKm` bounds the station searches
- * (REST_FALLBACK_MAX_KM for the REST API, the configured limit for delta
- * publishing — never truly unbounded, so a query far from any coverage
+ * (default stationReachKm(state): the configured limit capped at
+ * REST_FALLBACK_MAX_KM, for REST and delta publishing alike — never truly
+ * unbounded, so a query far from any coverage
  * returns "no data" instead of a station on the other side of the planet).
  */
 export function resolveVector(
@@ -93,7 +100,7 @@ export function resolveVector(
   lat: number,
   lon: number,
   timeMs: number,
-  maxStationKm = REST_FALLBACK_MAX_KM,
+  maxStationKm = stationReachKm(state),
 ): ResolvedVector | null {
   return resolveAt(createResolveCtx(state, maxStationKm), lat, lon, timeMs);
 }
@@ -497,7 +504,7 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     const win = parseWindow(req, res);
     if (!win) return;
 
-    const ctx = createResolveCtx(state, REST_FALLBACK_MAX_KM);
+    const ctx = createResolveCtx(state, stationReachKm(state));
     const samples: Array<CurrentSample & { source: 'grib' | 'utcef' | 'station' }> = [];
     let station: ResolvedVector | null = null; // first sample answered by a legacy station
     let utcefStation: ResolvedVector | null = null; // first sample answered by a UTCEF station
@@ -579,7 +586,7 @@ export function registerRoutes(router: RouterLike, state: ApiState): void {
     }
     const maxPoints = parseLimit('maxPoints', req.query.maxPoints, 400, 5000, res);
     if (maxPoints === null) return;
-    const ctx = createResolveCtx(state, REST_FALLBACK_MAX_KM, { bbox, legacy: includeStations });
+    const ctx = createResolveCtx(state, stationReachKm(state), { bbox, legacy: includeStations });
     res.json({
       time: new Date(time).toISOString(),
       units: { speedKn: 'knots (magnitude)', u: 'm/s east', v: 'm/s north' },

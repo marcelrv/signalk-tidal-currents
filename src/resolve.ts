@@ -66,6 +66,19 @@ export const UTCEF_DATASET_FALLBACK_MAX_KM = 50;
  */
 export const REST_FALLBACK_MAX_KM = UTCEF_DATASET_FALLBACK_MAX_KM;
 
+/**
+ * The station reach every caller of the resolver uses for `state`: the
+ * configured `maxStationKm` (plugin setting `maxStationDistanceKm`), capped at
+ * REST_FALLBACK_MAX_KM; REST_FALLBACK_MAX_KM when unset or invalid. REST
+ * (/vector, /timeline, /grid) and the published deltas all pass this, so they
+ * agree — and a dense coastal UTCEF dataset ranked high in the stack cannot
+ * answer 50 km offshore, ahead of a lower-ranked GRIB that covers the spot.
+ */
+export function stationReachKm(state: { maxStationKm?: number }): number {
+  const km = state.maxStationKm;
+  return typeof km === 'number' && km > 0 ? Math.min(km, REST_FALLBACK_MAX_KM) : REST_FALLBACK_MAX_KM;
+}
+
 /** Human-readable name of whichever station backed a resolved vector. */
 export function resolvedStationName(r: ResolvedVector): string | null {
   if (r.source === 'station') return r.station?.name ?? null;

@@ -11,7 +11,8 @@ import { test } from 'node:test';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { resolveVector, ApiState } from '../dist/api.js';
+import { resolveVector, stationReachKm, UTCEF_DATASET_FALLBACK_MAX_KM, ApiState } from '../dist/api.js';
+import { distanceKm } from '../dist/geoindex.js';
 import { createGribSource } from '../dist/gribcurrents.js';
 import { loadHarmonicsDir } from '../dist/harmonics.js';
 import { Layer, claimAt, createResolveCtx, orderedLayers, resolveAt } from '../dist/resolve.js';
@@ -210,4 +211,51 @@ test('a context built with a bbox drops layers that cannot reach it; legacy:fals
   const noLegacy = createResolveCtx(state, 50, { legacy: false });
   assert.ok(!noLegacy.layers.some((l) => l.type === 'harmonic'));
   assert.ok(all.layers.some((l) => l.type === 'harmonic'));
+});
+
+test('a stacked UTCEF layer reaches only stationReachKm: past it a lower-ranked GRIB answers (REST, /grid, deltas agree)', () => {
+  // A dense coastal dataset ranked above a coarse GRIB that covers the same water.
+  const utcef = createUtcefSource(writeUtcefDir({ 'coast.utcef': [['C', 53.2, 4.95]] }), 0);
+  const grib = createGribSource(gribDirOf({ 'sea.grb2': uvFields(52.9, 4.9, 0.1, 7) }), 0);
+  const stack = [
+    { id: 'coast', type: 'utcef' as const, files: ['coast.utcef'] },
+    { id: 'sea', type: 'grib2' as const, files: ['sea.grb2'] },
+  ];
+  const mk = (maxStationKm?: number): ApiState => ({
+    data: null,
+    error: null,
+    grib,
+    utcef,
+    preferGrib: true,
+    datasetRank: () => stack,
+    maxStationKm,
+  });
+  const offshore = { latitude: 53.2, longitude: 5.4 }; // ~30 km from C, inside the GRIB grid
+  const nearby = { latitude: 53.21, longitude: 4.97 }; // ~1.8 km from C
+
+  assert.equal(stationReachKm(mk(15)), 15);
+  assert.equal(stationReachKm(mk(500)), UTCEF_DATASET_FALLBACK_MAX_KM); // 50 km stays the ceiling
+  assert.equal(stationReachKm(mk(undefined)), UTCEF_DATASET_FALLBACK_MAX_KM);
+
+  const state = mk(15);
+  const api = makeApi(state);
+  // /vector + resolveVector (the delta path): GRIB offshore, the UTCEF station near its own position.
+  assert.equal(api('/vector', { ...offshore, time: gridTime }).source, 'grib');
+  assert.equal(resolveVector(state, offshore.latitude, offshore.longitude, T0)?.source, 'grib');
+  const near = api('/vector', { ...nearby, time: gridTime });
+  assert.equal(near.source, 'utcef');
+  assert.equal(resolveVector(state, nearby.latitude, nearby.longitude, T0)?.source, 'utcef');
+  // /timeline: every sample agrees.
+  const tl = (p: typeof offshore) => api('/timeline', { ...p, start: gridTime, end: new Date(T0 + HOUR).toISOString(), step: 30 });
+  assert.ok(tl(offshore).timeline.length > 0 && tl(offshore).timeline.every((s: { source: string }) => s.source === 'grib'));
+  assert.ok(tl(nearby).timeline.length > 0 && tl(nearby).timeline.every((s: { source: string }) => s.source === 'utcef'));
+  // /grid: no lattice node beyond the reach is painted with the station's vector.
+  const grid = api('/grid', { bbox: '4.9,52.9,5.5,53.5', time: gridTime, maxPoints: 5000 }).points;
+  const km = (p: { latitude: number; longitude: number }) => distanceKm(p.latitude, p.longitude, 53.2, 4.95);
+  assert.ok(grid.some((p: { source: string }) => p.source === 'utcef'));
+  for (const p of grid) if (p.source === 'utcef') assert.ok(km(p) <= 15, `station fill at ${km(p).toFixed(1)} km`);
+  assert.ok(grid.some((p: { source: string; latitude: number; longitude: number }) => p.source === 'grib' && km(p) > 15));
+
+  // Without a configured reach the 50 km ceiling applies: the station claims the offshore spot.
+  assert.equal(makeApi(mk(undefined))('/vector', { ...offshore, time: gridTime }).source, 'utcef');
 });
