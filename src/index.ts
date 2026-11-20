@@ -220,8 +220,9 @@ function pluginConstructor(app: any) {
             type: 'number',
             title: 'Max Station Distance (km)',
             description:
-              'Only use a station for environment.current when a vector-capable one is within ' +
-              'this range (GRIB coverage is not distance-limited)',
+              'Only use a station (UTCEF or harmonic) when a vector-capable one is within this range — ' +
+              'for environment.current, the REST API and the map overlay alike; capped at 50 km ' +
+              '(GRIB coverage is not distance-limited)',
             default: DEFAULTS.maxStationDistanceKm,
             minimum: 1,
           },
@@ -273,6 +274,8 @@ function pluginConstructor(app: any) {
       state.grib = createGribSource(dataDir);
       state.utcef = createUtcefSource(dataDir);
       state.preferGrib = config.preferGrib;
+      // One station reach for REST, /grid and the deltas (capped at 50 km in stationReachKm).
+      state.maxStationKm = config.maxStationDistanceKm;
 
       // Tidal Currents Manager (PRD docs/PRD-tidal-currents-manager.md, Phase
       // 1): catalog fetch/cache, download engine, and source-type priority.
@@ -473,7 +476,7 @@ function pluginConstructor(app: any) {
           try {
             const pos = readVesselPosition(app);
             if (!pos) return;
-            const resolved = resolveVector(state, pos.lat, pos.lon, Date.now(), config.maxStationDistanceKm);
+            const resolved = resolveVector(state, pos.lat, pos.lon, Date.now());
             if (!resolved || resolved.sample.direction === null) return;
             const origin =
               resolved.source === 'grib'
