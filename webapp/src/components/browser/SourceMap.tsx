@@ -8,7 +8,15 @@ import { useAppStore } from '../../store/useAppStore';
 import { useTheme } from '../../theme/ThemeProvider';
 import { THEME_COLORS, ThemePalette } from '../../theme/palette';
 import { CatalogSourceType } from '../../api/types';
-import { SourceRow, datasetForRow, displayStatus, DisplayStatus, matchesFilters, rowsForSources } from '../../lib/sources';
+import {
+  SourceRow,
+  datasetForRow,
+  displayStatus,
+  DisplayStatus,
+  filterRowsByInstalled,
+  matchesFilters,
+  rowsForSources,
+} from '../../lib/sources';
 import { geometryBbox, pointInGeometry } from '../../lib/geo';
 import { STATUS_LABELS } from '../shared/StatusBadge';
 import { RegionInspector } from './RegionInspector';
@@ -151,8 +159,8 @@ export function SourceMap() {
 
   const rows = useMemo(() => {
     const sources = (catalog?.document?.sources ?? []).filter((s) => matchesFilters(s, filters));
-    return rowsForSources(sources);
-  }, [catalog, filters]);
+    return filterRowsByInstalled(rowsForSources(sources), datasets, filters.installedOnly);
+  }, [catalog, datasets, filters]);
 
   const handleMapClick = (latlng: LatLng) => {
     const covering = rows.filter((r) => pointInGeometry(r.geometry, latlng.lat, latlng.lng));
