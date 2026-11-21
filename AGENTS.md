@@ -134,7 +134,12 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
   fallback, GRIB → UTCEF → legacy station, or UTCEF → station → GRIB when
   `preferGrib` is false; a stack UTCEF probe's nearest radius is clamped to
   50 km) builds the
-  layers; `createResolveCtx(state, maxKm, {bbox?, legacy?})` keeps those that
+  layers. **Station reach:** every caller — REST `/vector`, `/timeline`,
+  `/grid` and the published deltas — passes `stationReachKm(state)` = the
+  plugin's `maxStationDistanceKm` (`state.maxStationKm`) capped at 50 km
+  (`REST_FALLBACK_MAX_KM`; also the default when unset), so they agree and a
+  dense coastal UTCEF dataset ranked high cannot claim water far offshore
+  ahead of a lower-ranked GRIB that covers it; `createResolveCtx(state, maxKm, {bbox?, legacy?})` keeps those that
   can answer (an optional `bbox` drops layers whose 10°-bucket extent cannot
   reach it). `claimAt` returns WHO answers (GRIB series / UTCEF station /
   legacy station) without sampling; `resolveAt` is claim + sample; both run
@@ -273,7 +278,8 @@ harmonic currents — see `specs/utcef-specification.md` in `router-data`).
      at its own position.
 - `src/index.ts` — plugin entry. Publishes `environment.current` deltas
   (v1 data model) via `resolveVector` (GRIB not distance-limited;
-  stations within `maxStationDistanceKm`). Both **named and default
+  stations within `stationReachKm(state)`, i.e. `maxStationDistanceKm`
+  capped at 50 km — the same reach as REST and `/grid`). Both **named and default
   exports** must point to `pluginConstructor` — Signal K's
   `importOrRequire()` returns `module.default` for ESM.
 
