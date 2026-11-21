@@ -4,12 +4,7 @@
 
 ### Changed
 
-- The REST API (`/vector`, `/timeline`) and the chart overlay (`/grid`) now
-  use the configured Max Station Distance, like `environment.current`.
-  Before, they always used 50 km. A dense coastal UTCEF dataset ranked high
-  in the priority list no longer answers far offshore, ahead of a GRIB that
-  covers the spot. 50 km remains the maximum, also for
-  `environment.current`.
+- REST API and chart overlay use the configured Max Station Distance (max 50 km).
 
 ## 0.6.0 — 2026-11-17
 
