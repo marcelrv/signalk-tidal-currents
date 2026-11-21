@@ -13,7 +13,8 @@ const TYPES: Array<{ value: CatalogSourceType; label: string }> = [
 
 /**
  * Quick filters shared by both List and Map views (PRD §5.1). Everything
- * lives on ONE horizontally-scrollable line: the type pills, a single "Tags"
+ * lives on ONE horizontally-scrollable line: the type pills, an "Installed"
+ * toggle (shown once anything is installed), a single "Tags"
  * chip, and the currently-active tag chips. The full tag vocabulary (a dozen+
  * entries in the real catalog) opens in a bottom sheet instead of being
  * splashed across the screen — on a 7" helm display the old tag wall consumed
@@ -22,6 +23,7 @@ const TYPES: Array<{ value: CatalogSourceType; label: string }> = [
 export function QuickFilters({ availableTags }: { availableTags: string[] }) {
   const filters = useAppStore((s) => s.filters);
   const setFilters = useAppStore((s) => s.setFilters);
+  const hasInstalled = useAppStore((s) => s.datasets.length > 0);
   const [tagsOpen, setTagsOpen] = useState(false);
 
   const toggleType = (t: CatalogSourceType) => {
@@ -63,6 +65,20 @@ export function QuickFilters({ availableTags }: { availableTags: string[] }) {
           {label}
         </button>
       ))}
+      {(hasInstalled || filters.installedOnly) && (
+        <>
+          <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border" />
+          <button
+            type="button"
+            onClick={() => setFilters({ installedOnly: !filters.installedOnly })}
+            className={`flex items-center gap-1.5 ${pillClass(filters.installedOnly)}`}
+            aria-pressed={filters.installedOnly}
+          >
+            <Icon name="check" className="h-3.5 w-3.5" />
+            Installed
+          </button>
+        </>
+      )}
       {availableTags.length > 0 && (
         <>
           <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border" />

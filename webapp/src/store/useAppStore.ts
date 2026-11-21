@@ -18,6 +18,8 @@ export interface Filters {
   types: Set<CatalogSourceType>;
   query: string;
   tags: Set<string>;
+  /** Show only rows with an installed dataset (any status). Row-level — see `filterRowsByInstalled`. */
+  installedOnly: boolean;
 }
 
 interface WizardState {
@@ -378,7 +380,7 @@ export const useAppStore = create<AppState>((set, get) => {
     view: 'list',
     setView: (view) => set({ view }),
 
-    filters: { types: new Set(), query: '', tags: new Set() },
+    filters: { types: new Set(), query: '', tags: new Set(), installedOnly: false },
     setFilters: (patch) => set((s) => ({ filters: { ...s.filters, ...patch } })),
 
     selection: { key: null },

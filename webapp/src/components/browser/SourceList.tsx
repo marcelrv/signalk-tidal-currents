@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAppStore } from '../../store/useAppStore';
-import { datasetForRow, groupRowsByProvider, matchesFilters, rowsForSources } from '../../lib/sources';
+import { datasetForRow, filterRowsByInstalled, groupRowsByProvider, matchesFilters, rowsForSources } from '../../lib/sources';
 import { pointInGeometry } from '../../lib/geo';
 import { Icon } from '../shared/Icon';
 import { SourceListRow } from './SourceListRow';
@@ -23,8 +23,8 @@ export function SourceList() {
   const groups = useMemo(() => {
     const sources = catalog?.document?.sources ?? [];
     const filtered = sources.filter((s) => matchesFilters(s, filters));
-    return groupRowsByProvider(rowsForSources(filtered));
-  }, [catalog, filters]);
+    return groupRowsByProvider(filterRowsByInstalled(rowsForSources(filtered), datasets, filters.installedOnly));
+  }, [catalog, datasets, filters]);
 
   // Smart default (once): expand the groups with a region covering the
   // vessel's current position. Waits for BOTH the catalog groups AND a

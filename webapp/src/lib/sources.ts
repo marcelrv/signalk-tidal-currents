@@ -146,6 +146,16 @@ export function hasUnknownSizeRisk(sizeBytes: number | null, storage: StorageSta
   return (storage.totalBytes - storage.freeBytes) / storage.totalBytes > 0.75;
 }
 
+/**
+ * Row-level half of the filters (installed state is per ROW — a multi-region
+ * source can have only some regions installed, so this can't live in the
+ * source-level `matchesFilters`). Keeps rows with ANY installed dataset,
+ * including error/update-available ones, so broken installs stay findable.
+ */
+export function filterRowsByInstalled(rows: SourceRow[], datasets: DatasetEntry[], installedOnly: boolean): SourceRow[] {
+  return installedOnly ? rows.filter((r) => datasetForRow(datasets, r)) : rows;
+}
+
 export interface SourceFilters {
   types: Set<CatalogSource['type']>;
   query: string;
