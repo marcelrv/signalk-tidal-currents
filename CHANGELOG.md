@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2 — 2026-11-21
+
+### Added
+
+- Download manager: "Installed" filter to show only installed datasets.
+
 ## 0.6.1 — 2026-11-21
 
 ### Changed
